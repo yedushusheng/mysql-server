@@ -30,7 +30,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
  2008-08-01 Created Sunny Bains
  3/20/2011 Jimmy Yang extracted from Embedded InnoDB
  *******************************************************/
-
+// NOTE:InnoDB作为嵌入式数据库存储引擎的对外原生接口
 #include <dd/properties.h>
 #include <dd/types/tablespace.h>
 #include <errno.h>
