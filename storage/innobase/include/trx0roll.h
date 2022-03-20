@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 3/26/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:关于事务回滚的实现
 #ifndef trx0roll_h
 #define trx0roll_h
 

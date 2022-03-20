@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 3/26/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:事务相关类型定义
 #ifndef trx0types_h
 #define trx0types_h
 

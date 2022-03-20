@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 3/26/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:undo log段的实现
 #include <stddef.h>
 
 #include <sql_thd_internal_api.h>

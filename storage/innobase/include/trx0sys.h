@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 3/26/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:事务系统段的实现
 #ifndef trx0sys_h
 #define trx0sys_h
 

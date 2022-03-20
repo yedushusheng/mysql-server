@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 3/26/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:关于事务回滚的实现
 #include <sys/types.h>
 
 #include "clone0clone.h"

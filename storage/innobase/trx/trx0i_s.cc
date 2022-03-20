@@ -41,7 +41,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
    so they must come first.
    From the symptoms, this is related to bug#46587 in the MySQL bug DB.
 */
-
+// NOTE:
 #include <sql_class.h>
 #include <stdio.h>
 

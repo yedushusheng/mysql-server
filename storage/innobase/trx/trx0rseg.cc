@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 3/26/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:rollback segment的实现
 #include "trx0rseg.h"
 
 #include <stddef.h>

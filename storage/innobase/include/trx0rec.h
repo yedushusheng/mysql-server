@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 3/26/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:undo log定义及相关操作
 #ifndef trx0rec_h
 #define trx0rec_h
 
