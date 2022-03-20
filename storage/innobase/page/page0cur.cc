@@ -30,7 +30,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 10/4/1994 Heikki Tuuri
  *************************************************************************/
-
+// NOTE:索引页中记录的定位、插入、删除
 #include "page0cur.h"
 
 #include "btr0btr.h"

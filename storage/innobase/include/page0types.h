@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 2/2/1994 Heikki Tuuri
  *******************************************************/
-
+// NOTE:类型定义
 #ifndef page0types_h
 #define page0types_h
 

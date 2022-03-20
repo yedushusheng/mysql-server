@@ -30,7 +30,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 2/2/1994 Heikki Tuuri
  *******************************************************/
-
+// NOTE:索引页的维护
 #include "my_dbug.h"
 
 #include "btr0btr.h"

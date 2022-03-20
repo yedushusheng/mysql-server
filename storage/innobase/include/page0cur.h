@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 10/4/1994 Heikki Tuuri
  *************************************************************************/
-
+// NOTE:索引页中记录的定位、插入、删除
 #ifndef page0cur_h
 #define page0cur_h
 
