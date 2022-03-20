@@ -23,7 +23,7 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
 *****************************************************************************/
-
+// NOTE:文件内存数据结构及相关文件操作
 /** @file fil/fil0fil.cc
 The tablespace memory cache */
 

@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 12/18/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:物理文件结构与实现(fsp=file system phisical?)
 #ifndef fsp0fsp_h
 #define fsp0fsp_h
 

@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 11/29/1995 Heikki Tuuri
  ***********************************************************************/
-
+// NOTE:物理文件结构与实现
 #include "fsp0fsp.h"
 #include "buf0buf.h"
 #include "fil0fil.h"

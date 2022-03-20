@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 10/25/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:文件内存数据结构及相关文件操作
 #ifndef fil0fil_h
 #define fil0fil_h
 

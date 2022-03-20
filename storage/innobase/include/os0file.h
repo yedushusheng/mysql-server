@@ -37,7 +37,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
  Created 10/21/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:底层文件操作实现
 #ifndef os0file_h
 #define os0file_h
 
@@ -97,7 +97,7 @@ struct Block {
   byte *m_ptr;
   /** This padding is needed to avoid false sharing. TBD: of what exactly? We
   can't use alignas because std::vector<Block> uses std::allocator which in
-  C++14 doesn't have to handle overaligned types. (see � 20.7.9.1.5 of N4140
+  C++14 doesn't have to handle overaligned types. (see � 20.7.9.1.5 of N4140
   draft) */
   byte pad[ut::INNODB_CACHE_LINE_SIZE];
   std::atomic<bool> m_in_use;
