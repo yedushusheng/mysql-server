@@ -60,6 +60,7 @@ enum class enum_column_types;
    false   OK
    true    Error
 */
+//NOTE:这个函数打开指定的frm文件(由share->normalized_path.str指定),读取表定义并填充share结构
 bool open_table_def(THD *thd, TABLE_SHARE *share, const dd::Table &table_def);
 
 /**

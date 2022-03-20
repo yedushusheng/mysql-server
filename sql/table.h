@@ -668,6 +668,7 @@ struct Key_name {
 */
 
 /** NOTE:代表表的元数据,例如字段定义,索引定义等等(TABLE代表一个打开的表实例)
+ * TABLE_SHARE用来代表数据库的元数据,frm文件是TABLE_SHARE的永续存储,对象的实例从frm文件构建
  *                  Item
  *                   |
  * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
@@ -714,7 +715,7 @@ struct TABLE_SHARE {
   collation_unordered_map<std::string, Field **> *name_hash{nullptr};
   MEM_ROOT mem_root;
   TYPELIB keynames;            /* Pointers to keynames */
-  TYPELIB *intervals{nullptr}; /* pointer to interval info */
+  TYPELIB *intervals{nullptr}; /* pointer to interval info */  //NOTE:指向interval info
   mysql_mutex_t LOCK_ha_data;  /* To protect access to ha_data */
   TABLE_SHARE *next{nullptr}, **prev{nullptr}; /* Link to unused shares */
   /**
@@ -733,10 +734,10 @@ struct TABLE_SHARE {
   KEY *key_info{nullptr};    /* data of keys defined for the table */
   uint *blob_field{nullptr}; /* Index to blobs in Field arrray*/
 
-  uchar *default_values{nullptr};      /* row with default values */
+  uchar *default_values{nullptr};      /* row with default values */  //NOTE:默认值,rec_buff_length字节?(原来是byte*类型)
   LEX_STRING comment{nullptr, 0};      /* Comment about table */
   LEX_STRING compress{nullptr, 0};     /* Compression algorithm */
-  LEX_STRING encrypt_type{nullptr, 0}; /* encryption algorithm */
+  LEX_STRING encrypt_type{nullptr, 0}; /* encryption algorithm */  //NOTE:frm文件是否加密
 
   /** Secondary storage engine. */
   LEX_CSTRING secondary_engine{nullptr, 0};
@@ -778,13 +779,13 @@ struct TABLE_SHARE {
   ha_rows min_rows{0}, max_rows{0}; /* create information */
   ulong avg_row_length{0};          /* create information */
   ulong mysql_version{0};           /* 0 if .frm is created before 5.0 */
-  ulong reclength{0};               /* Recordlength */
+  ulong reclength{0};               /* Recordlength */  //NOTE:记录长度
   ulong stored_rec_length{0};       /* Stored record length
                                     (no generated-only generated fields) */
   ulonglong autoextend_size{0};
 
   plugin_ref db_plugin{nullptr};     /* storage engine plugin */
-  inline handlerton *db_type() const /* table_type for handler */
+  inline handlerton *db_type() const /* table_type for handler */  //NOTE:存储引擎
   {
     // DBUG_ASSERT(db_plugin);
     return db_plugin ? plugin_data<handlerton *>(db_plugin) : NULL;
@@ -817,10 +818,14 @@ struct TABLE_SHARE {
   uint null_bytes{0}, last_null_bit_pos{0};
   uint fields{0};            /* Number of fields */
   uint rec_buff_length{0};   /* Size of table->record[] buffer */
-  uint keys{0};              /* Number of keys defined for the table*/
+  /**NOTE:记录缓冲区长度,这是由下面公式计算出来的:
+   * ALIGN_SIZE(share->reclength+1+extra_rec_buf_length),
+   * reclength如上所示,extra_rec_buf_length是frm文件+59处的值
+  */
+  uint keys{0};              /* Number of keys defined for the table*/  // NOTE:索引个数
   uint key_parts{0};         /* Number of key parts of all keys
                              defined for the table
-                          */
+                          */  // NOTE:总的索引'分量'个数
   uint max_key_length{0};    /* Length of the longest key */
   uint max_unique_length{0}; /* Length of the longest unique key */
   uint total_key_length{0};
@@ -895,10 +900,10 @@ struct TABLE_SHARE {
   uint vfields{0};
   /// Number of fields having the default value generated
   uint gen_def_field_count{0};
-  bool system{false};            /* Set if system table (one record) */
+  bool system{false};            /* Set if system table (one record) */  //NOTE:是否系统表
   bool db_low_byte_first{false}; /* Portable row format */
   bool crashed{false};
-  bool is_view{false};
+  bool is_view{false};  //NOTE:是否视图
   bool m_open_in_progress{false}; /* True: alloc'ed, false: def opened */
   Table_id table_map_id;          /* for row-based replication */
 
@@ -1189,6 +1194,7 @@ struct TABLE_SHARE {
     DBUG_ASSERT(assert_ref_count_is_locked(this));
     return m_ref_count;
   }
+  // NOTE:引用计数,get_table_share和release_table_share函数维护
 
   /**
     Increment the reference count by one.
@@ -1464,6 +1470,9 @@ struct TABLE {
   /* Map of keys that can be used to calculate ORDER BY without sorting */
   Key_map keys_in_use_for_order_by;
   KEY *key_info{nullptr}; /* data of keys defined for the table */
+  /** NOTE:key_info,索引定义,这个指针指向一个KEY类型的数组,数组的大小由keys决定,
+  在KEY类型数组的后面是一个KEY_PART_INFO类型的数组,数组大小由key_parts决定
+  */
   /**
     Key part array for generated keys, used for materialized derived tables.
     This is a contiguous array, with size given by s->max_tmp_key_parts.

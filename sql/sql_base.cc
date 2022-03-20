@@ -656,7 +656,7 @@ static void update_schema_options(const dd::Schema *sch_obj,
 
   @return Pointer to the new TABLE_SHARE, or NULL if there was an error
 */
-
+//NOTE:这个函数还额外维护一个TABLE_SHARE的hash表,这个函数会先查找hash表,如果找不到定义,再调用open_table_def读入表定义
 TABLE_SHARE *get_table_share(THD *thd, const char *db, const char *table_name,
                              const char *key, size_t key_length, bool open_view,
                              bool open_secondary) {
@@ -868,7 +868,9 @@ TABLE_SHARE *get_table_share(THD *thd, const char *db, const char *table_name,
 
   For arguments and return values, see get_table_share()
 */
-
+/**NOTE:这个函数先调用get_table_share,如果失败,会调用ha_create_table_from_engint创建
+ * MySQL5.6函数名:get_table_share_with_create
+*/
 static TABLE_SHARE *get_table_share_with_discover(
     THD *thd, TABLE_LIST *table_list, const char *key, size_t key_length,
     bool open_secondary, int *error)
@@ -956,7 +958,7 @@ static TABLE_SHARE *get_table_share_with_discover(
   if we have already too many open table shares) then delete the
   definition.
 */
-
+//NOTE:释放一个TABLE_SHARE引用
 void release_table_share(TABLE_SHARE *share) {
   DBUG_TRACE;
   DBUG_PRINT("enter", ("share: %p  table: %s.%s  ref_count: %u  version: %lu",

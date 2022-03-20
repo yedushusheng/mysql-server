@@ -110,9 +110,11 @@ void table_def_start_shutdown(void);
 void assign_new_table_id(TABLE_SHARE *share);
 uint cached_table_definitions(void);
 size_t get_table_def_key(const TABLE_LIST *table_list, const char **key);
+//NOTE:这个函数还额外维护一个TABLE_SHARE的hash表,这个函数会先查找hash表,如果找不到定义,再调用open_table_def读入表定义
 TABLE_SHARE *get_table_share(THD *thd, const char *db, const char *table_name,
                              const char *key, size_t key_length, bool open_view,
                              bool open_secondary = false);
+//NOTE:释放一个TABLE_SHARE引用
 void release_table_share(TABLE_SHARE *share);
 
 TABLE *open_ltable(THD *thd, TABLE_LIST *table_list, thr_lock_type update,

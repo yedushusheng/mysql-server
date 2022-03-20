@@ -2298,6 +2298,7 @@ static bool fill_check_constraints_from_dd(TABLE_SHARE *share,
   return false;
 }
 
+//NOTE:这个函数打开指定的frm文件(由share->normalized_path.str指定),读取表定义并填充share结构
 bool open_table_def(THD *thd, TABLE_SHARE *share, const dd::Table &table_def) {
   DBUG_TRACE;
 
