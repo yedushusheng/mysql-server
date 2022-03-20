@@ -1380,6 +1380,7 @@ typedef Bitmap<MAX_FIELDS> Field_map;
 */
 
 /** NOTE:代表表的元数据,例如字段定义,索引定义等等(TABLE代表一个打开的表实例)
+ * TABLE实例代表一个打开的TABLE_SHARE
  *                  Item
  *                   |
  * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
@@ -1391,9 +1392,9 @@ typedef Bitmap<MAX_FIELDS> Field_map;
  *                  JOIN
 */
 struct TABLE {
-  TABLE_SHARE *s{nullptr};
-  handler *file{nullptr};
-  TABLE *next{nullptr}, *prev{nullptr};
+  TABLE_SHARE *s{nullptr};  //NOTE:表的定义
+  handler *file{nullptr};  //NOTE:存储引擎
+  TABLE *next{nullptr}, *prev{nullptr};  //NOTE:THD中的open_tables关系
 
  private:
   /**
@@ -1404,6 +1405,7 @@ struct TABLE {
      One should use methods of I_P_List template instead.
   */
   TABLE *cache_next{nullptr}, **cache_prev{nullptr};
+  //NOTE:用于实现used关系,以前版本变量名:used_next/used_prev
 
   /*
     Give Table_cache_element access to the above two members to allow
@@ -1418,8 +1420,8 @@ struct TABLE {
   */
   MY_BITMAP fields_for_functional_indexes;
 
-  THD *in_use{nullptr};   /* Which thread uses this */
-  Field **field{nullptr}; /* Pointer to fields */
+  THD *in_use{nullptr};   /* Which thread uses this */  //NOTE:使用这个表的线程
+  Field **field{nullptr}; /* Pointer to fields */  //NOTE:同TABLE_SHARE
   /// Count of hidden fields, if internal temporary table; 0 otherwise.
   uint hidden_field_count{0};
 
@@ -1436,7 +1438,7 @@ struct TABLE {
     needed by the query without reading the row.
   */
   Key_map covering_keys;
-  Key_map quick_keys;
+  Key_map quick_keys;  //NOTE:
 
   /* Merge keys are all keys that had a column reffered to in the query */
   Key_map merge_keys;
@@ -1491,7 +1493,7 @@ struct TABLE {
 
   /* Table's triggers, 0 if there are no of them */
   Table_trigger_dispatcher *triggers{nullptr};
-  TABLE_LIST *pos_in_table_list{nullptr}; /* Element referring to this table */
+  TABLE_LIST *pos_in_table_list{nullptr}; /* Element referring to this table */  //NOTE:位图
   /* Position in thd->locked_table_list under LOCK TABLES */
   TABLE_LIST *pos_in_locked_tables{nullptr};
   ORDER *group{nullptr};
@@ -3668,6 +3670,7 @@ struct TABLE_LIST {
     DBUG_ASSERT(((table_map)1 << m_tableno) == m_map);
     return m_map;
   }
+  //NOTE:表的位图值(形如1,2,4,8等等),在setup_table_map中创建,所有表的位图值加到一起形成表位图,很多地方都用到这个位图
 
   /// If non-NULL, the CTE which this table is derived from.
   Common_table_expr *common_table_expr() const { return m_common_table_expr; }
