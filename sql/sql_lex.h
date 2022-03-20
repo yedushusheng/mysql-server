@@ -1935,7 +1935,7 @@ class SELECT_LEX {
     After optimization it is pointer to corresponding JOIN. This member
     should be changed only when THD::LOCK_query_plan mutex is taken.
   */
-  JOIN *join{nullptr};  //NOTEL执行时成员,辅助查询的执行,对应的JOIN,参见JOIN::prepare函数
+  JOIN *join{nullptr};  //NOTEL执行时成员,辅助查询的执行,对应的JOIN,MySQL8.0参见SELECT_LEX::prepare,MySQL5.6参见JOIN::prepare函数
   /// join list of the top level
   mem_root_deque<TABLE_LIST *> top_join_list; //NOTE:JOIN操作解析树的根结点
   /// list for the currently parsed join
@@ -3674,7 +3674,7 @@ class LEX_GRANT_AS {
  * SELECT表达式:=SELECT(SELECT表达式*)
  * 1.MySQL用SELECT结点来代表一个SELECT查询,而用一个UNIT结点来代表一个UNION操作符或者SELECT下的子查询
  * 2.LEX::unit为根节点,LEX::select_lex指向SQL中的第一个SELECT语句
- * 当解析器遇到一个select操作符时,会调用mysql_new_select[旧版本接口]
+ * 当解析器遇到一个select操作符时,会调用mysql_new_select[MySQL5.6接口]
  */
 struct LEX : public Query_tables_list {
   friend bool lex_start(THD *thd);
@@ -3685,7 +3685,7 @@ struct LEX : public Query_tables_list {
   SELECT_LEX *all_selects_list;  ///< List of all query blocks  
   /**NOTE:全部的SELECT_LEX节点(这些结点通过link_prev,link_next连接)
    * 参见:LEX::new_static_query SELECT_LEX *LEX::new_union_query
-   * 旧版本参见SELECT_NODE定义,mysql_new_select[旧版本接口]函数以及SELECT_LEX::include_global函数[旧版本接口]
+   * MySQL5.6参见SELECT_NODE定义,mysql_new_select[MySQL5.6接口]函数以及SELECT_LEX::include_global函数[MySQL5.6接口]
   */
  private:
   /* current SELECT_LEX in parsing */

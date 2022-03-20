@@ -310,6 +310,7 @@ static bool validate_use_secondary_engine(const LEX *lex) {
   return false;
 }
 
+// NOTE:DML prepare入口
 bool Sql_cmd_dml::prepare(THD *thd) {
   DBUG_TRACE;
 
@@ -464,7 +465,7 @@ const MYSQL_LEX_CSTRING *Sql_cmd_select::eligible_secondary_storage_engine()
 /**
   Prepare a SELECT statement.
 */
-
+//NOTE:内部接口 select preparer入口(替换原来的handle_select)
 bool Sql_cmd_select::prepare_inner(THD *thd) {
   if (lex->is_explain()) {
     /*
@@ -502,17 +503,20 @@ bool Sql_cmd_select::prepare_inner(THD *thd) {
     select->make_active_options(0, 0);
 
     if (select->prepare(thd, nullptr)) return true;
+    //NOTE:prepare入口
 
     unit->set_prepared();
   } else {
     // If we have multiple query blocks, don't unlock and re-lock
     // tables between each each of them.
     if (unit->prepare(thd, result, nullptr, SELECT_NO_UNLOCK, 0)) return true;
+    //NOTE:SELECT_UNIT::prepare
   }
 
   return false;
 }
 
+//NOTE:外部接口 DML执行入口
 bool Sql_cmd_dml::execute(THD *thd) {
   DBUG_TRACE;
 
@@ -804,7 +808,7 @@ static bool optimize_secondary_engine(THD *thd) {
   a single query block and one for query expressions containing multiple
   query blocks combined with UNION.
 */
-
+//NOTE:内部函数 execute入口
 bool Sql_cmd_dml::execute_inner(THD *thd) {
   SELECT_LEX_UNIT *unit = lex->unit;
 

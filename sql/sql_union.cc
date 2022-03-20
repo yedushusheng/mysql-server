@@ -329,7 +329,7 @@ class Change_current_select {
 
   @returns false if success, true if error
 */
-
+//NOTE:内部函数
 bool SELECT_LEX_UNIT::prepare_fake_select_lex(THD *thd_arg) {
   DBUG_TRACE;
 
@@ -382,6 +382,7 @@ bool SELECT_LEX_UNIT::prepare_fake_select_lex(THD *thd_arg) {
   return false;
 }
 
+//NOTE:外部接口 内部函数
 bool SELECT_LEX_UNIT::can_materialize_directly_into_result() const {
   // There's no point in doing this if we're not already trying to materialize.
   if (!is_union()) {
@@ -406,6 +407,7 @@ bool SELECT_LEX_UNIT::can_materialize_directly_into_result() const {
 
   @returns false if success, true if error
  */
+//NOTE:外部接口 unit的prepare入口
 bool SELECT_LEX_UNIT::prepare(THD *thd, Query_result *sel_result,
                               mem_root_deque<Item *> *insert_field_list,
                               ulonglong added_options,
@@ -451,7 +453,7 @@ bool SELECT_LEX_UNIT::prepare(THD *thd, Query_result *sel_result,
         return true; /* purecov: inspected */
       if (fake_select_lex != nullptr) fake_select_lex = nullptr;
       instantiate_tmp_table = false;
-    } else {
+    } else {  //NOTE:创建连接结果集
       if (!(tmp_result = union_result =
                 new (thd->mem_root) Query_result_union()))
         return true; /* purecov: inspected */
@@ -613,7 +615,7 @@ bool SELECT_LEX_UNIT::prepare(THD *thd, Query_result *sel_result,
     }
     ulonglong create_options =
         first_select()->active_options() | TMP_TABLE_ALL_COLUMNS;
-
+    //NOTE:union_result创建中间表
     if (union_result->create_result_table(thd, types, union_distinct != nullptr,
                                           create_options, "", false,
                                           instantiate_tmp_table))
@@ -659,6 +661,7 @@ bool SELECT_LEX_UNIT::prepare(THD *thd, Query_result *sel_result,
   return false;
 }
 
+//NOTE:外部接口 union的优化入口
 bool SELECT_LEX_UNIT::optimize(THD *thd, TABLE *materialize_destination,
                                bool create_iterators) {
   DBUG_TRACE;
@@ -832,6 +835,7 @@ bool SELECT_LEX_UNIT::force_create_iterators(THD *thd) {
   return m_root_iterator == nullptr;
 }
 
+//NOTE:内部函数
 Mem_root_array<MaterializePathParameters::QueryBlock>
 SELECT_LEX_UNIT::setup_materialization(THD *thd, TABLE *dst_table,
                                        bool union_distinct_only) {
@@ -1262,7 +1266,8 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
 
   @returns false if success, true if error
 */
-
+/** NOTE:外部接口 执行入口 
+ * Sql_cmd_dml::execute_inner调用*/
 bool SELECT_LEX_UNIT::execute(THD *thd) {
   DBUG_TRACE;
   DBUG_ASSERT(is_optimized());

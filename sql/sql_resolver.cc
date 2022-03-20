@@ -168,6 +168,10 @@ static Item *create_rollup_switcher(THD *thd, SELECT_LEX *select_lex,
    - As far as INSERT, UPDATE and DELETE statements have the same expressions
      as a SELECT statement, this note applies to those statements as well.
 */
+/**NOTE:外部接口 prepare入口
+ * Sql_cmd_select::prepare_inner调用
+ * 对应MySQL5.6 JOIN::prepare()
+*/
 bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
   DBUG_TRACE;
 
@@ -266,12 +270,14 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
 
   resolve_place = RESOLVE_SELECT_LIST;
 
-  if (with_wild && setup_wild(thd)) return true;
+  if (with_wild && setup_wild(thd)) return true;  //NOTE:展开*字段
   if (setup_base_ref_items(thd)) return true; /* purecov: inspected */
+  //NOTE:分配base_ref_items数组
 
   if (setup_fields(thd, thd->want_privilege, /*allow_sum_func=*/true,
                    /*split_sum_funcs=*/true, /*column_update=*/false,
                    insert_field_list, &fields, base_ref_items))
+  //NOTE:这个函数初始化base_ref_items数组:数组的前fields_lists.elements个元素
     return true;
 
   resolve_place = RESOLVE_NONE;

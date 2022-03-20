@@ -111,6 +111,7 @@ SELECT_LEX *MakeHypergraphTest::ParseAndResolve(const char *query,
   }
 
   select_lex->prepare(m_thd, nullptr);
+  //NOTE:select prepare入口
 
   // Create a fake, tiny JOIN. (This would normally be done in optimization.)
   select_lex->join = new JOIN(m_thd, select_lex);
