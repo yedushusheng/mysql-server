@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 11/26/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:mini-transaction相关定义
 #ifndef mtr0types_h
 #define mtr0types_h
 

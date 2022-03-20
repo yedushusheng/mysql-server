@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 11/26/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:mini-transaction的基本操作
 #include "mtr0mtr.h"
 
 #include "buf0buf.h"
