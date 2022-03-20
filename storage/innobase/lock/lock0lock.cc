@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 5/7/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:InnoDB存储引擎锁相关代码
 #define LOCK_MODULE_IMPLEMENTATION
 
 #include <mysql/service_thd_engine_lock.h>
