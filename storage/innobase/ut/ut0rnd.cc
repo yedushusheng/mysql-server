@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 5/11/1994 Heikki Tuuri
  ********************************************************************/
-
+// NOTE:随机数和哈希值操作实现
 #include "ut0rnd.h"
 
 /** These random numbers are used in ut_find_prime */

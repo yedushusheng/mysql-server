@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 5/11/1994 Heikki Tuuri
  *************************************************************************/
-
+// NOTE:内存管理单元,内存块实现
 #include "ut0mem.h"
 #include <stdlib.h>
 #include "os0thread.h"

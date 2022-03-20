@@ -122,7 +122,7 @@ Standard:
 InnoDB:
   UT_NEW_NOKEY(int())
 */
-
+// NOTE:内存分配
 #ifndef ut0new_h
 #define ut0new_h
 

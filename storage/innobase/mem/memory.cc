@@ -33,7 +33,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 /* NOTE: The functions in this file should only use functions from
 other files in library. The code in this file is used to make a library for
 external tools. */
-
+// NOTE:内存管理系统,包括内存池实现
 #include "ha_prototypes.h"
 #include "mem0mem.h"
 

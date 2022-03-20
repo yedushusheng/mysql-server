@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 8/22/1994 Heikki Tuuri
  *************************************************************************/
-
+// NOTE:用于哈希索引系统的哈希表实现
 #include "ha0ha.h"
 
 #include <sys/types.h>

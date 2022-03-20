@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 5/11/1994 Heikki Tuuri
  ********************************************************************/
-
+// NOTE:其他常用操作,包括时间、打印、对数和指数操作
 #include "my_config.h"
 
 #include <errno.h>

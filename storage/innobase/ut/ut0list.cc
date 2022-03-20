@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 4/26/2006 Osku Salerma
  ************************************************************************/
-
+// NOTE:双向线性链表实现
 #include "ut0list.h"
 
 #include <stddef.h>

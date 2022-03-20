@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created May 26, 2014 Vasil Dimov
  *******************************************************/
-
+// NOTE:内存分配
 #include "univ.i"
 
 #include "my_compiler.h"

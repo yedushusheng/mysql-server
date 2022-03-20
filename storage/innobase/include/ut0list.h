@@ -48,7 +48,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
  automatically freeing the list node when the item's heap is freed.
 
  ************************************************************************/
-
+// NOTE:双向线性链表实现
 #ifndef IB_LIST_H
 #define IB_LIST_H
 

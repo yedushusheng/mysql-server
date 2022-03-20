@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 1/30/1994 Heikki Tuuri
  **********************************************************************/
-
+// NOTE:debug工具
 #include <stdlib.h>
 
 #include "univ.i"
