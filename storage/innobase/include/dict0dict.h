@@ -30,7 +30,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 1/8/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:数据字典操作集合
 #ifndef dict0dict_h
 #define dict0dict_h
 

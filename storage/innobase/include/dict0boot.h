@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 4/18/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:启动数据字典模块
 #ifndef dict0boot_h
 #define dict0boot_h
 

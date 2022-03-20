@@ -30,7 +30,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 4/24/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:加载数据字典对象
 #ifndef dict0load_h
 #define dict0load_h
 

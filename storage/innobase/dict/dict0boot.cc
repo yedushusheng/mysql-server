@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 4/18/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:启动数据字典模块
 #include "dict0boot.h"
 #include "btr0btr.h"
 #include "buf0flu.h"

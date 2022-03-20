@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 1/8/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:创建数据字典中的对象
 #ifndef dict0crea_h
 #define dict0crea_h
 

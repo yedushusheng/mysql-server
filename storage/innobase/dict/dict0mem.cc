@@ -30,7 +30,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 1/8/1996 Heikki Tuuri
  ***********************************************************************/
-
+// NOTE:数据字典内存结构定义及相关操作
 #include <atomic>
 #ifndef UNIV_HOTBACKUP
 #include <mysql_com.h>
