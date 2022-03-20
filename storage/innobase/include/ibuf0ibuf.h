@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 7/19/1997 Heikki Tuuri
  *******************************************************/
-
+// NOTE:Insert Buffer实现
 #ifndef ibuf0ibuf_h
 #define ibuf0ibuf_h
 

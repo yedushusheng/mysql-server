@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 7/19/1997 Heikki Tuuri
  *******************************************************/
-
+// NOTE:Insert Buffer实现
 #include <sys/types.h>
 
 #include "btr0sea.h"
