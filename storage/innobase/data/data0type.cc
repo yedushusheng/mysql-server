@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 1/16/1996 Heikki Tuuri
  *******************************************************/
-
+// NOTE:逻辑记录的常用操作
 #include "data0type.h"
 #include "rem0rec.h"
 

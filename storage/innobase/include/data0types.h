@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 9/21/2000 Heikki Tuuri
  *************************************************************************/
-
+// NOTE:逻辑记录数据结构定义
 #ifndef data0types_h
 #define data0types_h
 

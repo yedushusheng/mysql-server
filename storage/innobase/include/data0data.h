@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 5/30/1994 Heikki Tuuri
  *************************************************************************/
-
+// NOTE:逻辑记录定义
 #ifndef data0data_h
 #define data0data_h
 

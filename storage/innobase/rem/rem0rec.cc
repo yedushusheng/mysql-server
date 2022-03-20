@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 5/30/1994 Heikki Tuuri
  *************************************************************************/
-
+// NOTE:物理记录定义
 #include "rem0rec.h"
 
 #include <sys/types.h>

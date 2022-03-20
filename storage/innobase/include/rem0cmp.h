@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 7/1/1994 Heikki Tuuri
  ************************************************************************/
-
+// NOTE:物理记录之间的比较(rem=records memory comparison)
 #ifndef rem0cmp_h
 #define rem0cmp_h
 
