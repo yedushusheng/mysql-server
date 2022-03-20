@@ -636,7 +636,7 @@ class SELECT_LEX_UNIT {
     The query block wherein this query expression is contained,
     NULL if the query block is the outer-most one.
   */
-  SELECT_LEX *master;
+  SELECT_LEX *master;  //NOTE:
   /// The first query block in this query expression.
   SELECT_LEX *slave;
 
@@ -654,12 +654,12 @@ class SELECT_LEX_UNIT {
   bool optimized;  ///< All query blocks in query expression are optimized
   bool executed;   ///< Query expression has been executed
 
-  TABLE_LIST result_table_list{};
-  Query_result_union *union_result;
+  TABLE_LIST result_table_list{};  //NOTE:和table临时表对应的TABLE_LIST结构
+  Query_result_union *union_result;  //NOTE:连接结果集
   /// Temporary table using for appending UNION results.
   /// Not used if we materialize directly into a parent query expression's
   /// result table (see optimize()).
-  TABLE *table;
+  TABLE *table;  //NOTE:临时表,用于存放连接结果集定义,参见SELECT_UNIT::prepare
   /// Object to which the result for this query expression is sent.
   /// Not used if we materialize directly into a parent query expression's
   /// result table (see optimize()).
@@ -724,7 +724,8 @@ class SELECT_LEX_UNIT {
   enum_clean_state cleaned;  ///< cleanliness state
 
   // list of (visible) fields which points to temporary table for union
-  mem_root_deque<Item *> item_list;
+  mem_root_deque<Item *> item_list;  
+  //NOTE:临时表字段
 
  private:
   /*
@@ -1096,6 +1097,8 @@ enum class enum_explain_type {
   optionally followed by a WHERE clause, a GROUP BY, etc.
 */
 /** NOTE:SELECT_LEX/SELECT_UNIT用来表达select和union操作
+ * SELECT_LEX表示SELECT操作符,SELECT_UNIT表示嵌套查询
+ * 以前版本是继承自SELCT_NODE
  *                  Item
  *                   |
  * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
@@ -1115,6 +1118,8 @@ class SELECT_LEX {
           //SQL_I_LIST<ORDER> *group_by, SQL_I_LIST<ORDER> order_by
   */
   SELECT_LEX(MEM_ROOT *mem_root, Item *where, Item *having);
+  //NOTE:Item *where,where子句(解析为一个表达式),参见sql_yacc.yy
+  //NOTE:Item *having,having子句
 
   Item *where_cond() const { return m_where_cond; }
   Item **where_cond_ref() { return &m_where_cond; }
@@ -1862,7 +1867,7 @@ class SELECT_LEX {
   mem_root_deque<TABLE_LIST *> sj_nests;
 
   /// List of tables in FROM clause - use TABLE_LIST::next_local to traverse
-  SQL_I_List<TABLE_LIST> table_list{};
+  SQL_I_List<TABLE_LIST> table_list{};  //NOTE:TABLE_LIST的链表(通过next_local),参见SELECT_LEX::add_table_to_list函数
 
   /**
     ORDER BY clause.
@@ -1871,6 +1876,7 @@ class SELECT_LEX {
     order_list_ptrs, and re-establish the original list before each execution.
   */
   SQL_I_List<ORDER> order_list{};
+  //NOTE:order子句,Item类型的链表,参见SELECT_LEX::add_order_to_list函数
   Group_list_ptrs *order_list_ptrs{nullptr};
 
   /**
@@ -1880,6 +1886,7 @@ class SELECT_LEX {
     group_list_ptrs, and re-establish the original list before each execution.
   */
   SQL_I_List<ORDER> group_list{};
+  //NOTE:group子句,Item类型的链表,参见SELECT_LEX::add_group_to_list函数
   Group_list_ptrs *group_list_ptrs{nullptr};
 
   // Used so that AggregateIterator knows which items to signal when the rollup
@@ -1902,7 +1909,7 @@ class SELECT_LEX {
   TABLE_LIST *recursive_reference{nullptr};
 
   /// Reference to LEX that this query block belongs to
-  LEX *parent_lex{nullptr};
+  LEX *parent_lex{nullptr};  //NOTE:父LEX,在lex_start中初始化
 
   /**
     The set of those tables whose fields are referenced in the select list of
@@ -1915,7 +1922,7 @@ class SELECT_LEX {
     Context for name resolution for all column references except columns
     from joined tables.
   */
-  Name_resolution_context context{};
+  Name_resolution_context context{};  //NOTE:
 
   /**
     Pointer to first object in list of Name res context objects that have
@@ -1928,13 +1935,19 @@ class SELECT_LEX {
     After optimization it is pointer to corresponding JOIN. This member
     should be changed only when THD::LOCK_query_plan mutex is taken.
   */
-  JOIN *join{nullptr};
+  JOIN *join{nullptr};  //NOTEL执行时成员,辅助查询的执行,对应的JOIN,参见JOIN::prepare函数
   /// join list of the top level
-  mem_root_deque<TABLE_LIST *> top_join_list;
+  mem_root_deque<TABLE_LIST *> top_join_list; //NOTE:JOIN操作解析树的根结点
   /// list for the currently parsed join
   mem_root_deque<TABLE_LIST *> *join_list;
+  /**NOTE:用于处理select操作符表连接操作
+   * 参见TABLE_LIST对象的相关说明,初始化为指向top_join_list,参见SELECT_LEX::init_query
+  */
   /// table embedding the above list
-  TABLE_LIST *embedding{nullptr};
+  TABLE_LIST *embedding{nullptr};  
+  /**NOTE:(语法解析过程中)指向当前的嵌套结点,参见SELECT_LEX::init_query,在这个函数中初始化为0
+   * SELECT_LEX::init_nested_join,在这个函数中更新为新创建的TABLE_LIST
+  */
   /**
     Points to first leaf table of query block. After setup_tables() is done,
     this is a list of base tables and derived tables. After derived tables
@@ -1946,9 +1959,9 @@ class SELECT_LEX {
   TABLE_LIST *end_lateral_table{nullptr};
 
   /// LIMIT clause, NULL if no limit is given
-  Item *select_limit{nullptr};
+  Item *select_limit{nullptr};  //NOTE:limit子句
   /// LIMIT ... OFFSET clause, NULL if no offset is given
-  Item *offset_limit{nullptr};
+  Item *offset_limit{nullptr};  //NOTE:limit子句
 
   /**
     Circular linked list of aggregate functions in nested query blocks.
@@ -1980,7 +1993,14 @@ class SELECT_LEX {
   Item::cond_result having_value{Item::COND_UNDEF};
 
   /// Parse context: indicates where the current expression is being parsed
-  enum_parsing_context parsing_place{CTX_NONE};
+  enum_parsing_context parsing_place{CTX_NONE};  
+  /**NOTE:用于指示解析上下文,包括:
+   * NO_MATTER,无关紧要
+   * IN_HAVING,having子句中
+   * SELECT_LIST,字段列表中
+   * IN_WHERE,where子句中
+   * IN_ON,on中
+  */
   /// Parse context: is inside a set function if this is positive
   uint in_sum_expr{0};
 
@@ -2002,13 +2022,13 @@ class SELECT_LEX {
     Number of fields used in select list or where clause of current select
     and all inner subselects.
   */
-  uint select_n_where_fields{0};
+  uint select_n_where_fields{0};  //NOTE:所有在select和where后用到的字段的个数,包括子查询
   /**
     number of items in select_list and HAVING clause used to get number
     bigger then can be number of entries that will be added to all item
     list during split_sum_func
   */
-  uint select_n_having_items{0};
+  uint select_n_having_items{0};  //NOTE:所有在select和having后用到的字段的个数,包括子查询
   uint cond_count{0};  ///< number of arguments of and/or/xor in where/having/on
   uint between_count{0};  ///< number of between predicates in where/having/on
   uint max_equal_elems{
@@ -2038,6 +2058,8 @@ class SELECT_LEX {
     has 3 wildcards.
   */
   uint with_wild{0};
+  /*NOTE:带有*的字段个数,例如对于:select t1.*,t2.* from t1,t2 with_wild等于2
+  对于select * from t1等于1,参见sql_yacc.yy*/
 
   /// Number of leaf tables in this query block.
   uint leaf_table_count{0};
@@ -2265,7 +2287,7 @@ class SELECT_LEX {
 
   /// Intrusive double-linked global list of query blocks.
   SELECT_LEX *link_next{nullptr};
-  SELECT_LEX **link_prev{nullptr};
+  SELECT_LEX **link_prev{nullptr};  //NOTE:全局关系,参见LEX::all_selects_list
 
   /// Result of this query block
   Query_result *m_query_result{nullptr};
@@ -3646,6 +3668,13 @@ class LEX_GRANT_AS {
  * lex->select_lex在all_selects_list链表中.
  * lex->select_number = 1
  * lex->next_state=MY_LEX_START
+ * 
+ * SELECT和UNION操作的解析:
+ * UNION表达式:=(SELECT表达式|UNION表达式) UNION (SELECT表达式|UNION表达式)
+ * SELECT表达式:=SELECT(SELECT表达式*)
+ * 1.MySQL用SELECT结点来代表一个SELECT查询,而用一个UNIT结点来代表一个UNION操作符或者SELECT下的子查询
+ * 2.LEX::unit为根节点,LEX::select_lex指向SQL中的第一个SELECT语句
+ * 当解析器遇到一个select操作符时,会调用mysql_new_select[旧版本接口]
  */
 struct LEX : public Query_tables_list {
   friend bool lex_start(THD *thd);
@@ -3655,7 +3684,8 @@ struct LEX : public Query_tables_list {
   SELECT_LEX *select_lex;        ///< First query block  //NOTE:最顶层的SELECT_LEX
   SELECT_LEX *all_selects_list;  ///< List of all query blocks  
   /**NOTE:全部的SELECT_LEX节点(这些结点通过link_prev,link_next连接)
-   * 参见SELECT_NODE定义,mysql_new_select函数以及SELECT_LEX::include_global函数
+   * 参见:LEX::new_static_query SELECT_LEX *LEX::new_union_query
+   * 旧版本参见SELECT_NODE定义,mysql_new_select[旧版本接口]函数以及SELECT_LEX::include_global函数[旧版本接口]
   */
  private:
   /* current SELECT_LEX in parsing */
