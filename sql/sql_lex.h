@@ -2440,11 +2440,14 @@ class Query_tables_list {
     this information to determine correct type of lock for some of
     the tables.
   */
-  enum_sql_command sql_command;
+  enum_sql_command sql_command;  //NOTE:SQL命令类型
   /* Global list of all tables used by this statement */
-  TABLE_LIST *query_tables;
+  TABLE_LIST *query_tables;  //NOTE:TABLE_LIST的链表(通过next_global和prev_global)
   /* Pointer to next_global member of last element in the previous list. */
-  TABLE_LIST **query_tables_last;
+  TABLE_LIST **query_tables_last;  
+  /**NOTE:指向上面链表的尾巴,初始化为query_tables地址
+   * 参见Query_tables_list::reset_query_tables_list和add_to_query_tables函数
+  */
   /*
     If non-0 then indicates that query requires prelocking and points to
     next_global member of last own element in query table list (i.e. last
@@ -3629,17 +3632,34 @@ class LEX_GRANT_AS {
   @todo - Ensure that a LEX struct is never reused, thus making e.g
           LEX::reset() redundant.
 */
-
+/** NOTE:LEX是语法分析的主要对象
+ * LEX的初始化,当需要解析一个SQL语句时,MySQL调用lex_start函数设置LEX的初始状态
+ * 这个函数初始化thd->lex结构,建立了如下的兑现搞关系(lex指的是thd->lex)：
+ *                        lex      lex->unit
+ *               (parent) /|\         /|\(master)
+ * lex->current_select -> lex->select_lex
+ *                        /|\
+ *                        lex->all_selects_list
+ * 即lex->select_lex.parent_lex指向lex,
+ * lex->select_lex.master指向lex->unit
+ * lex->current_select指向lex->select,
+ * lex->select_lex在all_selects_list链表中.
+ * lex->select_number = 1
+ * lex->next_state=MY_LEX_START
+ */
 struct LEX : public Query_tables_list {
   friend bool lex_start(THD *thd);
 
-  SELECT_LEX_UNIT *unit;  ///< Outer-most query expression
+  SELECT_LEX_UNIT *unit;  ///< Outer-most query expression  //NOTE:最底层的SELECT_UNIT,注意这不是一个指针
   /// @todo: select_lex can be replaced with unit->first-select()
-  SELECT_LEX *select_lex;        ///< First query block
-  SELECT_LEX *all_selects_list;  ///< List of all query blocks
+  SELECT_LEX *select_lex;        ///< First query block  //NOTE:最顶层的SELECT_LEX
+  SELECT_LEX *all_selects_list;  ///< List of all query blocks  
+  /**NOTE:全部的SELECT_LEX节点(这些结点通过link_prev,link_next连接)
+   * 参见SELECT_NODE定义,mysql_new_select函数以及SELECT_LEX::include_global函数
+  */
  private:
   /* current SELECT_LEX in parsing */
-  SELECT_LEX *m_current_select;
+  SELECT_LEX *m_current_select;  //NOTE:当前解析的
 
  public:
   inline SELECT_LEX *current_select() const { return m_current_select; }
@@ -3666,7 +3686,7 @@ struct LEX : public Query_tables_list {
     does not properly understand yet.
    */
   bool using_hypergraph_optimizer = false;
-  LEX_STRING name;
+  LEX_STRING name;  //NOTE:对象的名称,在不同的命令下有不同的用途
   char *help_arg;
   char *to_log; /* For PURGE MASTER LOGS TO */
   const char *x509_subject, *x509_issuer, *ssl_cipher;
@@ -3700,7 +3720,7 @@ struct LEX : public Query_tables_list {
   LEX_STRING create_view_select;
 
   /* Partition info structure filled in by PARTITION BY parse part */
-  partition_info *part_info;
+  partition_info *part_info;  //NOTE:partition操作相关信息
 
   /*
     The definer of the object being created (view, trigger, stored routine).
@@ -3794,7 +3814,7 @@ struct LEX : public Query_tables_list {
   KEY_CREATE_INFO key_create_info;
   LEX_MASTER_INFO mi;  // used by CHANGE MASTER
   LEX_SLAVE_CONNECTION slave_connection;
-  Server_options server_options;
+  Server_options server_options;  //NOTE:server操作相关的信息
   USER_RESOURCES mqh;
   LEX_RESET_SLAVE reset_slave_info;
   ulong type;
@@ -3891,7 +3911,7 @@ struct LEX : public Query_tables_list {
   void set_has_udf() { m_has_udf = true; }
   bool has_udf() const { return m_has_udf; }
   st_parsing_options parsing_options;
-  Alter_info *alter_info;
+  Alter_info *alter_info;  //NOTE:解析ALTER命令
   /* Prepared statements SQL syntax:*/
   LEX_CSTRING prepared_stmt_name; /* Statement name (in all queries) */
   /*
@@ -3904,7 +3924,7 @@ struct LEX : public Query_tables_list {
   /* Names of user variables holding parameters (in EXECUTE) */
   List<LEX_STRING> prepared_stmt_params;
   sp_head *sphead;
-  sp_name *spname;
+  sp_name *spname;  //NOTE:存储过程/函数名称
   bool sp_lex_in_use; /* Keep track on lex usage in SPs for error handling */
   bool all_privileges;
   bool contains_plaintext_password;
