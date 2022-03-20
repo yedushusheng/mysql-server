@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 11/5/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:将页从外存读取到缓冲池的相关函数
 #include <mysql/service_thd_wait.h>
 #include <stddef.h>
 

@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 11/11/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:缓冲池对于脏页刷新的管理
 #include <math.h>
 #include <my_dbug.h>
 #include <mysql/service_thd_wait.h>

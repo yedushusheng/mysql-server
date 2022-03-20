@@ -31,7 +31,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 11/5/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:缓冲池中页的管理
 #ifndef buf0lru_h
 #define buf0lru_h
 
