@@ -74,6 +74,21 @@
  * For C compatibility reasons, MEM_ROOT is a struct, even though it is
  * logically a class and follows the style guide for classes.
  */
+/**NOTE:MEM_ROOT说明
+ * The basic logic to use:
+ * All things that are used only for the duration of a query are allocated in THD::mem_root through sql_alloc() or thd->alloc() except:
+ * Things that may grow, like string buffers of type String. See sql/sql_string.cc.
+ * Large blocks of memory used in one state of the query that can be released early. These are things like sort buffers, range trees, etc.
+ * Things in libraries that are outside of MySQL's control (like hash tables).
+ * Things that are needed a longer time should be alllocated with my_malloc() or through another MEMROOT.
+ * Some objects have their own MEMROOT:
+ * TABLE
+ * TABLE_SHARE
+ * Query_arena
+ * st_transactions
+ * 
+ * thd->alloc()最终调用的是Allocate()
+*/
 struct MEM_ROOT {
  private:
   struct Block {

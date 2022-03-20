@@ -28,7 +28,22 @@
 /**
   @file mysys/my_malloc.cc
 */
-
+/**NOTE:
+ * For the simple case, use the functions in mysys/my_malloc.c:
+ * void *my_malloc(size_t size, myf my_flags);
+ * void *my_memdup(const void *from, size_t length, myf my_flags);
+ * char *my_strdup(const char *from, myf my_flags);
+ * char *my_strndup(const char *from, size_t length, myf my_flags);
+ * void my_free(void *ptr, myf my_flags);
+ * Alternatively, if you want to allocate many pieces at once, use my_multi_malloc() from mysys/mulalloc.c
+ * void *my_multi_malloc(myf myFlags, ...)
+ * For the complex case where you want to allocate a lot and free things at once, use the MEM_ROOT object defined in mysys/my_alloc.c
+ * Functions to use:
+ * void init_alloc_root(MEM_ROOT *mem_root, size_t block_size, size_t pre_alloc_size);
+ * void *alloc_root(MEM_ROOT *mem_root, size_t length);
+ * void *multi_alloc_root(MEM_ROOT *root, ...);
+ * void free_root(MEM_ROOT *root, myf MyFlags);
+ * /
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
