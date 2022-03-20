@@ -667,6 +667,17 @@ struct Key_name {
   instance of table share per one table in the database.
 */
 
+/** NOTE:代表表的元数据,例如字段定义,索引定义等等(TABLE代表一个打开的表实例)
+ *                  Item
+ *                   |
+ * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
+ *                   |
+ * Protocol -----   THD  ----- NET
+ *                   |
+ *  handler ---    TABLE ---  TABLE_SHARE
+ *                   |
+ *                  JOIN
+*/
 struct TABLE_SHARE {
   TABLE_SHARE() = default;
 
@@ -1360,6 +1371,18 @@ typedef Bitmap<MAX_FIELDS> Field_map;
 /*
   NOTE: Despite being a struct (for historical reasons), TABLE has
   a nontrivial destructor.
+*/
+
+/** NOTE:代表表的元数据,例如字段定义,索引定义等等(TABLE代表一个打开的表实例)
+ *                  Item
+ *                   |
+ * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
+ *                   |
+ * Protocol -----   THD  ----- NET
+ *                   |
+ *  handler ---    TABLE ---  TABLE_SHARE
+ *                   |
+ *                  JOIN
 */
 struct TABLE {
   TABLE_SHARE *s{nullptr};
@@ -2538,6 +2561,17 @@ class Table_function;
        ;
 */
 
+/** NOTE:用来表达JOIN操作
+ *                  Item
+ *                   |
+ * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
+ *                   |
+ * Protocol -----   THD  ----- NET
+ *                   |
+ *  handler ---    TABLE ---  TABLE_SHARE
+ *                   |
+ *                  JOIN
+*/
 struct TABLE_LIST {
   TABLE_LIST() = default;
 

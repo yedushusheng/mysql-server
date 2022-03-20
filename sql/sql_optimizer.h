@@ -122,6 +122,17 @@ class ORDER_with_src {
   }
 };
 
+/** NOTE:SQL的执行引擎,MySQL中的查询的执行要经历准备(prepare)->优化(optimize)->执行(exec)几个阶段
+ *                  Item
+ *                   |
+ * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
+ *                   |
+ * Protocol -----   THD  ----- NET
+ *                   |
+ *  handler ---    TABLE ---  TABLE_SHARE
+ *                   |
+ *                  JOIN
+*/
 class JOIN {
  public:
   JOIN(THD *thd_arg, SELECT_LEX *select);

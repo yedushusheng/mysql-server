@@ -38,6 +38,17 @@ template <class T>
 class List;
 class Field;
 
+/** NOTE:实现数据库服务器和客户端的通信协议,例如,构建协议包等(NET提供网络支持,如原始数据的读写)
+ *                  Item
+ *                   |
+ * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
+ *                   |
+ * Protocol -----   THD  ----- NET
+ *                   |
+ *  handler ---    TABLE ---  TABLE_SHARE
+ *                   |
+ *                  JOIN
+*/
 class Protocol {
  private:
   /// Pointer to the Protocol below on the stack.

@@ -4044,7 +4044,7 @@ class Ft_hints {
   Methods:
     get_partition_handler()
 */
-
+// NOTE:存储引擎接口
 class handler {
   friend class Partition_handler;
 

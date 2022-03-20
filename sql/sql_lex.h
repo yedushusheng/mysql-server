@@ -1095,6 +1095,17 @@ enum class enum_explain_type {
   a query consisting of a SELECT keyword, followed by a table list,
   optionally followed by a WHERE clause, a GROUP BY, etc.
 */
+/** NOTE:SELECT_LEX/SELECT_UNIT用来表达select和union操作
+ *                  Item
+ *                   |
+ * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
+ *                   |
+ * Protocol -----   THD  ----- NET
+ *                   |
+ *  handler ---    TABLE ---  TABLE_SHARE
+ *                   |
+ *                  JOIN
+*/
 class SELECT_LEX {
  public:
   /**

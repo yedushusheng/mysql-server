@@ -876,6 +876,17 @@ struct Vio;
 /// Default width for blob in bytes @todo - align this with sizes from field.h
 #define MAX_BLOB_WIDTH 16777216
 
+/** NOTE:实现数据库服务器和客户端的通信协议,例如,构建协议包等(NET提供网络支持,如原始数据的读写)
+ *                  Item
+ *                   |
+ * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
+ *                   |
+ * Protocol -----   THD  ----- NET
+ *                   |
+ *  handler ---    TABLE ---  TABLE_SHARE
+ *                   |
+ *                  JOIN
+*/
 typedef struct NET {
   MYSQL_VIO vio;
   unsigned char *buff, *buff_end, *write_pos, *read_pos;

@@ -772,6 +772,17 @@ class Item_tree_walker {
   const Item *stopped_at_item;
 };
 
+/** NOTE:用于实现表达式,如查询条目,where,order,group,on子句等等
+ *                  Item
+ *                   |
+ * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
+ *                   |
+ * Protocol -----   THD  ----- NET
+ *                   |
+ *  handler ---    TABLE ---  TABLE_SHARE
+ *                   |
+ *                  JOIN
+*/
 class Item : public Parse_tree_node {
   typedef Parse_tree_node super;
 
