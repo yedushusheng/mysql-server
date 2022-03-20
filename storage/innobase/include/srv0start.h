@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 10/10/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:启动服务
 #ifndef srv0start_h
 #define srv0start_h
 

@@ -44,7 +44,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 10/8/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:服务管理
 #ifndef UNIV_HOTBACKUP
 #include <mysqld.h>
 #include <sys/types.h>

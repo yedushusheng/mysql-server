@@ -44,7 +44,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 2/16/1996 Heikki Tuuri
  *************************************************************************/
-
+// NOTE:启动服务
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
