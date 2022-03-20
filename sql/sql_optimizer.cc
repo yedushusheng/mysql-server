@@ -251,6 +251,32 @@ bool JOIN::alloc_indirection_slices() {
   @retval false Success.
   @retval true Error, error code saved in member JOIN::error.
 */
+/**优化代码：
+ * handle_select()
+   mysql_select()
+     JOIN::prepare()
+       setup_fields()
+     JOIN::optimize()            // optimizer is from here ... 
+       optimize_cond()
+       opt_sum_query()
+       make_join_statistics()
+         get_quick_record_count()
+         choose_plan()
+           // Find the best way to access tables 
+           // as specified by the user.         
+           optimize_straight_join()
+             best_access_path()
+           // Find a (sub-)optimal plan among all or subset 
+           // of all possible query plans where the user   
+           // controls the exhaustiveness of the search.  
+           greedy_search()
+             best_extension_by_limited_search()
+               best_access_path()
+           // Perform an exhaustive search for an optimal plan
+           find_best()
+       make_join_select()        // ... to here 
+     JOIN::exec()
+*/
 bool JOIN::optimize() {
   DBUG_TRACE;
 
