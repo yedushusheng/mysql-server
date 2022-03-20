@@ -36,7 +36,11 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 9/5/1995 Heikki Tuuri
  *******************************************************/
-
+/*NOTE:InnoDB同步机制
+* InnoDB存储引擎的同步机制是由sync模块实现.该模块主要实现mutex(互斥量)以及rw-lock(读写锁).
+* InnoDB存储引擎没有使用操作系统自带的mutex和rw-lock,而是自己进行了封装.并通过spin(自旋)以及wait array(等待队列)的设计来提高性能.
+*/
+// NOTE:互斥量的实现
 #include "univ.i"
 
 #include "sync0rw.h"

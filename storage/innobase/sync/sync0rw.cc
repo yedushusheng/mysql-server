@@ -36,7 +36,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 9/11/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:读写锁的定义
 #include "sync0rw.h"
 
 #include <my_sys.h>
