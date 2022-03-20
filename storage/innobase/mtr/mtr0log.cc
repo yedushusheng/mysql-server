@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 12/7/1995 Heikki Tuuri
  *******************************************************/
-
+// NOTE:mini-transaction的日志操作
 #include "mtr0log.h"
 
 #ifndef UNIV_HOTBACKUP
