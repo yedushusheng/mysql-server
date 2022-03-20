@@ -1865,6 +1865,7 @@ void SELECT_LEX::reset_nj_counters(mem_root_deque<TABLE_LIST *> *join_list) {
 
   @returns true for error, false for success
 */
+//NOTE:outer join -> inner join
 bool SELECT_LEX::simplify_joins(THD *thd,
                                 mem_root_deque<TABLE_LIST *> *join_list,
                                 bool top, bool in_sj, Item **cond,
