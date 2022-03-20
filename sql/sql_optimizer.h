@@ -132,6 +132,29 @@ class ORDER_with_src {
  *  handler ---    TABLE ---  TABLE_SHARE
  *                   |
  *                  JOIN
+ * 1.JOIN::JOIN
+ * bool select_distinct
+ * select)result result
+ * List<Item>& fields_list
+ * List<Item> all_fields
+ * JOIN在初始化后和其他对象的关系:
+ * select_result  <-- JOIN  -->  THD
+ * 2.::prepare阶段涉及的字段:
+ * TABLE_LIST* tables_list 查询涉及的表
+ * Item *where_cond where子句
+ * ORDER_with_src order, group_list order/group子句
+ * Item *having_cond; having子句
+ * SELECT_LEX *const select_lex;  对应的SELECT_LEX
+ * JOIN在prepare后和其他对象的关系:
+ * select_result <-- JOIN  --> THD
+ *                     | -----> SELECT_LEX
+ * 3.optimize阶段涉及的字段
+ * Item::cond_result cond_value
+ * Item::cond_result having_value
+ * const char* zero_result_cause
+ * 4.其他
+ * 
+ * 
 */
 class JOIN {
  public:
@@ -142,7 +165,7 @@ class JOIN {
   ~JOIN() {}
 
   /// Query block that is optimized and executed using this JOIN
-  SELECT_LEX *const select_lex;
+  SELECT_LEX *const select_lex;  //NOTE:对应的SELECT_LEX
   /// Query expression referring this query block
   SELECT_LEX_UNIT *const unit;
   /// Thread handler
@@ -333,6 +356,7 @@ class JOIN {
     later, when we set up a temporary table operation that deduplicates for us.
    */
   bool select_distinct;
+  //NOTE:SELECT DISTINCT时
 
   /**
     If we have the GROUP BY statement in the query,
@@ -409,6 +433,7 @@ class JOIN {
     ORDER BY and GROUP BY lists, to transform with prepare,optimize and exec
   */
   ORDER_with_src order, group_list;
+  //NOTE:order/group子句 MySQL5.6:ORDER* order/ORDER* group_list
 
   // Used so that AggregateIterator knows which items to signal when the rollup
   // level changes. Obviously only used in the presence of rollup.
@@ -460,7 +485,7 @@ class JOIN {
     Printed by EXPLAIN EXTENDED.
     Initialized by SELECT_LEX::get_optimizable_conditions().
   */
-  Item *where_cond;
+  Item *where_cond;  //NOTE:where子句 MySQL5.6:COND* conds
   /**
     Optimized HAVING clause item tree (valid for one single execution).
     Used in JOIN execution, as last "row filtering" step. With one exception:
@@ -470,14 +495,14 @@ class JOIN {
     EXTENDED can still print it.
     Initialized by SELECT_LEX::get_optimizable_conditions().
   */
-  Item *having_cond;
+  Item *having_cond;  //NOTE:having子句 MySQL5.6:Item* having
   Item *having_for_explain;  ///< Saved optimized HAVING for EXPLAIN
   /**
     Pointer set to select_lex->get_table_list() at the start of
     optimization. May be changed (to NULL) only if optimize_aggregated_query()
     optimizes tables away.
   */
-  TABLE_LIST *tables_list;
+  TABLE_LIST *tables_list;  //NOTE:查询涉及的表
   COND_EQUAL *cond_equal{nullptr};
   /*
     Join tab to return to. Points to an element of join->join_tab array, or to
@@ -545,6 +570,7 @@ class JOIN {
             when SELECT_LEX::is_empty_query() is true.
   */
   const char *zero_result_cause{nullptr};
+  //NOTE:查询返回0行的原因,参见JOIN::optimize函数
 
   /**
      True if, at this stage of processing, subquery materialization is allowed
@@ -998,6 +1024,10 @@ class Switch_ref_item_slice {
 
 bool uses_index_fields_only(Item *item, TABLE *tbl, uint keyno,
                             bool other_tbls_ok);
+/**NOTE:::optimize阶段涉及的函数(对应MySQL5.6字段Item::cond_result cond_values)
+ * 调用optimize_cond对conds进行处理后的值,如果这个值为Item::COND_FALSE,查询肯定不会有结果集返回
+ * MySQL会设置sero_result_cause为'Impossible WHERE'
+*/                        
 bool remove_eq_conds(THD *thd, Item *cond, Item **retcond,
                      Item::cond_result *cond_value);
 bool optimize_cond(THD *thd, Item **conds, COND_EQUAL **cond_equal,

@@ -773,6 +773,7 @@ class Item_tree_walker {
 };
 
 /** NOTE:用于实现表达式,如查询条目,where,order,group,on子句等等
+ * Item是MySQL表达式的核心
  *                  Item
  *                   |
  * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
@@ -851,10 +852,13 @@ class Item : public Parse_tree_node {
     FIELD_BIT_ITEM,
     VALUES_COLUMN_ITEM
   };
+  //NOTE:Item类型,例如FIELD_ITEM,STRING_ITEM,INT_ITEM等
 
   enum cond_result { COND_UNDEF, COND_OK, COND_TRUE, COND_FALSE };
+  //NOTE:条件的结果
 
   enum traverse_order { POSTFIX, PREFIX };
+  //NOTE:
 
   /// How to cache constant JSON data
   enum enum_const_item_cache {
@@ -1104,6 +1108,19 @@ class Item : public Parse_tree_node {
   virtual void make_field(Send_field *field);
   virtual Field *make_string_field(TABLE *table) const;
   virtual bool fix_fields(THD *, Item **);
+  /**NOTE:这个函数'编译'一个Item,不同的Item子类需要实现自己的'编译'方法,
+   * 最终都直接或间接的转化为对数据库字段(Field)的引用,这是在Item_field类中实现的:
+   * bool Item_field::fix_fields(THD *thd,Item **reference)
+   * MYSQL中所有的函数都是用Item_func类来表示的,这个类使用Item **args和uint arg_count来代表函数参数,
+   * 例如ifnull(a.col,'#NULL')中a.col和'#NULL'就是Item_func的两个参数
+   * Item_func的fix_fields函数就实现为调用每个参数的fix_fields函数:
+   * for(arg=args, arg_end=args+arg+count; arg!=arg_end; arg++)
+   * {
+   *   if((!(*arg)->field && (*arg)->fix_fields(thd, arg)))
+   * }
+   * 在这个例子中,a.col应该是一个Item_field实例,'#NULL'应该是一个Item_string实例,
+   * 前者最终'编译'为对Field的引用
+  */
   /**
     Fix after tables have been moved from one select_lex level to the parent
     level, e.g by semijoin conversion.

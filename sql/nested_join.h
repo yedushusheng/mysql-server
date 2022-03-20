@@ -81,8 +81,8 @@ struct NESTED_JOIN {
         sj_inner_exprs(*THR_MALLOC) {}
 
   mem_root_deque<TABLE_LIST *>
-      join_list;                /* list of elements in the nested join */
-  table_map used_tables{0};     /* bitmap of tables in the nested join */
+      join_list;                /* list of elements in the nested join */  //NOTE:嵌套结点
+  table_map used_tables{0};     /* bitmap of tables in the nested join */  //NOTE:嵌套用到的位图
   table_map not_null_tables{0}; /* tables that rejects nulls           */
   /**
     Used for pointing out the first table in the plan being covered by this
@@ -113,6 +113,7 @@ struct NESTED_JOIN {
     outer join structure need this, other nests have bit set to zero.
   */
   nested_join_map nj_map{0};
+  /**NOTE:嵌套结点的编号,MySQL5.6参见build_bitmap_for_joins函数*/
   /**
     Tables outside the semi-join that are used within the semi-join's
     ON condition (ie. the subquery WHERE clause and optional IN equalities).

@@ -1990,7 +1990,14 @@ class SELECT_LEX {
      - COND_OK otherwise
   */
   Item::cond_result cond_value{Item::COND_UNDEF};
+  /**NOTE:::optimize阶段涉及的字段
+   * 调用optimize_cond对conds进行处理后的值,如果这个值为Item::COND_FALSE,查询肯定不会有结果集返回
+   * MySQL会设置zero_result_cause为'Impossible WHERE'
+  */       
   Item::cond_result having_value{Item::COND_UNDEF};
+  /**NOTE:对having进行处理后的值,如果这个值为Item::COND_FALSE,查询肯定不会有结果集返回
+   * MySLQA会设置zero_result_cause为'Impossible HAVING'
+  */
 
   /// Parse context: indicates where the current expression is being parsed
   enum_parsing_context parsing_place{CTX_NONE};  

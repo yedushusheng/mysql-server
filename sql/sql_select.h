@@ -711,6 +711,7 @@ class JOIN_TAB : public QEP_shared_owner {
 
   /* NestedOuterJoins: Bitmap of nested joins this table is part of */
   nested_join_map embedding_map;
+  //NOTE:连接表所属的嵌套结点,由NESTED_JOIN::nj_map合成,MySQL5.6参见make_join_statistics函数
 
   /** Flags from SE's MRR implementation, to be used by JOIN_CACHE */
   uint join_cache_flags;
