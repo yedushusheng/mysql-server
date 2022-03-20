@@ -29,7 +29,20 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 11/26/1995 Heikki Tuuri
  *******************************************************/
-// NOTE:mini-transaction的基本操作
+/* NOTE:mini-transaction的基本操作
+*  InnoDB存储引擎的重做日志是物理逻辑日志,即重做日志是根据物理页进行组织的,但是每个重做日志根据不同逻辑进行存储.
+*  mini-transaction模块,用来实现InnoDB存储引擎物理逻辑日志的写入,通过mini-transaction来保证并发事务操作下以及数据库异常时页中数据的一致性.
+*  mini-transaction与事务不同,仅用来保证页的一致性,而事务可能需要保证多个页操作数据的一致性和持久性,或者说事务的一致性和持久性需要通过mini-transaction来实现.
+*  通常来说,当用户需要修改一个页时,需要通过如下基本操作:
+*  1.lock the page in exclusive mode
+*  2.transaction the page
+*  3.genetate undo and redo log record
+*  4.unlock the page
+*  为了使得mini-transaction保证页的一致性,mini-transaction需要严格遵守以下几个规则:
+*  1.FIX Rules
+*  2.Write-Ahead Log
+*  3.Force-log-at-commit
+*/
 #include "mtr0mtr.h"
 
 #include "buf0buf.h"

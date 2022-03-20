@@ -29,7 +29,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
  Created 2013-7-26 by Kevin Lewis
  *******************************************************/
-
+// NOTE:文件内存数据结构及相关文件操作
 #include "ha_prototypes.h"
 
 #include "dict0dd.h"
