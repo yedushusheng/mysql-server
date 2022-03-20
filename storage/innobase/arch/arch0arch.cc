@@ -28,7 +28,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
  Common implementation for redo log and dirty page archiver system
 
  *******************************************************/
-
+/* NOTE:InnoDB新特性:归档
+*  https://blog.csdn.net/n88Lpo/article/details/97054303
+*/
 #include "arch0arch.h"
 #include "os0thread-create.h"
 
