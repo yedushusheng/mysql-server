@@ -27,7 +27,20 @@
   @file sql/sql_executor.h
   Classes for query execution.
 */
-
+/**NOTE:
+ *                               SQL
+ *                               \|/
+ *                          sql_parse.cc(词法分析、语法分析、语义检查) -- SELECT_LEX select_lex全局变量
+ *                               \|/
+ *                          sql_resolver.cc(JOIN::prepare预处理)          统计信息
+ *       (逻辑优化)               \|/                                          /|\统计数据
+ *  sql_optimizer.cc <--    sql_optimizer.cc(JOIN::optimize查询优化)  -- 代价估算器
+ *         \|/              /|\   |
+ *  sql_planner.cc(物理优化)--|    |
+ *                                |
+ *                                |
+ *                           sql_executor.cc(JOIN::exec执行器)
+*/
 #include <sys/types.h>
 
 #include <cstring>
