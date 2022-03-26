@@ -1864,6 +1864,7 @@ class SELECT_LEX {
   mem_root_deque<mem_root_deque<Item *> *> *row_value_list{nullptr};
 
   /// List of semi-join nests generated for this query block
+  //NOTE:半连接嵌套连接
   mem_root_deque<TABLE_LIST *> sj_nests;
 
   /// List of tables in FROM clause - use TABLE_LIST::next_local to traverse
@@ -1935,12 +1936,16 @@ class SELECT_LEX {
     After optimization it is pointer to corresponding JOIN. This member
     should be changed only when THD::LOCK_query_plan mutex is taken.
   */
-  JOIN *join{nullptr};  //NOTEL执行时成员,辅助查询的执行,对应的JOIN,MySQL8.0参见SELECT_LEX::prepare,MySQL5.6参见JOIN::prepare函数
+ /**NOTE:连接相关(连接树)
+  * 执行时成员,辅助查询的执行,对应的JOIN
+  * MySQL8.0参见SELECT_LEX::prepare,MySQL5.6参见JOIN::prepare函数
+  * */
+  JOIN *join{nullptr};
   /// join list of the top level
-  mem_root_deque<TABLE_LIST *> top_join_list; //NOTE:JOIN操作解析树的根结点
+  mem_root_deque<TABLE_LIST *> top_join_list; //NOTE:JOIN操作解析树的根结点(顶层的连接链表)
   /// list for the currently parsed join
   mem_root_deque<TABLE_LIST *> *join_list;
-  /**NOTE:用于处理select操作符表连接操作
+  /**NOTE:用于处理select操作符表连接操作(当前被分析的连接链表)
    * 参见TABLE_LIST对象的相关说明,初始化为指向top_join_list,参见SELECT_LEX::init_query
   */
   /// table embedding the above list
@@ -1954,6 +1959,8 @@ class SELECT_LEX {
     processing is done, this is a list of base tables only.
     Use TABLE_LIST::next_leaf to traverse the list.
   */
+ /**NOTE:基本表,从SQL查询语句中分解出的基表
+  * /
   TABLE_LIST *leaf_tables{nullptr};
   // Last table for LATERAL join, used by table functions
   TABLE_LIST *end_lateral_table{nullptr};
