@@ -135,7 +135,8 @@ class ORDER_with_src {
   }
 };
 
-/** NOTE:SQL的执行引擎,MySQL中的查询的执行要经历准备(prepare)->优化(optimize)->执行(exec)几个阶段
+/** NOTE:	JOIN类,连接操作对应的查询语句的连接关系内容,是优化和执行的基本单元,也是优化结果(查询执行计划)的存储对象.
+ * SQL的执行引擎,MySQL中的查询的执行要经历准备(prepare)->优化(optimize)->执行(exec)几个阶段
  *                  Item
  *                   |
  * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT

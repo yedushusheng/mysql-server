@@ -772,7 +772,12 @@ class Item_tree_walker {
   const Item *stopped_at_item;
 };
 
-/** NOTE:用于实现表达式,如查询条目,where,order,group,on子句等等
+/** NOTE:约束条件是指WHERE或JOIN/ON或HAVING子句中的谓词表达式,
+ * 其分为两种：一种是限制条件,用来过滤单表的元组;
+ * 另一种是连接条件,满足连接条件的元组才会连接,连接条件表达式一般包括两个或两个以上关系的变量.
+ * MySQL用Item类表示约束条件表达式,这是一个父类,由一系列的子类继承这个父类.
+ * 
+ * 用于实现表达式,如查询条目,where,order,group,on子句等等
  * Item是MySQL表达式的核心
  *                  Item
  *                   |

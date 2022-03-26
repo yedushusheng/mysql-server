@@ -294,7 +294,7 @@ class Key_use {
 };
 
 /// @returns join type according to quick select type used
-join_type calc_join_type(int quick_type);
+join_type calc_join_type(int quick_type);  //NOTE:扫描表的方式
 
 class JOIN;
 
@@ -312,6 +312,7 @@ inline bool sj_is_materialize_strategy(uint strategy) {
 /**
     Bits describing quick select type
 */
+//NOTE:根据索引快速获取元组的方式
 enum quick_type { QS_NONE, QS_RANGE, QS_DYNAMIC_RANGE };
 
 /**
@@ -341,6 +342,13 @@ enum quick_type { QS_NONE, QS_RANGE, QS_DYNAMIC_RANGE };
   This class has to stay a POD, because it is memcpy'd in many places.
 */
 
+/**NOTE:位置类(对应MySQL5.5/5.6的struct st_position)
+ * 在连接顺序中,位置是指被连接的表的位置(一个表在多表连接构成的连接顺序中处于的位置).
+ * 这个位置上存了被访问的表、被使用的访问方法、半连接策略的选择、半连接优化状态等.
+ * MySQL的多表连接算法支持的是从左到右的类似左深树的连接方式,
+ * 但左深树是一个树型结构,而MySQL的多表连接算法连接表的过程是一个平面结构,
+ * 先对表进行排序,然后从左到右地连接排序好的表,然后确定当前连接方式的花费.
+*/
 struct POSITION {
   /**
     The number of rows that will be fetched by the chosen access
@@ -426,13 +434,17 @@ struct POSITION {
   double prefix_rowcount;
   double prefix_cost;
 
-  JOIN_TAB *table;
+  JOIN_TAB *table;  //NOTE:访问表的连接对象
 
   /**
     NULL  -  'index' or 'range' or 'index_merge' or 'ALL' access is used.
     Other - [eq_]ref[_or_null] access is used. Pointer to {t.keypart1 = expr}
   */
-  Key_use *key;
+ /**NOTE:如果表被访问,则表数据的访问方式(主要是依据索引的读取方式)有如下两种情况:
+  * 空值:意味着是JT_RANGE、JT_INDEX_SCAN、JT_ALL、JT_INDEX_MERGE数据访问方式
+  * 其他:应对形如t.keypart1=expr格式,用JT_EQ_REF、JT_REF、JT_REF_OR_NULL数据访问方式
+ */
+  Key_use *key;  //NOTE:索引信息
 
   /** If ref-based access is used: bitmap of tables this table depends on  */
   table_map ref_depend_map;
@@ -508,7 +520,7 @@ struct POSITION {
 
   /* Duplicate Weedout strategy */
   /* The first table that the strategy will need to handle */
-  uint first_dupsweedout_table;
+  uint first_dupsweedout_table;  //NOTE:一些半连接优化策略,如首次匹配、重复淘汰等
   /*
     Tables that we will need to have in the prefix to do the weedout step
     (all inner and all outer that the involved semi-joins are correlated with)
@@ -577,6 +589,7 @@ struct POSITION {
   - a join between the result of the set of previous plan nodes and
     this plan node.
 */
+//NOTE:连接表是介于关系(TABLE_LIST类)与连接类(JOIN类)之间的一个过渡对象,存放了关系的一些相关信息,也存放了连接操作需要的一些信息,所以称为连接表
 class JOIN_TAB : public QEP_shared_owner {
  public:
   JOIN_TAB();
@@ -625,10 +638,10 @@ class JOIN_TAB : public QEP_shared_owner {
       changes the other; thus, optimizations made on the second are reflected
       in SELECT_LEX::print_table_array() which uses the first one).
   */
-  Item **m_join_cond_ref;
+  Item **m_join_cond_ref;  //NOTE:JOIN/ON的条件表达式(对应MySQL5.5的Item **on_expr_ref)
 
  public:
-  COND_EQUAL *cond_equal; /**< multiple equalities for the on expression*/
+  COND_EQUAL *cond_equal; /**< multiple equalities for the on expression*/  //NOTE:JOIN/ON的条件表达式中的"等式"
 
   /**
     The maximum value for the cost of seek operations for key lookup
@@ -674,13 +687,13 @@ class JOIN_TAB : public QEP_shared_owner {
     Number of records that will be scanned (yes scanned, not returned) by the
     best 'independent' access method, i.e. table scan or QUICK_*_SELECT)
   */
-  ha_rows found_records;
+  ha_rows found_records;  //NOTE:被扫描的记录行数,不是返回结果的行数
   /*
     Cost of accessing the table using "ALL" or range/index_merge access
     method (but not 'index' for some reason), i.e. this matches method which
     E(#records) is in found_records.
   */
-  double read_time;
+  double read_time;  //NOTE:使用JT_ALL、JT_RANGE、JT_INDEX_MERGE访问表的花费
   /**
     The set of tables that this table depends on. Used for outer join and
     straight join dependencies.
@@ -693,7 +706,7 @@ class JOIN_TAB : public QEP_shared_owner {
 
  public:
   uint used_fieldlength;
-  enum quick_type use_quick;
+  enum quick_type use_quick;  //NOTE:快速查找的类型
 
   /**
     Join buffering strategy.
