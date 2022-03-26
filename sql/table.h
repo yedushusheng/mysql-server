@@ -1707,7 +1707,7 @@ struct TABLE {
   {
     class JOIN_TAB *join_tab{nullptr};
     class QEP_TAB *qep_tab{nullptr};
-    thr_lock_type lock_type{TL_UNLOCK}; /* How table is used */
+    thr_lock_type lock_type{TL_UNLOCK}; /* How table is used */  //NOTE:表对象上的锁信息
     thr_locked_row_action locked_row_action{THR_DEFAULT};
     bool not_exists_optimize{false};
     /*
@@ -2572,7 +2572,9 @@ class Table_function;
        ;
 */
 
-/** NOTE:用来表达JOIN操作
+/** NOTE:MySQL在一个关系(表)上存放了很多信息,有查询优化阶段需要用到的信息,也有其他阶段用到的信息.
+ * 基本上,只要和表相关的信息都存放在TABLE_LIST这个结构体中,
+ * 这是逻辑上的表的结构,在存储层，由TABLE结构体表示表对象.
  *                  Item
  *                   |
  * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
@@ -2583,7 +2585,7 @@ class Table_function;
  *                   |
  *                  JOIN
 */
-struct TABLE_LIST {
+struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM等子句部分
   TABLE_LIST() = default;
 
   /**
@@ -3310,7 +3312,7 @@ struct TABLE_LIST {
      It may be modified only by permanent transformations (permanent = done
      once for all executions of a prepared statement).
   */
-  Item *m_join_cond{nullptr};
+  Item *m_join_cond{nullptr};  //NOTE:与连接相关 used with outer join
   bool m_is_sj_or_aj_nest{false};
 
  public:
@@ -3409,7 +3411,7 @@ struct TABLE_LIST {
   bool schema_table_reformed{false};
   Temp_table_param *schema_table_param{nullptr};
   /* link to select_lex where this table was used */
-  SELECT_LEX *select_lex{nullptr};
+  SELECT_LEX *select_lex{nullptr};  //NOTE:指向语法树(查询树)
 
  private:
   LEX *view{nullptr}; /* link on VIEW lex for merging */
@@ -3431,20 +3433,22 @@ struct TABLE_LIST {
     - in case of the view it is the list of all (not only underlying
     tables but also used in subquery ones) tables of the view.
   */
-  mem_root_deque<TABLE_LIST *> *view_tables{nullptr};
+  //NOTE:视图相关的一些信息
+  mem_root_deque<TABLE_LIST *> *view_tables{nullptr};  //NOTE:视图相关
   /* most upper view this table belongs to */
-  TABLE_LIST *belong_to_view{nullptr};
+  TABLE_LIST *belong_to_view{nullptr};  //NOTE:视图相关
   /*
     The view directly referencing this table
     (non-zero only for merged underlying tables of a view).
   */
-  TABLE_LIST *referencing_view{nullptr};
+  TABLE_LIST *referencing_view{nullptr};//NOTE:视图相关
   /* Ptr to parent MERGE table list item. See top comment in ha_myisammrg.cc */
   TABLE_LIST *parent_l{nullptr};
   /*
     Security  context (non-zero only for tables which belong
     to view with SQL SECURITY DEFINER)
   */
+ //NOTE:安全、权限相关的一些信息
   Security_context *security_ctx{nullptr};
   /*
     This view security context (non-zero only for views with
@@ -3546,7 +3550,7 @@ struct TABLE_LIST {
   /// The join list immediately containing this table reference
   mem_root_deque<TABLE_LIST *> *join_list{nullptr};
   /// stop PS caching
-  bool cacheable_table{false};
+  bool cacheable_table{false};  //NOTE:是否被缓存
   /**
      Specifies which kind of table should be open for this element
      of table list.
@@ -3694,7 +3698,7 @@ struct TABLE_LIST {
   Item *m_join_cond_optim{nullptr};
 
  public:
-  COND_EQUAL *cond_equal{nullptr};  ///< Used with outer join
+  COND_EQUAL *cond_equal{nullptr};  ///< Used with outer join  //NOTE:外连接的条件
   /// true <=> this table is a const one and was optimized away.
 
   bool optimized_away{false};
