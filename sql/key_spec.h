@@ -204,11 +204,12 @@ class Key_part_spec {
   bool m_has_expression;
 };
 
+//NOTE:索引类(对应MySQL5.5/5.6的class Key)
 class Key_spec {
  public:
-  const keytype type;
-  const KEY_CREATE_INFO key_create_info;
-  Mem_root_array<Key_part_spec *> columns;
+  const keytype type;  //NOTE:索引类型,如主键、唯一、外键等
+  const KEY_CREATE_INFO key_create_info;  //NOTE:索引元信息,如索引算法、名称、注释等
+  Mem_root_array<Key_part_spec *> columns;  //NOTE:索引列信息,如列的名称、长度等
   LEX_CSTRING name;
   const bool generated;
   /**

@@ -92,7 +92,7 @@ enum ha_rkey_function {
 };
 
 /* Key algorithm types */
-
+//NOTE:索引算法类型
 enum ha_key_alg {
   /**
     Used for cases when key algorithm which is supported by SE can't be
@@ -104,9 +104,9 @@ enum ha_key_alg {
   */
   HA_KEY_ALG_SE_SPECIFIC = 0,
   HA_KEY_ALG_BTREE = 1,   /* B-tree. */
-  HA_KEY_ALG_RTREE = 2,   /* R-tree, for spatial searches */
-  HA_KEY_ALG_HASH = 3,    /* HASH keys (HEAP, NDB). */
-  HA_KEY_ALG_FULLTEXT = 4 /* FULLTEXT. */
+  HA_KEY_ALG_RTREE = 2,   /* R-tree, for spatial searches */  //NOTE:R-tree,用于空间索引
+  HA_KEY_ALG_HASH = 3,    /* HASH keys (HEAP, NDB). */  //NOTE:Hash算法,用于堆表搜索
+  HA_KEY_ALG_FULLTEXT = 4 /* FULLTEXT. */  //NOTE:全文索引,用于MyISQML存储引擎的表
 };
 
 /* Storage media types */

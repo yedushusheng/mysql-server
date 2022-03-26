@@ -46,7 +46,7 @@ class Indexes;
 }
 
 ///////////////////////////////////////////////////////////////////////////
-
+//NOTE:索引类
 class Index : virtual public Entity_object {
  public:
   typedef Collection<Index_element *> Index_elements;
@@ -60,6 +60,7 @@ class Index : virtual public Entity_object {
     IT_MULTIPLE,
     IT_FULLTEXT,
     IT_SPATIAL };
+  //NOTE:通过枚举定义了MySQL支持的索引类,依次为主键索引,唯一索引,多重索引,全文索引,空间索引
 
   enum enum_index_algorithm  // similar to ha_key_alg
   { IA_SE_SPECIFIC = 1,
