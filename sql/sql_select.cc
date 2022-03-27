@@ -495,13 +495,18 @@ inline int setup_without_group(THD *thd, Item **ref_pointer_array,
   @retval
     0   on success
 */
+/** NOTE:在实现这些优化技术的过程中,JOIN::prepare()方法是最主要的方法,其负责把查询语法树转变为最优的执行计划.
+ * 为获得最优的查询计划,需要通过JOIN::prepare函数做一些初始化赋值、计算等准备工作.
+ * 注意,在这个阶段,已经着手进行子查询的优化处理工作了.
+ * 
+*/
 int
 JOIN::prepare(Item ***rref_pointer_array,
-	      TABLE_LIST *tables_init,
+	      TABLE_LIST *tables_init,  //NOTE:从SQL中解析出的被查询的所有表
 	      uint wild_num, COND *conds_init, uint og_num,
-	      ORDER *order_init, ORDER *group_init,
-	      Item *having_init,
-	      ORDER *proc_param_init, SELECT_LEX *select_lex_arg,
+	      ORDER *order_init, ORDER *group_init,  //NOTE:排序和分组子句
+	      Item *having_init,  //NOTE:HAVING条件
+	      ORDER *proc_param_init, SELECT_LEX *select_lex_arg,  //NOTE:语法查询树
 	      SELECT_LEX_UNIT *unit_arg)
 {
   DBUG_ENTER("JOIN::prepare");
@@ -530,7 +535,7 @@ JOIN::prepare(Item ***rref_pointer_array,
     select_lex->exclude_from_table_unique_test= TRUE;
 
   /* Check that all tables, fields, conds and order are ok */
-
+  //NOTE:初始化一些值并权限检查(如调用check_access函数对权限进行检查)
   if (!(select_options & OPTION_SETUP_TABLES_DONE) &&
       setup_tables_and_check_access(thd, &select_lex->context, join_list,
                                     tables_list, &select_lex->leaf_tables,
@@ -543,10 +548,13 @@ JOIN::prepare(Item ***rref_pointer_array,
        table_ptr= table_ptr->next_leaf)
     tables++;
 
+  //NOTE:setup_waild把查询语句中的"*"扩展为表上的所有列
   if (setup_wild(thd, tables_list, fields_list, &all_fields, wild_num) ||
       select_lex->setup_ref_array(thd, og_num) ||
+      //NOTE:setup_fields为列填充相应信息
       setup_fields(thd, (*rref_pointer_array), fields_list, MARK_COLUMNS_READ,
 		   &all_fields, 1) ||
+      //NOTE:setup_without_group调用setup_conds、setup_order、setup_group等函数,初始化条件、排序、分组操作各子句
       setup_without_group(thd, (*rref_pointer_array), tables_list,
 			  select_lex->leaf_tables, fields_list,
 			  all_fields, &conds, order, group_list,
@@ -580,6 +588,7 @@ JOIN::prepare(Item ***rref_pointer_array,
     if ((subselect= select_lex->master_unit()->item))
     {
       Item_subselect::trans_res res;
+      //NOTE:优化IN/ANY/ALL/EXISTS式子查询
       if ((res= subselect->select_transformer(this)) !=
 	  Item_subselect::RES_OK)
       {
@@ -615,7 +624,8 @@ JOIN::prepare(Item ***rref_pointer_array,
             item->result_type() != STRING_RESULT ||
             item->max_length)))
         real_order= TRUE;
-
+      
+      //NOTE:调用split_sum_func、split_sum_func2等方法,统计ORDERBY、HAVING等子句中的SUM操作
       if (item->with_sum_func && item->type() != Item::SUM_FUNC_ITEM)
         item->split_sum_func(thd, ref_pointer_array, all_fields);
     }
@@ -729,6 +739,7 @@ JOIN::prepare(Item ***rref_pointer_array,
     goto err;					/* purecov: inspected */
 
   /* Init join struct */
+  //NOTE:初始化连接操作(JOIN)相关信息
   count_field_types(select_lex, &tmp_table_param, all_fields, 0);
   ref_pointer_array_size= all_fields.elements*sizeof(Item*);
   this->group= group_list != 0;
