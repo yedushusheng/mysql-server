@@ -270,10 +270,12 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
 
   resolve_place = RESOLVE_SELECT_LIST;
 
-  if (with_wild && setup_wild(thd)) return true;  //NOTE:展开*字段
+  //NOTE:setup_wild把查询语句中的"*"扩展为表上的所有列
+  if (with_wild && setup_wild(thd)) return true;  
   if (setup_base_ref_items(thd)) return true; /* purecov: inspected */
   //NOTE:分配base_ref_items数组
 
+  //NOTE:setup_fields为列填充相应信息
   if (setup_fields(thd, thd->want_privilege, /*allow_sum_func=*/true,
                    /*split_sum_funcs=*/true, /*column_update=*/false,
                    insert_field_list, &fields, base_ref_items))
@@ -292,9 +294,11 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
   thd->want_privilege = SELECT_ACL;
 
   // Set up join conditions and WHERE clause
+  //NOTE:初始化条件子句
   if (setup_conds(thd)) return true;
 
   // Set up the GROUP BY clause
+  //NOTE:初始化分组操作子句
   int all_fields_count = fields.size();
   if (group_list.elements && setup_group(thd)) return true;
   hidden_group_field_count = fields.size() - all_fields_count;
@@ -359,6 +363,7 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
   // Set up the ORDER BY clause
   all_fields_count = fields.size();
   if (order_list.elements) {
+    //NOTE:初始化排序子句
     if (setup_order(thd, base_ref_items, get_table_list(), &fields,
                     order_list.first))
       return true;
@@ -382,9 +387,10 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
          query involving a view is optimized, not when the view
          is created
   */
-  if (unit->item &&                           // 1)
-      !thd->lex->is_view_context_analysis())  // 2)
+  if (unit->item &&                           // 1)  //NOTE:子查询
+      !thd->lex->is_view_context_analysis())  // 2)  //NOTE:非正常视图
   {
+    //NOTE:去掉子查询冗余的部分
     remove_redundant_subquery_clauses(thd, hidden_group_field_count);
   }
 
@@ -432,11 +438,12 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
     undone in favour of materialization, when optimizing a later statement
     using the view)
   */
-  if (unit->item &&                     // This is a subquery
+  if (unit->item &&                     // This is a subquery  //NOTE:子查询
       this != unit->fake_select_lex &&  // A real query block
-                                        // Not normalizing a view
+                                        // Not normalizing a view  //NOTE:非正常视图
       !thd->lex->is_view_context_analysis()) {
     // Query block represents a subquery within an IN/ANY/ALL/EXISTS predicate
+    //NOTE:优化IN/ANY/ALL/EXISTS式子查询
     if (resolve_subquery(thd)) return true;
   }
 
@@ -466,6 +473,7 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
     2. Add a reference to the condition so that result is stored
     after evalution.
   */
+  //NOTE:调用split_sum_func、split_sum_func2等方法,统计ORDERBY、HAVING等子句中的sum操作
   if (m_having_cond && (m_having_cond->has_aggregation() ||
                         m_having_cond->has_grouping_func())) {
     m_having_cond->split_sum_func2(thd, base_ref_items, &fields, &m_having_cond,
@@ -1326,7 +1334,15 @@ bool SELECT_LEX::is_row_count_valid_for_semi_join() {
   @todo for PS, make the whole block execute only on the first execution
 
 */
-
+/** NOTE:优化IN/ANY/ALL/EXISTS式子查询
+ * 用于对子查询进行预先判断,如果可以用半连接优化,则保存信息,待SELECT_LEX::prepare方法调用flatten_subqueries函数时,执行优化操作.
+ * 可优化的方式如下:
+ * 1.转换子查询为半连接
+ * 2.使用物化标识子查询
+ * 3.使用IN向EXISTS转换
+ * 4.执行<op>ALL/ANY/SOME向MIN/MAX转换,op为大于或小于操作
+ * 5.使用值替代标量子查询
+*/
 bool SELECT_LEX::resolve_subquery(THD *thd) {
   DBUG_TRACE;
 
@@ -4043,10 +4059,14 @@ void SELECT_LEX::merge_contexts(SELECT_LEX *inner) {
    @param hidden_group_field_count Number of hidden group fields added
                             by setup_group().
 */
-
+/** NOTE:去掉子查询冗余的部分
+ * 用于去掉IN/ALL/ANY/EXISTS类型子查询中的子查询语句的冗余子句(ORDERBY/DISTINCT/GROUPBY,GROUPBY不带有HAVING或聚集函数的操作),
+ * 因为ORDERBY/DISTINCT/GROUPBY等子句对IN/ALL/ANY/EXISTS类型子查询无意义,是冗余的.
+*/
 void SELECT_LEX::remove_redundant_subquery_clauses(
     THD *thd, int hidden_group_field_count) {
   Item_subselect *subq_predicate = master_unit()->item;
+  //NOTE:subq_predicate是子查询的语法树,所以操作对象是子查询对应的语句,非父查询对应的语句
   enum change {
     REMOVE_NONE = 0,
     REMOVE_ORDER = 1 << 0,
@@ -4069,20 +4089,21 @@ void SELECT_LEX::remove_redundant_subquery_clauses(
   uint changelog = 0;
 
   if ((possible_changes & REMOVE_ORDER) && order_list.elements) {
-    changelog |= REMOVE_ORDER;
-    empty_order_list(this);
+    changelog |= REMOVE_ORDER;//NOTE:如果ORDERBY子句不包括聚集函数,则可以去掉ORDERBY子句
+    empty_order_list(this);//NOTE:清空排序操作的链表
   }
 
+  //NOTE:如果存在DISTINCT子句,则可以去掉DISTINCT子句
   if ((possible_changes & REMOVE_DISTINCT) && is_distinct()) {
     changelog |= REMOVE_DISTINCT;
-    remove_base_options(SELECT_DISTINCT);
+    remove_base_options(SELECT_DISTINCT);//NOTE:去掉DISTINCT子句的标识
   }
 
   /*
     Remove GROUP BY if there are no aggregate functions, no HAVING clause,
     no ROLLUP and no windowing functions.
   */
-
+  //NOTE:如果没有聚集函数且没有HAVING子句,则可以去掉GROUPBY子句
   if ((possible_changes & REMOVE_GROUP) && group_list.elements &&
       !agg_func_used() && !having_cond() && olap == UNSPECIFIED_OLAP_TYPE &&
       m_windows.elements == 0) {
@@ -4095,7 +4116,7 @@ void SELECT_LEX::remove_redundant_subquery_clauses(
                          pointer_cast<uchar *>(&ctx));
       }
     }
-    group_list.clear();
+    group_list.clear();//NOTE:清空分组操作的链表
     while (hidden_group_field_count-- > 0) {
       fields.pop_front();
       base_ref_items[fields.size()] = nullptr;

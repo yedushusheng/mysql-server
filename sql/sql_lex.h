@@ -4182,7 +4182,7 @@ struct LEX : public Query_tables_list {
     return (context_analysis_only &
             (CONTEXT_ANALYSIS_ONLY_PREPARE | CONTEXT_ANALYSIS_ONLY_VIEW));
   }
-
+  //NOTE:非正常视图
   inline bool is_view_context_analysis() {
     return (context_analysis_only & CONTEXT_ANALYSIS_ONLY_VIEW);
   }
