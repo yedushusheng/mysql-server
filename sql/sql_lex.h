@@ -624,6 +624,34 @@ class Index_hint {
   This class represents a query expression (one query block or
   several query blocks combined with UNION).
 */
+/**NOTE:
+ * st_select_lex (SELECT_LEX) for representing SELECT itself SELECT_LEX表示一个select查询块可包含SELECT_LEX_UNIT
+ * st_select_lex_unit (SELECT_LEX_UNIT) for grouping several selects in a bunch SELECT_LEX_UNIT表示select查询块的组合
+ * For example:
+ * (SELECT ...) UNION (SELECT ... (SELECT...)...(SELECT...UNION...SELECT))
+ *    1           2      3           4             5        6       7
+ * will be represented as:
+ * ------------------------------------------------------------------------
+ *                                                                  level 1
+ * SELECT_LEX_UNIT(2)
+ * |
+ * +---------------+
+ * |               |
+ * SELECT_LEX(1)   SELECT_LEX(3)
+ *                 |
+ * --------------- | ------------------------------------------------------
+ *                 |                                                level 2
+ *                 +-------------------+
+ *                 |                   |
+ *                 SELECT_LEX_UNIT(4)  SELECT_LEX_UNIT(6)
+ *                 |                   |
+ *                 |                   +--------------+
+ *                 |                   |              |
+ *                 SELECT_LEX(4)       SELECT_LEX(5)  SELECT_LEX(7)
+ * 
+ * ------------------------------------------------------------------------
+ * 
+*/
 class SELECT_LEX_UNIT {
   /**
     Intrusive double-linked list of all query expressions
@@ -1098,7 +1126,7 @@ enum class enum_explain_type {
 */
 /** NOTE:SELECT_LEX/SELECT_UNIT用来表达select和union操作
  * SELECT_LEX表示SELECT操作符,SELECT_UNIT表示嵌套查询
- * 以前版本是继承自SELCT_NODE
+ * 以前版本是继承自SELECT_NODE
  *                  Item
  *                   |
  * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
@@ -3670,10 +3698,10 @@ class LEX_GRANT_AS {
 */
 /** NOTE:LEX是语法分析的主要对象
  * LEX的初始化,当需要解析一个SQL语句时,MySQL调用lex_start函数设置LEX的初始状态
- * 这个函数初始化thd->lex结构,建立了如下的兑现搞关系(lex指的是thd->lex)：
+ * 这个函数初始化thd->lex结构,建立了如下的关系(lex指的是thd->lex)：
  *                        lex      lex->unit
  *               (parent) /|\         /|\(master)
- * lex->current_select -> lex->select_lex
+ * lex->current_select -> lex   ->  select_lex
  *                        /|\
  *                        lex->all_selects_list
  * 即lex->select_lex.parent_lex指向lex,
