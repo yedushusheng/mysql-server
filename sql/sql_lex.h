@@ -650,7 +650,31 @@ class Index_hint {
  *                 SELECT_LEX(4)       SELECT_LEX(5)  SELECT_LEX(7)
  * 
  * ------------------------------------------------------------------------
- * 
+ * 初始化:
+ * 1.获取当前查询的父节点(主子查询的时候会用到)
+ * SELECT_LEX_UNIT *unit = sel->master_unit();
+ * 2.当前查询
+ * for (SELECT_LEX_UNIT *unit= select_lex()->first_inner_unit();
+ *   unit;
+ *   unit= unit->next_unit())
+ * 3.语法树
+ * LEX *lex = thd->lex;
+ * SELECT_LEX_UNIT *unit = &lex->unit;
+ * 4.子查询中的unit:
+ * Item_in_subselect *const in_predicate = (Item_in_subselect *)item;
+ * SELECT_LEX_UNIT *unit = in_predicate->unit;
+ * SELECT_LEX *sel = unit->first_select();
+ * 5.表获取
+ * SQL_I_List<TABLE_LIST> table_list = select->table_list;
+ * for (TABLE_LIST *tl = table_list.first; tl; tl = tl->next_local) {
+ *   if (tl->derived) {
+ *    // 递归处理derived table中的子查询
+ *    // 同时根据第一个查询的输出列构建一个"虚拟表"
+ *    // 便于后续处理中能够判断一个列是否来自该"虚拟表"
+ *    SELECT_LEX_UNIT *unit = tl->derived;
+ * 6.虚表
+ * TABLE_LIST *derived;
+ * SELECT_LEX_UNIT *unit= derived->derived;
 */
 class SELECT_LEX_UNIT {
   /**
