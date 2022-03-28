@@ -1139,6 +1139,34 @@ enum class enum_explain_type {
  *  handler ---    TABLE ---  TABLE_SHARE
  *                   |
  *                  JOIN
+ * 
+ * 
+ * st_select_lex (SELECT_LEX) for representing SELECT itself SELECT_LEX表示一个select查询块可包含SELECT_LEX_UNIT
+ * st_select_lex_unit (SELECT_LEX_UNIT) for grouping several selects in a bunch SELECT_LEX_UNIT表示select查询块的组合
+ * For example:
+ * (SELECT ...) UNION (SELECT ... (SELECT...)...(SELECT...UNION...SELECT))
+ *    1           2      3           4             5        6       7
+ * will be represented as:
+ * ------------------------------------------------------------------------
+ *                                                                  level 1
+ * SELECT_LEX_UNIT(2)
+ * |
+ * +---------------+
+ * |               |
+ * SELECT_LEX(1)   SELECT_LEX(3)
+ *                 |
+ * --------------- | ------------------------------------------------------
+ *                 |                                                level 2
+ *                 +-------------------+
+ *                 |                   |
+ *                 SELECT_LEX_UNIT(4)  SELECT_LEX_UNIT(6)
+ *                 |                   |
+ *                 |                   +--------------+
+ *                 |                   |              |
+ *                 SELECT_LEX(4)       SELECT_LEX(5)  SELECT_LEX(7)
+ * 
+ * ------------------------------------------------------------------------
+ * 
 */
 class SELECT_LEX {
  public:
@@ -1370,6 +1398,7 @@ class SELECT_LEX {
   /// Remove hidden items from select list
   void remove_hidden_items();
 
+  //NOTE:获取TABLE_LIST信息(头指针)
   TABLE_LIST *get_table_list() const { return table_list.first; }
   bool init_nested_join(THD *thd);
   TABLE_LIST *end_nested_join();
@@ -1900,7 +1929,8 @@ class SELECT_LEX {
   mem_root_deque<TABLE_LIST *> sj_nests;
 
   /// List of tables in FROM clause - use TABLE_LIST::next_local to traverse
-  SQL_I_List<TABLE_LIST> table_list{};  //NOTE:TABLE_LIST的链表(通过next_local),参见SELECT_LEX::add_table_to_list函数
+  //NOTE:FROM子句中的表对象,TABLE_LIST的链表(通过next_local),参见SELECT_LEX::add_table_to_list函数
+  SQL_I_List<TABLE_LIST> table_list{};  
 
   /**
     ORDER BY clause.
@@ -2511,7 +2541,7 @@ class Query_tables_list {
   */
   enum_sql_command sql_command;  //NOTE:SQL命令类型
   /* Global list of all tables used by this statement */
-  TABLE_LIST *query_tables;  //NOTE:TABLE_LIST的链表(通过next_global和prev_global)
+  TABLE_LIST *query_tables;  //NOTE:TABLE_LIST的链表(通过next_global和prev_global构成所有talbe的双向链表)
   /* Pointer to next_global member of last element in the previous list. */
   TABLE_LIST **query_tables_last;  
   /**NOTE:指向上面链表的尾巴,初始化为query_tables地址
@@ -3731,6 +3761,8 @@ struct LEX : public Query_tables_list {
   SELECT_LEX *select_lex;        ///< First query block  //NOTE:最顶层的SELECT_LEX
   SELECT_LEX *all_selects_list;  ///< List of all query blocks  
   /**NOTE:全部的SELECT_LEX节点(这些结点通过link_prev,link_next连接)
+   * 通过link_next和link_prev构成所有select子句的双向链表
+   * 
    * 参见:LEX::new_static_query SELECT_LEX *LEX::new_union_query
    * MySQL5.6参见SELECT_NODE定义,mysql_new_select[MySQL5.6接口]函数以及SELECT_LEX::include_global函数[MySQL5.6接口]
   */

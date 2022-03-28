@@ -2584,6 +2584,20 @@ class Table_function;
  *  handler ---    TABLE ---  TABLE_SHARE
  *                   |
  *                  JOIN
+ * TABLE_LIST的初始化:
+ * 1.TABLE_LIST *tl = lex->current_select->table_list.first;
+ * 2.TABLE_LIST *tl = lex->all_selects_list->table_list.first;
+ * //链表
+ * 3.SQL_I_List<TABLE_LIST> table_list = lex->current_select->table_list;  [next_local/next_global遍历]
+ * 4.SQL_I_List<TABLE_LIST> table_list = lex->current_select->update_table_list;
+ * //join相关
+ * 5.TABLE_LIST *tbl = tbl->nested_join->join_list.head();
+ * 6.List<TABLE_LIST> &table_list = lex->current_select->embedding->nested_join->join_list;
+ * TABLE_LIST的遍历:
+ * 1.next_local:
+ * SQL_I_List<TABLE_LIST> table_list = thd->lex->current_select->table_list;
+ * for (TABLE_LIST *tl = table_list.first; tl; tl = tl->next_local) {}
+ * 2.next_global
 */
 struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM等子句部分
   TABLE_LIST() = default;
@@ -2774,8 +2788,10 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
   Item **join_cond_optim_ref() { return &m_join_cond_optim; }
 
   /// @returns true if semi-join nest
+  //NOTE:判断是否为半连接
   bool is_sj_nest() const { return m_is_sj_or_aj_nest && !m_join_cond; }
   /// @returns true if anti-join nest
+  //NOTE:判断是否为反连接
   bool is_aj_nest() const { return m_is_sj_or_aj_nest && m_join_cond; }
   /// @returns true if anti/semi-join nest
   bool is_sj_or_aj_nest() const { return m_is_sj_or_aj_nest; }
@@ -2848,9 +2864,11 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
   bool prepare_replace_filter(THD *thd);
 
   /// Return true if this represents a named view
+  //NOTE:判断该表是否为视图
   bool is_view() const { return view != nullptr; }
 
   /// Return true if this represents a derived table (an unnamed view)
+  //NOTE:判断该表是否为derived table(虚表)
   bool is_derived() const { return derived != nullptr && view == nullptr; }
 
   /// Return true if this represents a named view or a derived table
@@ -3142,6 +3160,7 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
      @brief Returns the name of the database that the referenced table belongs
      to.
   */
+  //NOTE:获取库名
   const char *get_db_name() const { return db; }
 
   /**
@@ -3150,6 +3169,7 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
      @details The unqualified table name or view name for a table or view,
      respectively.
    */
+  //NOTE:获取表名
   const char *get_table_name() const { return table_name; }
   int fetch_number_of_rows();
   bool update_derived_keys(THD *, Field *, Item **, uint, bool *);
@@ -3276,8 +3296,10 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
     Created at parse time in SELECT_LEX::add_table_to_list() ->
     table_list.link_in_list().
   */
+  //NOTE:TABLE_LIST的遍历接口
   TABLE_LIST *next_local{nullptr};
   /* link in a global list of all queries tables */
+  //NOTE:当遍历到derived table/view的时候需要跳过,则直接设置为下一个全局的表(而不是在当前的view/derived table中寻找next_local表)
   TABLE_LIST *next_global{nullptr}, **prev_global{nullptr};
   const char *db{nullptr}, *table_name{nullptr}, *alias{nullptr};
   /*
@@ -3322,6 +3344,7 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
     tables that were pulled out of the semi-join nest remain listed as
     nest's children).
   */
+  //NOTE:对应多表join类型(semi-join)
   table_map sj_inner_tables{0};
 
   /*
@@ -3330,6 +3353,7 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
     'this' represents a NATURAL or USING join operation. Thus after
     parsing 'this' is a NATURAL/USING join iff (natural_join != NULL).
   */
+  //NOTE:多表关联的类型,是否为自然连接(对应关键字"natural")
   TABLE_LIST *natural_join{nullptr};
   /*
     True if 'this' represents a nested join that is a NATURAL JOIN.
@@ -3357,7 +3381,7 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
   TABLE_LIST *next_name_resolution_table{nullptr};
   /* Index names in a "... JOIN ... USE/IGNORE INDEX ..." clause. */
   List<Index_hint> *index_hints{nullptr};
-  TABLE *table{nullptr}; /* opened table */
+  TABLE *table{nullptr}; /* opened table */  //NOTE:打开的表
   Table_id table_id{};   /* table id (from binlog) for opened table */
   /*
     Query_result for derived table to pass it from table creation to table
@@ -3499,6 +3523,7 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
   /// True if right argument of LEFT JOIN; false in other cases (i.e. if left
   /// argument of LEFT JOIN, if argument of INNER JOIN; RIGHT JOINs are
   /// converted to LEFT JOIN during contextualization).
+  //NOTE:多表join的类型(对应关键字"left join")
   bool outer_join{false};
   /// True if was originally the left argument of a RIGHT JOIN, before we
   /// made it the right argument of a LEFT JOIN.
@@ -3520,6 +3545,7 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
   bool m_deleted{false};
   bool m_fulltext_searched{false};  ///< True if fulltext searched
  public:
+  //NOTE:多表join的类型(对应关键字"straight_join")
   bool straight{false}; /* optimize with prev table */
   /**
     True for tables and views being changed in a data change statement.
@@ -3534,6 +3560,7 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
     The set of tables in the query block that this table depends on.
     Can be set due to outer join, join order hints or NOT EXISTS relationship.
   */
+  //NOTE:依赖的表集合
   table_map dep_tables{0};
   /// The outer tables that an outer join's join condition depends on
   table_map join_cond_dep_tables{0};
@@ -3544,8 +3571,28 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
     referenced in a derived table or view, in a semi-join nest, the tables
     from the subquery.
   */
+  //NOTE:nested loop join的表信息(nested_join->join_list)
   NESTED_JOIN *nested_join{nullptr};
   /// The nested join containing this table reference.
+  /** NOTE:nested loop join包含该表的引用,使用embedded链表遍历nested-loop join
+   * 示例:
+   * while (cur->embedding) {
+   *   if (cur->embedding && cur->embedding->nested_join) {
+   *   // Is cur the rhs of outer join ?
+   *     if (cur->outer_join) {
+   *       List<TABLE_LIST> &table_list = cur->embedding->nested_join->join_list;
+   *       List_iterator_fast<TABLE_LIST> it(table_list);
+   *       while (cur != (it++)) continue;
+   *       //all of its depended table is finished 
+   *       while ((tb = it++)) {
+   *         if (!is_joined(tb, joined)) return false;
+   *           if (!tb->outer_join) break;
+   *           }
+   *         }
+   *       }
+   *       cur = cur->embedding;
+   * }
+  */
   TABLE_LIST *embedding{nullptr};
   /// The join list immediately containing this table reference
   mem_root_deque<TABLE_LIST *> *join_list{nullptr};
