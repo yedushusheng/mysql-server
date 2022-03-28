@@ -731,7 +731,7 @@ struct TABLE_SHARE {
   /* The following is copied to each TABLE on OPEN */
   Field **field{nullptr};
   Field **found_next_number_field{nullptr};
-  KEY *key_info{nullptr};    /* data of keys defined for the table */
+  KEY *key_info{nullptr};    /* data of keys defined for the table */  //NOTE:key索引的定义
   uint *blob_field{nullptr}; /* Index to blobs in Field arrray*/
 
   uchar *default_values{nullptr};      /* row with default values */  //NOTE:默认值,rec_buff_length字节?(原来是byte*类型)
@@ -1379,22 +1379,32 @@ typedef Bitmap<MAX_FIELDS> Field_map;
   a nontrivial destructor.
 */
 
-/** NOTE:代表表的元数据,例如字段定义,索引定义等等(TABLE代表一个打开的表实例)
+/** NOTE:这里是物理表(TABLE_LIST是逻辑表)
+ * 代表表的元数据,例如字段定义,索引定义等等(TABLE代表一个打开的表实例)
  * TABLE实例代表一个打开的TABLE_SHARE
  *                  Item
  *                   |
  * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
  *                   |
- * Protocol -----   THD  ----- NET
+ *   Protocol ----- THD  ----- NET
  *                   |
- *  handler ---    TABLE ---  TABLE_SHARE
+ *    handler  ---  TABLE ---  TABLE_SHARE
  *                   |
  *                  JOIN
+ * 
+ * 初始化:
+ * 1.直接从Field所属的table初始化:
+ * Item_field *field_item = (Item_field *)item;
+ * TABLE *table1 = field_item->field->table;
+ * 2.从语法树取:
+ * for (TABLE_LIST *tl = select->leaf_tables; tl; tl = tl->next_leaf) {
+ *   TABLE *table = tl->table;
+ * }
 */
 struct TABLE {
   TABLE_SHARE *s{nullptr};  //NOTE:表的定义
   handler *file{nullptr};  //NOTE:存储引擎
-  TABLE *next{nullptr}, *prev{nullptr};  //NOTE:THD中的open_tables关系
+  TABLE *next{nullptr}, *prev{nullptr};  //NOTE:THD中的open_tables关系(表的遍历)
 
  private:
   /**
@@ -2572,7 +2582,8 @@ class Table_function;
        ;
 */
 
-/** NOTE:MySQL在一个关系(表)上存放了很多信息,有查询优化阶段需要用到的信息,也有其他阶段用到的信息.
+/** NOTE:TABLE_LIST代表逻辑表,TABLE代表物理表(对应frm文件)
+ * MySQL在一个关系(表)上存放了很多信息,有查询优化阶段需要用到的信息,也有其他阶段用到的信息.
  * 基本上,只要和表相关的信息都存放在TABLE_LIST这个结构体中,
  * 这是逻辑上的表的结构,在存储层，由TABLE结构体表示表对象.
  *                  Item
