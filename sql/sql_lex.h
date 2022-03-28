@@ -858,13 +858,16 @@ class SELECT_LEX_UNIT {
   /// @return true if query expression is recommended to be merged
   bool merge_heuristic(const LEX *lex) const;
 
+  //NOTE:SELECT_LEX_UNIT遍历操作的主要接口
   /// @return the query block this query expression belongs to as subquery
   SELECT_LEX *outer_select() const { return master; }
 
   /// @return the first query block inside this query expression
+  //NOTE:unit下面挂在的第一个select_lex查询语句块
   SELECT_LEX *first_select() const { return slave; }
 
   /// @return the next query expression within same query block (next subquery)
+  //NOTE:同一层的下一个unit
   SELECT_LEX_UNIT *next_unit() const { return next; }
 
   /// @return the query result object in use for this query expression
@@ -1215,10 +1218,11 @@ class SELECT_LEX {
   void remove_derived(THD *thd, TABLE_LIST *tl);
   bool remove_aggregates(THD *thd, SELECT_LEX *select);
 
-  SELECT_LEX_UNIT *master_unit() const { return master; }
-  SELECT_LEX_UNIT *first_inner_unit() const { return slave; }
+  //NOTE:遍历的基本接口
+  SELECT_LEX_UNIT *master_unit() const { return master; }  //NOTE:父节点
+  SELECT_LEX_UNIT *first_inner_unit() const { return slave; }  //NOTE:子节点
   SELECT_LEX *outer_select() const { return master->outer_select(); }
-  SELECT_LEX *next_select() const { return next; }
+  SELECT_LEX *next_select() const { return next; }  //NOTE:当前节点的兄弟节点(同一个level)
 
   TABLE_LIST *find_table_by_name(const Table_ident *ident);
 
@@ -2390,6 +2394,7 @@ class SELECT_LEX {
       *type_str[static_cast<int>(enum_explain_type::EXPLAIN_total)];
 };
 
+//NOTE:判断当前SELECT_LEX_UNIT对应的是不是union操作,即(select1 union select2)
 inline bool SELECT_LEX_UNIT::is_union() const {
   return first_select()->next_select() &&
          first_select()->next_select()->linkage == UNION_TYPE;
