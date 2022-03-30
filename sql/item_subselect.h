@@ -74,7 +74,8 @@ template <class T>
 class List;
 
 /* base class for subselects */
-
+/** NOTE:Item_subselect类负责子查询的优化,有两个子类Item_singlerow_subselect、Item_exists_subselect.
+*/
 class Item_subselect : public Item_result_field {
   typedef Item_result_field super;
 
@@ -269,7 +270,10 @@ class Item_subselect : public Item_result_field {
 };
 
 /* single value subselect */
-
+/** NOTE:对于返回值是单行的子查询进行处理,此类子查询不包括FROM子句中的子查询,
+ * 也不是UNION谓词的子查询(如select 2 union select 8就不属于本子类的子查询),
+ * 通常它是一个标量子查询.
+*/
 class Item_singlerow_subselect : public Item_subselect {
  protected:
   Item_cache *value, **row;

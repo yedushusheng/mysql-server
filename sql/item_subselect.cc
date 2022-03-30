@@ -2321,6 +2321,12 @@ Item_subselect::trans_res Item_in_subselect::row_value_in_to_exists_transformer(
   return RES_OK;
 }
 
+/** NOTE:MySQL5.6 select_transforme函数通过调用select_in_like_transformer等函数,完成子查询的优化.
+ * 处理的子查询类型如下:
+ * 1.普通的子查询(不带有IN/ALL/ANY/SOME谓词的子查询)
+ * 2.带有IN/ALL/ANY/SOME谓词的子查询
+ * MySQL8.0中由具体的子类分别实现select_in_like_transformer
+*/
 Item_subselect::trans_res Item_in_subselect::select_transformer(
     THD *thd, SELECT_LEX *select) {
   return select_in_like_transformer(thd, select, &eq_creator);
@@ -2347,7 +2353,12 @@ Item_subselect::trans_res Item_in_subselect::select_transformer(
   @retval
     RES_ERROR   Error
 */
-
+/** NOTE:MySQL5.6 select_transforme函数通过调用select_in_like_transformer等函数,完成子查询的优化.
+ * 处理的子查询类型如下:
+ * 1.普通的子查询(不带有IN/ALL/ANY/SOME谓词的子查询)
+ * 2.带有IN/ALL/ANY/SOME谓词的子查询
+ * MySQL8.0中由具体的子类分别实现select_in_like_transformer
+*/
 Item_subselect::trans_res Item_in_subselect::select_in_like_transformer(
     THD *thd, SELECT_LEX *select, Comp_creator *func) {
   const char *save_where = thd->where;
@@ -2617,6 +2628,12 @@ bool Item_subselect::collect_subqueries(uchar *arg) {
   return false;
 }
 
+/** NOTE:MySQL5.6 select_transforme函数通过调用select_in_like_transformer等函数,完成子查询的优化.
+ * 处理的子查询类型如下:
+ * 1.普通的子查询(不带有IN/ALL/ANY/SOME谓词的子查询)
+ * 2.带有IN/ALL/ANY/SOME谓词的子查询
+ * MySQL8.0中由具体的子类分别实现select_in_like_transformer
+*/
 Item_subselect::trans_res Item_allany_subselect::select_transformer(
     THD *thd, SELECT_LEX *select) {
   DBUG_TRACE;
