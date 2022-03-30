@@ -1917,7 +1917,16 @@ class Join_tab_compare_embedded_first {
 
   @return false if successful, true if error
 */
-
+/** NOTE:choose_table_order函数选择一个生成多表连接的查询计划的搜索算法,然后求解最优的连接顺序,即连接路径.
+ * 在旧版的MySQL源码中,choose_table_order函数的前身是choose_plan函数.
+ * 曾有以下3中多表连接优化算法:
+ * 1.optimize_straight_join:强制优化器使用FROM/JOIN子句中指定的表的连接次序进行多表连接,用法如下:
+ * select /*!STRAIGHT_JOIN*\/ col_1 from table1,table2 where ...;
+ * 如果能确定指定连接次序的连接方式可以得到最优的查询计划,则完全可以通过指定STRAIGHT_JOIN来节约MySQL对于查询优化的探索时间,从而提高效率.
+ * 2.find_best:通过使用穷尽式探索方法,搜索表之间的各种组合以得到最优的查询计划.
+ * 3.greedy_search:通过使用混杂贪婪式和穷尽式探索方法,搜索表之间的各种组合以得到最优的查询计划.
+ * 在MySQL5.6X,多表连接优化算法去掉了上述的第二种算法,留下了第一种和第三种算法.
+*/
 bool Optimize_table_order::choose_table_order() {
   DBUG_TRACE;
 
