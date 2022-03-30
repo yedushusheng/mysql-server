@@ -3735,6 +3735,10 @@ static bool replace_subcondition(THD *thd, Item **tree, Item *old_cond,
 
   @returns false if success, true if error
 */
+/** NOTE:flatten_subqueries函数对可以对半连接的子查询进行转换,即把子查询的表对象上拉到FROM子句,
+ * 把FROM子句原先的表对象和子查询中被上拉的表对象进行半连接操作.
+ * 这种转换称为"扁平化子查询".
+*/
 bool SELECT_LEX::flatten_subqueries(THD *thd) {
   DBUG_TRACE;
 
