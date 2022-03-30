@@ -9244,7 +9244,9 @@ Item *make_cond_for_table(THD *thd, Item *cond, table_map tables,
   @retval true  Found impossible WHERE clause, or out-of-memory
   @retval false Other
 */
-
+/** NOTE:make_join_select函数用于分解连接条件(WHERE/ON子句中的条件),下推选择等条件到表中.
+ * 需要注意的是,make_join_select函数通过调用add_not_null_conds函数为列对象增加非空条件,进而利用语义优化技术进行优化.
+*/
 static bool make_join_select(JOIN *join, Item *cond) {
   DBUG_ASSERT(cond == nullptr || cond->is_bool_func());
   THD *thd = join->thd;
