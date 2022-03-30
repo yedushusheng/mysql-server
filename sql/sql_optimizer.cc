@@ -2002,7 +2002,8 @@ class Plan_change_watchdog {
   @retval
     1    We can use an index.
 */
-
+/** NOTE:test_if_skip_sort_order函数尝试使用索引代替排序操作,这是排序的优化方式之一.
+*/
 static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
                                     ha_rows select_limit, const bool no_changes,
                                     const Key_map *map, int *order_idx) {
