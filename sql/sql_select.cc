@@ -808,7 +808,7 @@ static bool optimize_secondary_engine(THD *thd) {
   a single query block and one for query expressions containing multiple
   query blocks combined with UNION.
 */
-//NOTE:内部函数 execute入口
+//NOTE:内部函数 DML execute入口
 bool Sql_cmd_dml::execute_inner(THD *thd) {
   SELECT_LEX_UNIT *unit = lex->unit;
 
@@ -3097,7 +3097,10 @@ void QEP_TAB::init_join_cache(JOIN_TAB *join_tab) {
       - increment relevant counters
       - etc
 */
-
+/** NOTE:make_join_readinfo函数用于确认连接是否需要排序,并建立半连接的消除重复的策略;
+ * 为连接中的每个非常量表进行增加缓存、下推索引条件等方式的信息处理.
+ * 这些操作都是为执行器查询执行计划做准备.
+*/
 bool make_join_readinfo(JOIN *join, uint no_jbuf_after) {
   const bool statistics = !join->thd->lex->is_explain();
   const bool prep_for_pos = join->need_tmp_before_win ||
