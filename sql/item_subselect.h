@@ -442,6 +442,10 @@ class Item_exists_subselect : public Item_subselect {
 
   explicit Item_exists_subselect(const POS &pos) : super(pos) {}
 
+  /** NOTE:Item_subselect::select_transformer被resolve_subquery调用
+   * 该函数被4个子类Item_singlerow_subselect、Item_in_subselect、
+   * Item_allany_subselect、Item_exists_subselect继承,根据具体的类型实现各自的优化
+  */
   trans_res select_transformer(THD *, SELECT_LEX *) override {
     strategy = Subquery_strategy::SUBQ_EXISTS;
     return RES_OK;

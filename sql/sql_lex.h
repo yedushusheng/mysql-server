@@ -1160,6 +1160,7 @@ enum class enum_explain_type {
 /** NOTE:SELECT_LEX/SELECT_UNIT用来表达select和union操作
  * SELECT_LEX表示SELECT操作符,SELECT_UNIT表示嵌套查询
  * 以前版本是继承自SELECT_NODE
+ * MySQL5.6语法树是st_select_lex,MySQL8.0语法树是SELECT_LEX
  *                  Item
  *                   |
  * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT

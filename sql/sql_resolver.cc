@@ -390,7 +390,7 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
   if (unit->item &&                           // 1)  //NOTE:子查询
       !thd->lex->is_view_context_analysis())  // 2)  //NOTE:非正常视图
   {
-    //NOTE:去掉子查询冗余的部分
+    //NOTE:SQL优化器:去掉子查询冗余的部分(基于规则),这是该阶段重要的一个优化
     remove_redundant_subquery_clauses(thd, hidden_group_field_count);
   }
 
@@ -443,7 +443,7 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
                                         // Not normalizing a view  //NOTE:非正常视图
       !thd->lex->is_view_context_analysis()) {
     // Query block represents a subquery within an IN/ANY/ALL/EXISTS predicate
-    //NOTE:优化IN/ANY/ALL/EXISTS式子查询
+    //NOTE:SQL优化器:优化IN/ANY/ALL/EXISTS式子查询(基于规则优化)
     if (resolve_subquery(thd)) return true;
   }
 
@@ -1437,6 +1437,10 @@ bool SELECT_LEX::resolve_subquery(THD *thd) {
   const bool no_aggregates = !is_grouped() && !with_sum_func &&
                              having_cond() == nullptr && !has_windows();
 
+  /** NOTE:子查询优化点 重要注释
+   * 说明了可以被优化的子查询的类型,满足这些情况的子查询可以被扁平化为半连接操作.
+   * 在本函数中,只是把符合优化情况的保存起来,等到JOIN::prepare方法调用flatten_subqueries函数时,再进行真正的优化动作.
+  */
   /*
     Check if we're in subquery that is a candidate for flattening into a
     semi-join (which is done in flatten_subqueries()). The requirements are:
@@ -1551,12 +1555,17 @@ bool SELECT_LEX::resolve_subquery(THD *thd) {
       !thd->lex->m_subquery_to_derived_is_impossible) {  // 17
     DBUG_ASSERT(outer->resolve_nest == nullptr);
     /* Register the subquery for further processing in flatten_subqueries() */
+    /** NOTE:如果可以用半连接优化,则调用push_back保存,待flatten_subqueries函数被调用时,执行优化操作
+    */
     outer->sj_candidates->push_back(predicate);
     predicate->strategy = Subquery_strategy::CANDIDATE_FOR_DERIVED_TABLE;
     predicate->outer_condition_context = outer->condition_context;
     choice_made = true;
   }
 
+  /** NOTE:如果不可以使用半连接优化,调用select_transformer进行子查询的优化
+   * (应对IN/ANY/ALL/EXISTS等类型子查询)
+  */
   if (!choice_made) {
     if (subq_predicate->select_transformer(thd, this) ==
         Item_subselect::RES_ERROR)
@@ -4062,6 +4071,9 @@ void SELECT_LEX::merge_contexts(SELECT_LEX *inner) {
 /** NOTE:去掉子查询冗余的部分
  * 用于去掉IN/ALL/ANY/EXISTS类型子查询中的子查询语句的冗余子句(ORDERBY/DISTINCT/GROUPBY,GROUPBY不带有HAVING或聚集函数的操作),
  * 因为ORDERBY/DISTINCT/GROUPBY等子句对IN/ALL/ANY/EXISTS类型子查询无意义,是冗余的.
+ * 这里仅仅是根据规则去除一些非必要的排序去重操作,并不进行子查询的消除(这里仅是清除冗余部分),即不会执行:
+ * select * from t1 where t1.a in (<single row subquery>);
+ * select a,<single row subquery> from t1;
 */
 void SELECT_LEX::remove_redundant_subquery_clauses(
     THD *thd, int hidden_group_field_count) {
