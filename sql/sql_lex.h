@@ -806,6 +806,12 @@ class SELECT_LEX_UNIT {
 
     @return query block containing the global parameters
   */
+  /** NOTE:指向查询块全局参数,可以是order by/limit/offset
+   * 1.如果是union或multiple查询块,全局参数存在fake_select_lex中[主要是为方便存储union操作涉及的全局参数]
+   * 如果union不使用临时表,SELECT_LEX_UNIT::prepare()清空fake_select_lex,
+   * 但是拷贝到save_fake_select_lex代表全局参数
+   * 2.如果不是union,查询表达式含有多层的order by/limit,全局参数存在单查询语句中
+  */
   inline SELECT_LEX *global_parameters() const {
     if (fake_select_lex != nullptr)
       return fake_select_lex;
@@ -1190,7 +1196,23 @@ enum class enum_explain_type {
  *                 SELECT_LEX(4)       SELECT_LEX(5)  SELECT_LEX(7)
  * 
  * ------------------------------------------------------------------------
- * 
+ * 初始化:
+ * 1.语法树获取所有查询
+ * LEX *lex = con->thd->lex;
+ * SELECT_LEX *sel = lex->all_selects_list;
+ * 2.语法树获取当前查询
+ * LEX *lex = thd->lex;
+ * SELECT_LEX *select = lex->current_select;
+ * 3.获取父节点
+ * SELECT_LEX *outer_sel = select->outer_select();
+ * 4.unit获取
+ * for (SELECT_LEX *sel = unit->first_select(); sel; sel = sel->next_select())
+ * 5.虚表
+ * for (TABLE_LIST *tl = sel->leaf_tables; tl; tl = tl->next_leaf) {
+ *   if (tl->is_view_or_derived() || !tl->table->is_created()) { //NOTE:view
+ *     if (!tl->derived) return false;
+ *     // the derived table using no tables or using global tables
+ *       for (SELECT_LEX *s = tl->derived->first_select(); s; s = s->next_select())      
 */
 class SELECT_LEX {
  public:
