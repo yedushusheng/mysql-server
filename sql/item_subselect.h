@@ -707,6 +707,56 @@ class Item_in_subselect : public Item_exists_subselect {
   */  
   trans_res select_in_like_transformer(THD *thd, SELECT_LEX *select,
                                        Comp_creator *func);
+  /** NOTE:single_value_transformer函数用于对带有IN/ALL/ANY谓词的单列子查询进行优化.
+   * single_value_transformer函数进行优化处理的步骤如下:
+   * 步骤1.处理特定格式的子查询:
+   * 输入格式如下:
+   * oe <op> (select ie from ... where subq_where ... having subq_having)
+   * 其中,oe表示外部的表达式,是主句部分;ie表示内部的表达式,是子句部分.
+   * 可以使用如下类进行优化(结果为标量类型的子查询):
+   * oe <op>(select max(...)) //调用Item_singlerow_subselect类
+   * oe <op><max>(select ...) //调用Item_maxmin_subselect类
+   * 步骤2.如果步骤1转换失败,则使用Item_in_optimizer类优化子查询,这时要处理的情况有以下两种:
+   * 情况1:如果子查询被物化,子查询将不再进行其他优化尝试.
+   * 情况2:如果是IN子查询则向EXISTS类型转换.
+   * 步骤3.如果步骤2中的IN子查询转向EXISTS类型转换,这时也要分两种情况:
+   * 情况1:如果子查询中存在聚集函数、GROUPBY子句、HAVING子句等,转换为带有trigcond条件的子查询
+   * (处理方式是:对条件进行改造,使得被优化的子查询中的WHERE子句部分带有这样的条件,而这样的条件能够保障子查询优化是等价的).
+   * 对于trigcond理解,可以参考类Item_func_trig_cond.优化后子查询部分的格式如下:
+   * select ie from ... having subq_having AND trigcond(oe <op> ref_or_null_helper<ie>)
+   * 注意,子查询中的trigcond函数中的oe来自初始格式的左表达式,在trigcond中"包装"了此种转换下需要关心的结果,结果值可能为NULL或者FALSE.
+   * 情况2:如果子查询中不存在聚集函数、不存在GROUPBY子句、HAVING子句等(注意转换后附加的trigcond条件被包装在HAVING子句中,
+   * 而在JOIN::prepare函数之后调用的JOIN::optimize函数对WHERE和HAVING子句会合并后进行优化),情况如下:
+   * 1)如果不需要区分NULL和FALSE子查询,优化后的式子如下:
+   * select 1 from ... where (oe <op> ie) and subq_where
+   * 2)如果需要区分NULL和FALSE子查询,优化后的式子如下:
+   * select 1 from ... where subq_where and trigcond((oe <op> ie) or (ie is null))
+   * having trigcond(<is_not_null_test>(ie))
+   * 对于上边3个步骤,有两点需要特殊说明:
+   * 步骤1、步骤2是通过调用single_values_transformer完成的.
+   * 步骤3是执行IN到EXISTS半连接的转换,通过调用single_value_in_to_exists_transformer函数完成.
+   * 
+   * single_value_transformer函数的调用关系:
+   * Item_in_subselect.single_value_transformer
+   * --Item_in_subselect.select_in_like_trnsformer
+   * ----Item_in_subselect.select_transformer
+   * ------Item_subselect.select_transformer
+   * ------Item_singlerow_subselect.select_transformer
+   * ------Item_allany_subselect.select_transformer
+   * ------Item_exists_subselect.select_transformer
+   * ------resolve_subquery
+   * --------JOIN::prepare
+   * ----Item_allany_subselect.select_transformer
+   * ------Item_subselect.select_transformer
+   * ------Item_singlerow_subselect.select_transformer
+   * ------Item_allany_subselect.select_transformer
+   * ------Item_exists_subselect.select_transformer
+   * ------resolve_subquery
+   * --------JOIN::prepare
+   * single_values_in_to_exists_transformer函数被single_value_transformer函数调用.
+   * single_value_transformer函数被select_in_like_transformer函数调用.
+   * 这些函数,最终被SELECT_LEX::prepare(JOIN::prepare)函数调用,表名在查询准备阶段,即开始进行优化,resolve_subquery函数表名对子查询进行优化.
+  */
   trans_res single_value_transformer(THD *thd, SELECT_LEX *select,
                                      Comp_creator *func);
   trans_res row_value_transformer(THD *thd, SELECT_LEX *select);

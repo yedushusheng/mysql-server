@@ -1684,8 +1684,15 @@ Item_subselect::trans_res Item_in_subselect::single_value_transformer(
     3. UNKNOWN results are treated as FALSE, by this item or the outer item,
     or can never be generated.
   */
-  if (!func->eqne_op() &&                                                // 1
-      !unit->uncacheable &&                                              // 2
+  /**NOTE:第一种情况:对于非SQL顶层的子查询(如果查询有嵌套,则最外层的子句即使最顶层的子句)
+   * 如果子查询中NULL结果可以被忽略,则ALL/ANY single-value的子查询,可重写为MIN/MAX聚集函数表达的子查询.
+   * 例如:
+   * select * from t1 where b > any(select a from t2)
+   * 可优化为:
+   * select * from t1 where b > (select max(a) from t2)
+  */
+  if (!func->eqne_op() &&                                                // 1  //NOTE:存在大于或小于比较操作度
+      !unit->uncacheable &&                                              // 2  //NOTE:非相关子查询
       (abort_on_null || (upper_item && upper_item->ignore_unknown()) ||  // 3
        (!left_expr->maybe_null && !subquery_maybe_null))) {
     if (substitution) {
@@ -1694,13 +1701,13 @@ Item_subselect::trans_res Item_in_subselect::single_value_transformer(
     }
 
     Item *subs;
-    if (!select->group_list.elements && !select->having_cond() &&
+    if (!select->group_list.elements && !select->having_cond() &&  //NOTE:没有groupby子句,没有having子句
         // MIN/MAX(agg_or_window_func) would not be valid
-        !select->with_sum_func && select->m_windows.elements == 0 &&
+        !select->with_sum_func && select->m_windows.elements == 0 &&  //NOTE:没有聚集函数
         !(select->next_select()) && select->table_list.elements &&
         // For ALL: MIN ignores NULL: 3<=ALL(4 and NULL) is UNKNOWN, while
         // NOT(3>(SELECT MIN(4 and NULL)) is TRUE
-        !(substype() == ALL_SUBS && subquery_maybe_null)) {
+        !(substype() == ALL_SUBS && subquery_maybe_null)) {  //NOTE:子查询谓词ALL且结果可能为NULL的类型不能优化
       OPT_TRACE_TRANSFORM(&thd->opt_trace, oto0, oto1, select->select_number,
                           "> ALL/ANY (SELECT)", "SELECT(MIN)");
       oto1.add("chosen", true);
@@ -1712,12 +1719,18 @@ Item_subselect::trans_res Item_in_subselect::single_value_transformer(
           (ALL && (> || =>)) || (ANY && (< || =<))
           for ALL condition is inverted
         */
+        /**NOTE:如果谓词是>=ALL、>ALL、<=ANY、<ANY,则可用聚集函数MAX优化,
+         * 所以,调用Item_sum_max类
+        */
         item = new Item_sum_max(select->base_ref_items[0]);
       } else {
         /*
           (ALL && (< || =<)) || (ANY && (> || =>))
           for ALL condition is inverted
         */
+        /**NOTE:如果谓词是<=ALL、<ALL、<=ALL、>=ANY、>ANY,则可用聚集函数MIN优化,
+         * 所以,调用Item_sum_min类
+        */       
         item = new Item_sum_min(select->base_ref_items[0]);
       }
       if (upper_item) upper_item->set_sum_test(item);
@@ -1745,6 +1758,9 @@ Item_subselect::trans_res Item_in_subselect::single_value_transformer(
       thd->lex->allow_sum_func = save_allow_sum_func;
 
       subs = new Item_singlerow_subselect(select);
+      /**NOTE:无论是可转为MAX还是转为MIN聚集函数格式,子查询的返回值都是一个单行单列的值
+       * subs代表优化后的子查询
+      */
     } else {
       OPT_TRACE_TRANSFORM(&thd->opt_trace, oto0, oto1, select->select_number,
                           "> ALL/ANY (SELECT)", "MIN (SELECT)");
@@ -1757,11 +1773,12 @@ Item_subselect::trans_res Item_in_subselect::single_value_transformer(
     if (upper_item) upper_item->set_subselect(this);
 
     substitution = func->create(left_expr, subs);
+    //NOTE:substitution是优化后的子表达式(左操作符和subs联合构成新的子表达式)
 
     return RES_OK;
   }
 
-  if (!substitution) {
+  if (!substitution) {  //NOTE:上面代码发现子查询没有可优化之处,则做一些处理
     /* We're invoked for the 1st (or the only) SELECT in the subquery UNION */
     substitution = optimizer;
 
@@ -1801,6 +1818,7 @@ Item_subselect::trans_res Item_in_subselect::single_value_transformer(
   }
 
   /* Perform the IN=>EXISTS transformation. */
+  //NOTE:执行IN类型子查询向EXISTS类型转换
   const trans_res retval =
       single_value_in_to_exists_transformer(thd, select, func);
   return retval;
@@ -1845,7 +1863,7 @@ Item_subselect::trans_res Item_in_subselect::single_value_transformer(
     @retval RES_REDUCE The subquery was reduced to non-subquery
     @retval RES_ERROR  Error
 */
-
+//NOTE:执行IN类型子查询向EXISTS类型转换
 Item_subselect::trans_res
 Item_in_subselect::single_value_in_to_exists_transformer(THD *thd,
                                                          SELECT_LEX *select,
@@ -1865,6 +1883,7 @@ Item_in_subselect::single_value_in_to_exists_transformer(THD *thd,
 
   if (select->having_cond() || select->with_sum_func ||
       select->group_list.elements || select->m_windows.elements > 0) {
+  /**NOTE:如果有HAVING子句、聚集函数、GROUPBY子句或者窗口函数存在,则确认是否存在NULL IN(SELECT...)的情况*/
     bool tmp;
     Item_ref_null_helper *ref_null = new Item_ref_null_helper(
         &select->context, this, &select->base_ref_items[0]);
@@ -1907,6 +1926,10 @@ Item_in_subselect::single_value_in_to_exists_transformer(THD *thd,
         We can encounter "NULL IN (SELECT ...)". Wrap the added condition
         within a trig_cond.
       */
+      /**NOTE:因left_expr->maybe_null为真,意味着需要处理NULL IN(SELECT...)的情况,处理的方式是在子查询中增加trig_cond条件
+       * (实则是优化过程中把需要判断的条件"打包"在一起,置于子查询的条件判断处一起处理),
+       * 所以,首先生成将被添加到子查询的条件子句的内容Item,然后调用and_items函数完成添加
+      */
       item =
           new Item_func_trig_cond(item, get_cond_guard(0), nullptr, NO_PLAN_IDX,
                                   Item_func_trig_cond::OUTER_FIELD_IS_NOT_NULL);
@@ -1931,8 +1954,10 @@ Item_in_subselect::single_value_in_to_exists_transformer(THD *thd,
     select->having_fix_field = false;
     if (tmp) return RES_ERROR;
   } else {
+    //NOTE:处理没有HAVING子句、聚合函数或者GROUPBY子句的情况
     Item *orig_item = select->single_visible_field();
 
+    //NOTE:如果有FROM子句(select_lex->table_list.elements)
     if (!select->source_table_is_one_row() || select->where_cond()) {
       bool tmp;
       Item_bool_func *item = func->create(m_injected_left_expr, orig_item);
@@ -1945,7 +1970,7 @@ Item_in_subselect::single_value_in_to_exists_transformer(THD *thd,
       if (!abort_on_null && orig_item->maybe_null) {
         Item_bool_func *having = new Item_is_not_null_test(this, orig_item);
         having->set_created_by_in2exists();
-        if (left_expr->maybe_null) {
+        if (left_expr->maybe_null) {//NOTE:如果初始表达式值可能为NULL且左操作符值可能为NULL
           if (!(having = new Item_func_trig_cond(
                     having, get_cond_guard(0), nullptr, NO_PLAN_IDX,
                     Item_func_trig_cond::OUTER_FIELD_IS_NOT_NULL)))
@@ -1975,6 +2000,9 @@ Item_in_subselect::single_value_in_to_exists_transformer(THD *thd,
       /*
         If we may encounter NULL IN (SELECT ...) and care whether subquery
         result is NULL or FALSE, wrap condition in a trig_cond.
+      */
+      /**NOTE:类似上面相似代码(if条件相同的diamante)的处理.
+       * 以下的diamante处理都类似上面的代码,只是判断条件和处理的对象不尽相同,但处理的原因和逻辑都相似
       */
       if (!abort_on_null && left_expr->maybe_null) {
         if (!(item = new Item_func_trig_cond(
