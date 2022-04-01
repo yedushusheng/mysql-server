@@ -697,6 +697,14 @@ class Item_in_subselect : public Item_exists_subselect {
     was_null = false;
   }
   trans_res select_transformer(THD *thd, SELECT_LEX *select) override;
+  /** NOTE:select_transforme函数通过调用select_in_like_transformer等函数,完成子查询的优化.
+   * 处理的子查询类型如下:
+   * 1.普通的子查询(不带有IN/ALL/ANY/SOME谓词的子查询)
+   * 2.带有IN/ALL/ANY/SOME谓词的子查询
+   * 
+   * select_in_like_transformer是类Item_subselect的一个方法,被子类继承实现.
+   * select_in_like_transformer被两种类型的子查询(IN子查询、ALL/ANY子查询)调用,是因为这两种子查询的处理方式相似.
+  */  
   trans_res select_in_like_transformer(THD *thd, SELECT_LEX *select,
                                        Comp_creator *func);
   trans_res single_value_transformer(THD *thd, SELECT_LEX *select,

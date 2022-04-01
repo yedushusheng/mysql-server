@@ -2321,11 +2321,10 @@ Item_subselect::trans_res Item_in_subselect::row_value_in_to_exists_transformer(
   return RES_OK;
 }
 
-/** NOTE:MySQL5.6 select_transforme函数通过调用select_in_like_transformer等函数,完成子查询的优化.
+/** NOTE:select_transforme函数通过调用select_in_like_transformer等函数,完成子查询的优化.
  * 处理的子查询类型如下:
  * 1.普通的子查询(不带有IN/ALL/ANY/SOME谓词的子查询)
  * 2.带有IN/ALL/ANY/SOME谓词的子查询
- * MySQL8.0中由具体的子类分别实现select_in_like_transformer
 */
 Item_subselect::trans_res Item_in_subselect::select_transformer(
     THD *thd, SELECT_LEX *select) {
@@ -2353,11 +2352,10 @@ Item_subselect::trans_res Item_in_subselect::select_transformer(
   @retval
     RES_ERROR   Error
 */
-/** NOTE:MySQL5.6 select_transforme函数通过调用select_in_like_transformer等函数,完成子查询的优化.
+/** NOTE:select_transforme函数通过调用select_in_like_transformer等函数,完成子查询的优化.
  * 处理的子查询类型如下:
  * 1.普通的子查询(不带有IN/ALL/ANY/SOME谓词的子查询)
  * 2.带有IN/ALL/ANY/SOME谓词的子查询
- * MySQL8.0中由具体的子类分别实现select_in_like_transformer
 */
 Item_subselect::trans_res Item_in_subselect::select_in_like_transformer(
     THD *thd, SELECT_LEX *select, Comp_creator *func) {
@@ -2388,6 +2386,7 @@ Item_subselect::trans_res Item_in_subselect::select_in_like_transformer(
 
     //psergey: he means confluent cases like "... IN (SELECT 1)"
   */
+  //NOTE:如果子查询对应的优化类不存在,创建一个对应的优化类型对象
   if (!optimizer) {
     Prepared_stmt_arena_holder ps_arena_holder(thd);
     optimizer = new Item_in_optimizer(left_expr, this);
@@ -2423,6 +2422,9 @@ Item_subselect::trans_res Item_in_subselect::select_in_like_transformer(
     Prepared_stmt_arena_holder ps_arena_holder(thd);
 
     if (left_expr->cols() == 1)
+    /** NOTE:如果IN谓词的左操作数只有一列,则认为是标量IN子查询
+     * (MySQL称为:Scalar IN Subquery)
+    */
       res = single_value_transformer(thd, select, func);
     else {
       /* we do not support row operation for ALL/ANY/SOME */
@@ -2431,6 +2433,9 @@ Item_subselect::trans_res Item_in_subselect::select_in_like_transformer(
         return RES_ERROR;
       }
       res = row_value_transformer(thd, select);
+      /** NOTE:如果IN谓词的左操作数不是只有一列,则认为是行式IN子查询
+       * (MySQL称为:Row IN Subquery)
+      */
     }
   }
 
@@ -2628,11 +2633,13 @@ bool Item_subselect::collect_subqueries(uchar *arg) {
   return false;
 }
 
-/** NOTE:MySQL5.6 select_transforme函数通过调用select_in_like_transformer等函数,完成子查询的优化.
+/** NOTE:select_transforme函数通过调用select_in_like_transformer等函数,完成子查询的优化.
  * 处理的子查询类型如下:
  * 1.普通的子查询(不带有IN/ALL/ANY/SOME谓词的子查询)
  * 2.带有IN/ALL/ANY/SOME谓词的子查询
- * MySQL8.0中由具体的子类分别实现select_in_like_transformer
+ * 
+ * select_in_like_transformer函数用于对带有IN谓词的子查询进行优化.
+ * 对于没有FROM子句的简单SELECT,MySQL交给Item_singlerow_subselect类的select_transformer函数处理,这不在本函数的处理范围之内.
 */
 Item_subselect::trans_res Item_allany_subselect::select_transformer(
     THD *thd, SELECT_LEX *select) {
