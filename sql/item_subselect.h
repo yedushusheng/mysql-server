@@ -184,6 +184,20 @@ class Item_subselect : public Item_result_field {
 
   void cleanup() override;
   virtual void reset() { null_value = true; }
+  /** NOTE:MySQL5.6 select_transforme函数通过调用select_in_like_transformer等函数,完成子查询的优化.
+   * 处理的子查询类型如下:
+   * 1.普通的子查询(不带有IN/ALL/ANY/SOME谓词的子查询)
+   * 2.带有IN/ALL/ANY/SOME谓词的子查询
+   * MySQL8.0中由具体的子类分别实现select_in_like_transformer
+   * Item_subselect类负责子查询优化,有两个子类Item_singlerow_subselect、Item_exists_subselect
+   * 1.Item_singlerow_subselect:对于返回值是单行的子查询进行处理,此类子查询不包括FROM子句中的子查询,
+   * 也不是UNION谓词的子查询(如select 2 UNION select 8就不属于本子类处理范围),通常它是一个标量子查询.
+   * 2.Item_exists_subselect:形式上看,处理带有EXISTS谓词的子查询,但因带有EXISTS谓词的子查询的结果是一个布尔值,
+   * 而IN谓词可转换为EXISTS,所以处理这些子查询在方式上有共同之处.
+   * Item_exists_subselect类有子类Item_in_subselect、Item_in_subselect有子类Item_allany_subselect.
+   * Item_in_subselect:处理带有IN谓词的子查询.
+   * Item_allany_subselect:处理带有ALL、ANY、SOME谓词的子查询.
+  */
   virtual trans_res select_transformer(THD *thd, SELECT_LEX *select) = 0;
   bool assigned() const { return value_assigned; }
   void assigned(bool a) { value_assigned = a; }
