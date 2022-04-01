@@ -168,9 +168,10 @@ static Item *create_rollup_switcher(THD *thd, SELECT_LEX *select_lex,
    - As far as INSERT, UPDATE and DELETE statements have the same expressions
      as a SELECT statement, this note applies to those statements as well.
 */
-/**NOTE:外部接口 prepare入口
+/**NOTE:外部接口 prepare入口(对应MySQL5.6 JOIN::prepare())
+ * 为获得最优的查询计划,需要通过SELECT_LEX::prepare(JOIN::prepare)函数做一些初始化赋值、计算等准备工作.
+ * 注意,在这个阶段,已经着手进行子查询的优化处理工作了.
  * Sql_cmd_select::prepare_inner调用
- * 对应MySQL5.6 JOIN::prepare()
 */
 bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
   DBUG_TRACE;
@@ -528,6 +529,7 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
 
   if (query_result() && query_result()->prepare(thd, fields, unit)) return true;
 
+  //NOTE:扁平化子查询
   if (has_sj_candidates() && flatten_subqueries(thd)) return true;
 
   set_sj_candidates(nullptr);
@@ -584,6 +586,7 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
       - a pushed-down condition cannot help to convert LEFT JOIN to inner join
       inside a derived table's definition.
     */
+    //NOTE:条件下推到虚表
     if (push_conditions_to_derived_tables(thd)) return true;
   }
 
@@ -1335,9 +1338,12 @@ bool SELECT_LEX::is_row_count_valid_for_semi_join() {
 
 */
 /** NOTE:优化IN/ANY/ALL/EXISTS式子查询
- * 用于对子查询进行预先判断,如果可以用半连接优化,则保存信息,待SELECT_LEX::prepare方法调用flatten_subqueries函数时,执行优化操作.
+ * 用于对子查询进行预先判断,如果可以用半连接优化,则保存信息,待SELECT_LEX::prepare方法调用flatten_subqueries函数时(MySQL5.6),执行优化操作.
+ * MySQL8.0中在SELECT_LEX::prepare中调用flatten_subqueries.
  * 可优化的方式如下:
  * 1.转换子查询为半连接
+ * 半连接:当一张表在另一张表找到匹配的记录之后,半连接(semi-jion)返回第一张表中的记录.
+ * 半连接通常使用IN或EXISTS/ANY作为连接条件.
  * 2.使用物化标识子查询
  * 3.使用IN向EXISTS转换
  * 4.执行<op>ALL/ANY/SOME向MIN/MAX转换,op为大于或小于操作
@@ -1358,6 +1364,11 @@ bool SELECT_LEX::resolve_subquery(THD *thd) {
     exec_method in class Item_subselect and exit immediately if unequal to
     SubqueryExecMethod::EXEC_UNSPECIFIED.
   */
+  /** NOTE:重要的子查询接口,具体的子类实现具体优化
+   * Item_subselect::select_transformer是父类Item_subselect的一个方法,被resolve_subquery函数调用.
+   * Item_subselect::select_transformer被4个子类Item_singlerow_subselect、Item_in_subselect、Item_allany_subselect、Item_exists_subselect继承,根据具体的类型实现各自的优化.
+   * resolve_subquery被SELECT_LEX::prepare(MySQL5.6 JOIN::prepare)调用,完成子查询优化.
+  */
   Item_subselect *subq_predicate = master_unit()->item;
   DBUG_ASSERT(subq_predicate != nullptr);
   /**
@@ -1375,6 +1386,7 @@ bool SELECT_LEX::resolve_subquery(THD *thd) {
           : nullptr;
 
   // Predicate for IN subquery predicate
+  //NOTE:子查询,IN操作
   Item_in_subselect *const in_predicate =
       subq_predicate->substype() == Item_subselect::IN_SUBS
           ? down_cast<Item_in_subselect *>(subq_predicate)
@@ -1400,6 +1412,10 @@ bool SELECT_LEX::resolve_subquery(THD *thd) {
 
       TODO why do we have this duplicated in IN->EXISTS transformers?
       psergey-todo: fix these: grep for duplicated_subselect_card_check
+    */
+    /** NOTE:如果IN子查询的左操作符的左操作符和右操作符不匹配,报错退出本函数.
+     * 不匹配如:
+     * (oe1,oe2) IN (SELECT ie1,ie2,ie3...),左操作数为2个,右操作数为3个,个数不匹配
     */
     if (num_visible_fields() != in_predicate->left_expr->cols()) {
       my_error(ER_OPERAND_COLUMNS, MYF(0), in_predicate->left_expr->cols());
@@ -1439,7 +1455,9 @@ bool SELECT_LEX::resolve_subquery(THD *thd) {
 
   /** NOTE:子查询优化点 重要注释
    * 说明了可以被优化的子查询的类型,满足这些情况的子查询可以被扁平化为半连接操作.
-   * 在本函数中,只是把符合优化情况的保存起来,等到JOIN::prepare方法调用flatten_subqueries函数时,再进行真正的优化动作.
+   * 半连接:当一张表在另一张表找到匹配的记录之后,半连接(semi-jion)返回第一张表中的记录.
+   * 半连接通常使用IN或EXISTS/ANY作为连接条件.
+   * 在本函数中,只是把符合优化情况的保存起来,等到SELECT_LEX::prepare(MySQL5.6 JOIN::prepare)方法调用flatten_subqueries函数时,再进行真正的优化动作.
   */
   /*
     Check if we're in subquery that is a candidate for flattening into a
@@ -1497,6 +1515,9 @@ bool SELECT_LEX::resolve_subquery(THD *thd) {
     predicate->embedding_join_nest = outer->resolve_nest;
 
     /* Register the subquery for further processing in flatten_subqueries() */
+    /** NOTE:如果可以用半连接优化,则调用push_back保存,待flatten_subqueries函数被调用时,执行优化操作
+     * 
+    */
     predicate->strategy = Subquery_strategy::CANDIDATE_FOR_SEMIJOIN;
     outer->sj_candidates->push_back(predicate);
     choice_made = true;
@@ -1563,7 +1584,7 @@ bool SELECT_LEX::resolve_subquery(THD *thd) {
     choice_made = true;
   }
 
-  /** NOTE:如果不可以使用半连接优化,调用select_transformer进行子查询的优化
+  /** NOTE:如果不可以使用半连接优化,调用select_transformer[SELECT_LEX::prepare阶段的一个重要优化器]进行子查询的优化
    * (应对IN/ANY/ALL/EXISTS等类型子查询)
   */
   if (!choice_made) {
