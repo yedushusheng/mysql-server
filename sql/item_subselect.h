@@ -197,6 +197,10 @@ class Item_subselect : public Item_result_field {
    * Item_exists_subselect类有子类Item_in_subselect、Item_in_subselect有子类Item_allany_subselect.
    * Item_in_subselect:处理带有IN谓词的子查询.
    * Item_allany_subselect:处理带有ALL、ANY、SOME谓词的子查询.
+   * 
+   * select_transformer被5个子类的方法实现.
+   * select_transformer被SELECT_LEX::prepare(MySQL5.6 JOIN::prepare)阶段的resolve_subquery调用,实现顶层SQL的子查询优化.
+   * select_transformer被JOIN::optimize阶段的flatten_subqueries调用,实现每个子句中的子查询的优化.
   */
   virtual trans_res select_transformer(THD *thd, SELECT_LEX *select) = 0;
   bool assigned() const { return value_assigned; }
@@ -447,7 +451,7 @@ enum class Subquery_strategy : int {
  * select_max_min_finder_subselect->select_subselect->select_result_interceptor->select_result->Sql_alloc
  * select_max_min_finder_subselect、select_singlerow_subselect、select_exists_subselect分别用于处理优化后可转为MAX/MIN、singlerow、exists类型的子查询.
 */
-Item_exists_subselectclass  : public Item_subselect {
+class Item_exists_subselect : public Item_subselect {
   typedef Item_subselect super;
 
  protected:
