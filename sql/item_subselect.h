@@ -421,8 +421,33 @@ enum class Subquery_strategy : int {
   /// Subquery materialization (HASH_SJ_ENGINE)
   SUBQ_MATERIALIZATION,
 };
-
-class Item_exists_subselect : public Item_subselect {
+/** NOTE:Item_exists_subselect:形式上看,处理带有EXISTS谓词的子查询,但因带有EXISTS谓词的子查询的结果是一个布尔值,
+ * 而IN谓词可转换为EXISTS,所以处理这些子查询在方式上有共同之处.
+ * Item_exists_subselect类有子类Item_in_subselect、Item_in_subselect有子类Item_allany_subselect.
+ * Item_in_subselect:处理带有IN谓词的子查询.
+ * Item_allany_subselect:处理带有ALL、ANY、SOME谓词的子查询.
+ * MySQL支持的子查询优化类型如下:
+ * Scalar IN Subquery,标量IN子查询.
+ * Row IN Subquery,行子查询.
+ * Item_allany_subselect谓词为ALL、ANY、SOME类型的子查询.
+ * Item_singlerow_subselect,单行子查询,相当于标量子查询.
+ * MySQL支持的IN/ANY/EXISTS类型子查询的继承关系如下:
+ *                       Item
+ *                        /|\
+ *                   Item_result_field
+ *                        /|\
+ *                    Item_subselct
+ *                        /|\
+ * Item_singlerow_subselect  Item_exists_subselect
+ *                                     /|\
+ *                               Item_in_subselect
+ *                                     /|\
+ *                               Item_allany_subselect
+ * select_max_min_finder_subselect类是select_subselect的子类,继承关系如下:
+ * select_max_min_finder_subselect->select_subselect->select_result_interceptor->select_result->Sql_alloc
+ * select_max_min_finder_subselect、select_singlerow_subselect、select_exists_subselect分别用于处理优化后可转为MAX/MIN、singlerow、exists类型的子查询.
+*/
+Item_exists_subselectclass  : public Item_subselect {
   typedef Item_subselect super;
 
  protected:
