@@ -10584,6 +10584,8 @@ void JOIN::optimize_keyuse() {
  * 4.ORDERBY子句按照降序排序
  * 5.只有一个LIMIT子句
  * 6.使用了全文检索函数(函数类型为FT_FUNC)
+ * 调用关系:
+ * JOIN::optimize -> JOIN::optimize_fts_query
 */
 bool JOIN::optimize_fts_query() {
   ASSERT_BEST_REF_IN_JOIN_ORDER(this);
