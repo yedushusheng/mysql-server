@@ -10065,6 +10065,8 @@ ORDER *JOIN::remove_const(ORDER *first_order, Item *cond, bool change_list,
  * 1.等式合并
  * 2.常量求值
  * 3.条件去除
+ * 调用关系:
+ * JOIN::optimize -> optimize_cond
 */
 bool optimize_cond(THD *thd, Item **cond, COND_EQUAL **cond_equal,
                    mem_root_deque<TABLE_LIST *> *join_list,

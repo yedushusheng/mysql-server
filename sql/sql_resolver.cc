@@ -1353,6 +1353,9 @@ bool SELECT_LEX::is_row_count_valid_for_semi_join() {
  * 3.使用IN向EXISTS转换
  * 4.执行<op>ALL/ANY/SOME向MIN/MAX转换,op为大于或小于操作
  * 5.使用值替代标量子查询
+ * 调用关系:
+ * SELECT_LEX::prepare -> SELECT_LEX::resolve_subquery
+ * SELECT_LEX::prepare -> SELECT_LEX::prepare_values -> SELECT_LEX::resolve_subquery
 */
 bool SELECT_LEX::resolve_subquery(THD *thd) {
   DBUG_TRACE;
@@ -1916,7 +1919,13 @@ void SELECT_LEX::reset_nj_counters(mem_root_deque<TABLE_LIST *> *join_list) {
 
   @returns true for error, false for success
 */
-//NOTE:完成外连接向内连接的化简 outer join -> inner join
+/** NOTE:完成外连接向内连接的化简 outer join -> inner join
+ * 主要工作包括两个方面,一是外连接消除,二是嵌套连接清除.
+ * 外连接消除,把可以转换为内连接的外连接进行转换.对于以嵌套形式存在的外连接也进行处理.
+ * 嵌套连接清除,把一些用于标识嵌套的括号尽可能清除.
+ * 调用关系:
+ * SELECT_LEX::prepare -> SELECT_LEX::prepare_values -> SELECT_LEX::simplify_joins
+*/
 bool SELECT_LEX::simplify_joins(THD *thd,
                                 mem_root_deque<TABLE_LIST *> *join_list,
                                 bool top, bool in_sj, Item **cond,
@@ -1965,7 +1974,7 @@ bool SELECT_LEX::simplify_joins(THD *thd,
     while confronting W with (B SEMI JOIN C), if W is known false we will
 
   */
-  for (TABLE_LIST *table : *join_list) {
+  for (TABLE_LIST *table : *join_list) {  //NOTE:第一部分:对连接处理,转换外连接为内连接
     table_map used_tables;
     table_map not_null_tables = (table_map)0;
 
@@ -1976,7 +1985,7 @@ bool SELECT_LEX::simplify_joins(THD *thd,
          This confronts the join nest's condition with each member of the
          nest.
       */
-      if (table->join_cond()) {
+      if (table->join_cond()) {  //NOTE:如果表上有连接表达式,消除其中可能的外连接
         Item *join_cond = table->join_cond();
         /*
            If a join condition JC is attached to the table,
@@ -1986,6 +1995,7 @@ bool SELECT_LEX::simplify_joins(THD *thd,
            the outer join is converted to an inner join and
            the corresponding join condition is added to JC.
         */
+        //NOTE:递归调用simplify_joins的conds参数table->join_cond()
         if (simplify_joins(
                 thd, &nested_join->join_list,
                 false,  // not 'top' as it's not WHERE.
@@ -2001,6 +2011,7 @@ bool SELECT_LEX::simplify_joins(THD *thd,
       nested_join->used_tables = (table_map)0;
       nested_join->not_null_tables = (table_map)0;
       // This recursively confronts "cond" with each member of the nest
+      //NOTE:有嵌套连接存在,递归处理嵌套连接的情况,参数与前面的递归调用不同
       if (simplify_joins(thd, &nested_join->join_list,
                          top,  // if it was WHERE it still is
                          in_sj || table->is_sj_or_aj_nest(), cond, changelog))
@@ -2017,6 +2028,7 @@ bool SELECT_LEX::simplify_joins(THD *thd,
       table->embedding->nested_join->not_null_tables |= not_null_tables;
     }
 
+    //NOTE:如果是内标(a left join b,b为内表)
     if (!table->outer_join || (used_tables & not_null_tables)) {
       /*
         For some of the inner tables there are conjunctive predicates
@@ -2026,10 +2038,13 @@ bool SELECT_LEX::simplify_joins(THD *thd,
         *changelog |= OUTER_JOIN_TO_INNER;
         table->outer_join = false;
       }
+      /** NOTE:对于内接的内表,在WHERE或ON表达式上存在有包含连接谓词的嵌入式的嵌套连接,
+       * 且有空值拒绝的条件在内表的列上,则这样的外连接可以被转换为内连接.
+      */
       if (table->join_cond()) {
         *changelog |= JOIN_COND_TO_WHERE;
         /* Add join condition to the WHERE or upper-level join condition. */
-        if (*cond) {
+        if (*cond) { //NOTE:外连接转为内连接,diamante中的实现是把条件放到WHERE子句的条件中
           Item *i1 = *cond, *i2 = table->join_cond();
           /*
             User supplied stored procedures in the query can violate row-level
@@ -2060,17 +2075,21 @@ bool SELECT_LEX::simplify_joins(THD *thd,
         }
         table->set_join_cond(nullptr);
       }
-    }
+    }//NOTE:对内表的处理结束
 
     // A table is traversed when 'cond' is WHERE, and when 'cond' is the join
     // condition of any nest containing the table. Some bitmaps can be set
     // only after all traversals of this table i.e. when 'cond' is WHERE.
+    /** NOTE:如果top为false,则循环继续执行,这意味着本轮次(本函数被调用)第一个simplify_joins递归结束.
+     * 即table上的table->on_expr被逐层处理完毕(因为可能有多层的嵌套)
+    */
     if (!top) continue;
 
     /*
       Only inner tables of non-convertible outer joins remain with
       the join condition.
     */
+    //NOTE:经过上面的代码处理后,如果表上还有表达式,则对应的是不可以再转换的外连接的内表
     if (table->join_cond()) {
       table->dep_tables |= table->join_cond()->used_tables();
       // At this point the joined tables always have an embedding join nest:
@@ -2117,6 +2136,9 @@ bool SELECT_LEX::simplify_joins(THD *thd,
   /*
     Flatten nested joins that can be flattened.
     no join condition and not a semi-join => can be flattened.
+  */
+  /** NOTE:第二部分:可以转换为内连接的外连接全部处理完毕,扁平化可被扁平处理的连接,消除嵌套连接
+   * 没有连接条件且不是半连接,都可以被扁平化处理.
   */
   for (auto li = join_list->begin(); li != join_list->end();) {
     TABLE_LIST *table = *li;
@@ -3769,6 +3791,8 @@ static bool replace_subcondition(THD *thd, Item **tree, Item *old_cond,
 /** NOTE:flatten_subqueries函数对可以对半连接的子查询进行转换,即把子查询的表对象上拉到FROM子句,
  * 把FROM子句原先的表对象和子查询中被上拉的表对象进行半连接操作.
  * 这种转换称为"扁平化子查询".
+ * 调用关系:
+ * SELECT_LEX::prepare -> SELECT_LEX::flatten_subqueries
 */
 bool SELECT_LEX::flatten_subqueries(THD *thd) {
   DBUG_TRACE;
