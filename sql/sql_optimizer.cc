@@ -10059,7 +10059,13 @@ ORDER *JOIN::remove_const(ORDER *first_order, Item *cond, bool change_list,
 
   @returns false if success, true if error
 */
-
+/** NOTE:条件表达式优化,其应用多等式谓词的传递特性(即等式传递,multiple equality predicates,MEP)优化条件表达式,
+ * 主要的优化对象是WHERE、JOIN/ON、HAVING中的条件表达式.
+ * optimize_cond函数优化针对如下3种情况进行:
+ * 1.等式合并
+ * 2.常量求值
+ * 3.条件去除
+*/
 bool optimize_cond(THD *thd, Item **cond, COND_EQUAL **cond_equal,
                    mem_root_deque<TABLE_LIST *> *join_list,
                    Item::cond_result *cond_value) {
