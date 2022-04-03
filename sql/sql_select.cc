@@ -3097,6 +3097,9 @@ void QEP_TAB::init_join_cache(JOIN_TAB *join_tab) {
       - increment relevant counters
       - etc
 */
+/** NOTE:为各种类型的表的数据获取做准备工作(如获取读取数据的标识,确定怎么获取第一条数据、怎么获取其他数据等;
+ * 代码实现时通过函数指针为TABLE->status、TABLE->read_first_record等赋值完成的)
+*/
 /** NOTE:make_join_readinfo函数用于确认连接是否需要排序,并建立半连接的消除重复的策略;
  * 为连接中的每个非常量表进行增加缓存、下推索引条件等方式的信息处理.
  * 这些操作都是为执行器查询执行计划做准备.
@@ -4166,7 +4169,7 @@ bool JOIN::add_having_as_tmp_table_cond(uint curr_tmp_table) {
   false - Ok
   true  - Error
 */
-
+//NOTE:初始化临时表
 bool JOIN::make_tmp_tables_info() {
   DBUG_ASSERT(!join_tab);
   mem_root_deque<Item *> *curr_fields = fields;

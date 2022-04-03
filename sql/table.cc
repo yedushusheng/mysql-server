@@ -6107,6 +6107,7 @@ void TABLE::copy_tmp_key(int old_idx, bool modify_share) {
 
   @param modify_share   Do modifications to TABLE_SHARE. @see alloc_tmp_keys
 */
+//NOTE:对于每一个被物化操作驱动的表、视图,去掉其上不再被使用的索引信息
 void TABLE::drop_unused_tmp_keys(bool modify_share) {
   if (modify_share) {
     DBUG_ASSERT(s->first_unused_tmp_key <= s->keys);

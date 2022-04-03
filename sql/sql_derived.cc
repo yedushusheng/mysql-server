@@ -1282,7 +1282,10 @@ bool Condition_pushdown::attach_cond_to_derived(Item *derived_cond,
 
   @returns false if success, true if error.
 */
-
+/** NOTE:对于查询语句中的关系(由连接得到的临时中间文件)或者视图对象,
+ * 使用materialize_derived(MySQL8.0)/mysql_derived_optimize(MySQL5.7)函数,
+ * 创建临时结果表或物化临时关系,便于后续使用.
+*/
 bool TABLE_LIST::optimize_derived(THD *thd) {
   DBUG_TRACE;
 

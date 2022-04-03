@@ -251,31 +251,32 @@ bool JOIN::alloc_indirection_slices() {
   @retval false Success.
   @retval true Error, error code saved in member JOIN::error.
 */
-/**优化代码(MySQL5.6)：
- * handle_select()  //MySQL8.0:Sql_cmd_select::prepare_inner
-   mysql_select()                 \|/
-     JOIN::prepare()  //MySQL8.0:SELECT_LEX::prepare  
-       setup_fields()  
-     JOIN::optimize()            // optimizer is from here ... MySQL8.0与5.6一致
-       optimize_cond()
-       opt_sum_query()
-       make_join_statistics()
-         get_quick_record_count()
-         choose_plan()
-           // Find the best way to access tables 
-           // as specified by the user.         
-           optimize_straight_join()
-             best_access_path()
-           // Find a (sub-)optimal plan among all or subset 
-           // of all possible query plans where the user   
-           // controls the exhaustiveness of the search.  
-           greedy_search()
-             best_extension_by_limited_search()
-               best_access_path()
-           // Perform an exhaustive search for an optimal plan
-           find_best()
-       make_join_select()        // ... to here 
-     JOIN::exec()  //MySQL8.0:Sql_cmd_dml::execute_inner
+/** 优化代码(MySQL5.6)：
+ *    handle_select()  //MySQL8.0:Sql_cmd_select::prepare_inner
+ *    mysql_select()                 \|/
+ *      JOIN::prepare()  //MySQL8.0:SELECT_LEX::prepare  
+ *        setup_fields()  
+ *      JOIN::optimize()            // optimizer is from here ... MySQL8.0与5.6一致
+ *        optimize_cond()
+ *        opt_sum_query()
+ *        make_join_statistics()
+ *          get_quick_record_count()
+ *          choose_plan()
+ *            // Find the best way to access tables 
+ *            // as specified by the user.         
+ *            optimize_straight_join()
+ *              best_access_path()
+ *            // Find a (sub-)optimal plan among all or subset 
+ *            // of all possible query plans where the user   
+ *            // controls the exhaustiveness of the search.  
+ *            greedy_search()
+ *              best_extension_by_limited_search()
+ *                best_access_path()
+ *            // Perform an exhaustive search for an optimal plan
+ *            find_best()
+ *        make_join_select()        // ... to here 
+ *      JOIN::exec()  //MySQL8.0:Sql_cmd_dml::execute_inner
+ * JOIN::optimze函数是优化器的主函数,对SQL语句进行各种优化,包括逻辑查询优化和物理查询优化,得到查询执行计划.
 */
 //NOTE:对外接口
 bool JOIN::optimize() {
@@ -317,6 +318,7 @@ bool JOIN::optimize() {
 
   if (alloc_func_list()) return true; /* purecov: inspected */
 
+  //NOTE:收集WHERE/HAVING/JOIN ON中的等值关系
   if (select_lex->get_optimizable_conditions(thd, &where_cond, &having_cond))
     return true;
 
@@ -391,6 +393,7 @@ bool JOIN::optimize() {
     goto setup_subq_exit;
   }
 
+  //NOTE:条件表达式优化(where)
   if (where_cond || select_lex->outer_join) {
     if (optimize_cond(thd, &where_cond, &cond_equal, &select_lex->top_join_list,
                       &select_lex->cond_value)) {
@@ -405,6 +408,7 @@ bool JOIN::optimize() {
       goto setup_subq_exit;
     }
   }
+  //NOTE:如果having不能成功合并到where子句,则调用optimize_cond优化having子句
   if (having_cond) {
     if (optimize_cond(thd, &having_cond, &cond_equal, nullptr,
                       &select_lex->having_value)) {
@@ -432,8 +436,15 @@ bool JOIN::optimize() {
      group_list). In this case, the result set shall only contain one
      row.
   */
+  /** NOTE:聚合函数优化
+   * 对没有GROUP子句且调用了COUNT(*)、MIN()、MAX()函数的情况进行优化
+   * 通过调用optimize_aggregated_query(MySQL8.0)/opt_sum_query(MySQL5.7)函数对每个叶子表(单表)上满足上述条件的情况进行优化
+  */
   if (tables_list && implicit_grouping &&
       !(select_lex->active_options() & OPTION_NO_CONST_TABLES)) {
+  /** NOTE:有聚合函数但没有GROUPBY子句,则implicit_grouping在SELECT_LEX::prepare(JON::prepare)
+   * 方法中被赋值为TRUE(此种情况下,结果集应该是0行或一行数据).
+  */
     aggregate_evaluated outcome;
     if (optimize_aggregated_query(thd, select_lex, *fields, where_cond,
                                   &outcome)) {
@@ -558,6 +569,8 @@ bool JOIN::optimize() {
 
   // Set up join order and initial access paths
   THD_STAGE_INFO(thd, stage_statistics);
+  /** NOTE:为外连接填充信息(make_outerjoin_info),重置嵌套连接信息(reset_nj_counters)
+  */
   if (make_join_plan()) {
     if (thd->killed) thd->send_kill_message();
     DBUG_PRINT("error", ("Error: JOIN::make_join_plan() failed"));
@@ -577,6 +590,7 @@ bool JOIN::optimize() {
     select_distinct &= !plan_is_const();
   }
 
+  //NOTE:优化点:对常量表可以提前解锁
   if (const_tables && !thd->locked_tables_mode &&
       !(select_lex->active_options() & SELECT_NO_UNLOCK)) {
     TABLE *ct[MAX_TABLES];
@@ -601,6 +615,7 @@ bool JOIN::optimize() {
   if (where_cond) {
     where_cond =
         substitute_for_best_equal_field(thd, where_cond, cond_equal, map2table);
+    //NOTE:调用substitute_for_best_equal_field函数化简条件中冗余的等式
     if (thd->is_error()) {
       error = 1;
       DBUG_PRINT("error", ("Error from substitute_for_best_equal"));
@@ -620,6 +635,7 @@ bool JOIN::optimize() {
     if (tab->position() && tab->join_cond()) {
       tab->set_join_cond(substitute_for_best_equal_field(
           thd, tab->join_cond(), tab->cond_equal, map2table));
+      //NOTE:化简每个表上条件中冗余的等式
       if (thd->is_error()) {
         error = 1;
         DBUG_PRINT("error", ("Error from substitute_for_best_equal"));
@@ -643,6 +659,7 @@ bool JOIN::optimize() {
 
   THD_STAGE_INFO(thd, stage_preparing);
 
+  //NOTE:对条件尽量求值,并下推约束条件到表中
   if (make_join_select(this, where_cond)) {
     if (thd->is_error()) return true;
 
@@ -877,9 +894,13 @@ bool JOIN::optimize() {
     return true;  // error == -1
   }
 
+  /** NOTE:为各种类型的表的数据获取做准备工作(如获取读取数据的标识,确定怎么获取第一条数据、怎么获取其他数据等;
+   * 代码实现时通过函数指针为TABLE->status、TABLE->read_first_record等赋值完成的)
+  */
   if (make_join_readinfo(this, no_jbuf_after))
     return true; /* purecov: inspected */
 
+  //NOTE:初始化临时表
   if (make_tmp_tables_info()) return true;
 
   /*
@@ -3036,6 +3057,7 @@ bool JOIN::get_best_combination() {
     adjust_access_methods();
   }
   // Calculate outer join info
+  //NOTE:为外连接填充信息
   if (select_lex->outer_join) make_outerjoin_info();
 
   // sjm is no longer needed, trash it. To reuse it, reset its members!
@@ -4456,7 +4478,7 @@ static Item *eliminate_item_equal(THD *thd, Item *cond,
   @return
     The transformed condition, or NULL in case of error
 */
-
+//NOTE:化简条件中冗余的等式
 Item *substitute_for_best_equal_field(THD *thd, Item *cond,
                                       COND_EQUAL *cond_equal,
                                       JOIN_TAB **table_join_idx) {
@@ -5100,6 +5122,7 @@ bool JOIN::make_join_plan() {
   positions = nullptr;  // But keep best_positions for get_best_combination
 
   // Generate an execution plan from the found optimal join order.
+  //NOTE:设置为外连接填充信息,重置嵌套连接信息
   if (get_best_combination()) return true;
 
   // Cleanup after update_ref_and_keys has added keys for derived tables.
@@ -8269,13 +8292,14 @@ void JOIN::mark_const_table(JOIN_TAB *tab, Key_use *key) {
 
   const_tables++;
 }
-
+//NOTE:为外连接填充信息
 void JOIN::make_outerjoin_info() {
   DBUG_TRACE;
 
   DBUG_ASSERT(select_lex->outer_join);
   ASSERT_BEST_REF_IN_JOIN_ORDER(this);
-
+  
+  //NOTE:重置嵌套连接信息
   select_lex->reset_nj_counters();
 
   for (uint i = const_tables; i < tables; ++i) {
@@ -9103,6 +9127,7 @@ void JOIN::finalize_derived_keys() {
       */
       table->s->owner_of_possible_tmp_keys = nullptr;
       Derived_refs_iterator it(table_ref);
+      //NOTE:对于每一个被物化操作驱动的表、视图,去掉其上不再被使用的索引信息
       while (TABLE *t = it.get_next()) t->drop_unused_tmp_keys(it.is_first());
     }
   }
@@ -9245,7 +9270,8 @@ Item *make_cond_for_table(THD *thd, Item *cond, table_map tables,
   @retval true  Found impossible WHERE clause, or out-of-memory
   @retval false Other
 */
-/** NOTE:make_join_select函数用于分解连接条件(WHERE/ON子句中的条件),下推选择等条件到表中.
+/** NOTE:对条件尽量求值,并下推约束条件到表中
+ * make_join_select函数用于分解连接条件(WHERE/ON子句中的条件),下推选择等条件到表中.
  * 需要注意的是,make_join_select函数通过调用add_not_null_conds函数为列对象增加非空条件,进而利用语义优化技术进行优化.
 */
 static bool make_join_select(JOIN *join, Item *cond) {

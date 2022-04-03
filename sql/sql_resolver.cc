@@ -737,7 +737,7 @@ bool SELECT_LEX::prepare_values(THD *thd) {
   Since this is called after flattening of query blocks, call this function
   while traversing the query block hierarchy top-down.
 */
-
+//NOTE:SELECT_LEX::prepare阶段调用 这里涉及到外连接化简(outer join->inner join)
 bool SELECT_LEX::apply_local_transforms(THD *thd, bool prune) {
   DBUG_TRACE;
 
@@ -761,8 +761,13 @@ bool SELECT_LEX::apply_local_transforms(THD *thd, bool prune) {
   }
 
   // Convert all outer joins to inner joins if possible
+  //NOTE:完成外连接向内连接的化简
   if (simplify_joins(thd, &top_join_list, true, false, &m_where_cond))
     return true;
+  /** NOTE:递归调用record_join_nest_info函数,记录连接的嵌套信息到查询块(st_select_lex *select)中:
+   * --record the remaining semi-join structures in the enclosing query block.
+   * --record transformed join conditions in TABLE_LIST objects.
+  */
   if (record_join_nest_info(&top_join_list)) return true;
   build_bitmap_for_nested_joins(&top_join_list, 0);
 
@@ -1777,7 +1782,7 @@ bool SELECT_LEX::setup_join_cond(THD *thd, mem_root_deque<TABLE_LIST *> *tables,
   then it is a list of nested joins to process, and may also contain base
   tables which will be ignored.
 */
-
+//NOTE:重置嵌套连接信息
 void SELECT_LEX::reset_nj_counters(mem_root_deque<TABLE_LIST *> *join_list) {
   DBUG_TRACE;
   if (join_list == nullptr) join_list = &top_join_list;
@@ -1911,7 +1916,7 @@ void SELECT_LEX::reset_nj_counters(mem_root_deque<TABLE_LIST *> *join_list) {
 
   @returns true for error, false for success
 */
-//NOTE:outer join -> inner join
+//NOTE:完成外连接向内连接的化简 outer join -> inner join
 bool SELECT_LEX::simplify_joins(THD *thd,
                                 mem_root_deque<TABLE_LIST *> *join_list,
                                 bool top, bool in_sj, Item **cond,
@@ -2201,6 +2206,11 @@ bool SELECT_LEX::simplify_joins(THD *thd,
   @param tables List of tables and join nests
 
   @return False if successful, True if failure
+*/
+/** NOTE:递归调用record_join_nest_info函数,记录连接的嵌套信息到查询块(st_select_lex *select)中:
+ * --record the remaining semi-join structures in the enclosing query block.
+ * --record transformed join conditions in TABLE_LIST objects.
+ * MySQL5.7在JOIN::optimize阶段调用,MySQL8.0在SELECT_LEX::prepare阶段调用
 */
 bool SELECT_LEX::record_join_nest_info(mem_root_deque<TABLE_LIST *> *tables) {
   for (TABLE_LIST *table : *tables) {
