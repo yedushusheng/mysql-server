@@ -786,6 +786,7 @@ bool JOIN::optimize() {
     for (uint i = const_tables; i < tables; i++) {
       JOIN_TAB *const tab = best_ref[i];
       if (!tab->position()) continue;
+      //NOTE:为连接建立缓存
       if (setup_join_buffering(tab, this, no_jbuf_after)) return true;
       if (tab->use_join_cache() != JOIN_CACHE::ALG_NONE) simple_sort = false;
       DBUG_ASSERT(tab->type() != JT_FT ||
