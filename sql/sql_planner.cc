@@ -1937,6 +1937,7 @@ bool Optimize_table_order::choose_table_order() {
     (join->positions + i)->set_prefix_cost(0.0, 1.0);
 
   /* Are there any tables to optimize? */
+  //NOTE:全是常量表不用做多表连接的优化
   if (join->const_tables == join->tables) {
     memcpy(join->best_positions, join->positions,
            sizeof(POSITION) * join->const_tables);
@@ -1948,11 +1949,14 @@ bool Optimize_table_order::choose_table_order() {
 
   join->select_lex->reset_nj_counters();
 
+  /** NOTE:确定是否采用SQL语句指定的连接次序执行多表连接查询计划的生成
+   * 如果在SQL语句中通过hint指定STRAIGHT_JOIN,则join->select_options被赋值SELECT_STRAIGHT_JOIN
+  */
   const bool straight_join =
       join->select_lex->active_options() & SELECT_STRAIGHT_JOIN;
   table_map join_tables;  ///< The tables involved in order selection
 
-  if (emb_sjm_nest) {
+  if (emb_sjm_nest) {  //NOTE:如果存在半连接,通过物化方式优化
     /* We're optimizing semi-join materialization nest, so put the
        tables from this semi-join as first
     */
@@ -1960,7 +1964,7 @@ bool Optimize_table_order::choose_table_order() {
                join->best_ref + join->tables,
                Join_tab_compare_embedded_first(emb_sjm_nest));
     join_tables = emb_sjm_nest->sj_inner_tables;
-  } else {
+  } else {  //NOTE:否则,需要对多表连接进行优化求解最优查询路径
     /*
       if (SELECT_STRAIGHT_JOIN option is set)
         reorder tables so dependent tables come after tables they depend
@@ -1969,13 +1973,17 @@ bool Optimize_table_order::choose_table_order() {
         Apply heuristic: pre-sort all access plans with respect to the number of
         records accessed.
     */
-    if (straight_join)
+    if (straight_join)  //NOTE:使用用户指定的表连接次序对要连接的表排序,常量表除外
       merge_sort(join->best_ref + join->const_tables,
                  join->best_ref + join->tables, Join_tab_compare_straight());
     else
+    /** NOTE:否则,使用greedy_search算法,但之前需要对要连接的表排序.
+     * 排序的方式是,按照表的元组数,从小到大排序要连接的表.
+     * 这是一条启发规则:MySQL认为按照可访问到的元组的个数从小到大为所有基表排序可获得更好的多表连接路径
+    */
       merge_sort(join->best_ref + join->const_tables,
                  join->best_ref + join->tables, Join_tab_compare_default());
-
+    //NOTE:所有的基表去掉常量表就是用于连接的表
     join_tables = join->all_table_map & ~join->const_table_map;
   }
 
@@ -2001,10 +2009,10 @@ bool Optimize_table_order::choose_table_order() {
   Deps_of_remaining_lateral_derived_tables deps_lateral(join, ~excluded_tables);
   deps_lateral.init();
 
-  if (straight_join)
-    optimize_straight_join(join_tables);
-  else {
-    if (greedy_search(join_tables)) return true;
+  if (straight_join)  //NOTE:使用用户指定的表连接次序进行连接,查询优化器不再进行优化
+    optimize_straight_join(join_tables);  //NOTE:多表连接方法一:强制优化器使用SQL语句中指定的表的连接次序进行多表连接
+  else {  //NOTE:否则,调用greedy_search函数对多表连接进行优化
+    if (greedy_search(join_tables)) return true;  //NOTE:多表连接方法二:贪婪算法
   }
 
   deps_lateral.assert_unchanged();
@@ -2015,7 +2023,7 @@ bool Optimize_table_order::choose_table_order() {
   if (emb_sjm_nest) return false;
 
   // Fix semi-join strategies and perform final cost calculation.
-  if (fix_semijoin_strategies()) return true;
+  if (fix_semijoin_strategies()) return true;  //NOTE:修改半连接策略并估算花费
 
   return false;
 }
