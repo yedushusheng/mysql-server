@@ -1325,7 +1325,23 @@ SJ_TMP_TABLE *create_sj_tmp_table(THD *thd, JOIN *join,
   setup/initialization of semi-join materialization which is done in
   setup_materialized_table().
 */
-
+/** NOTE:建立半连接重复元组消除策略(重复的元组按半连接语义保留一个即可)
+ * MySQL对于子查询的优化方式之一是优化子查询为半连接(如果被优化为半连接,意味着有重复的元组可以被去掉以节约多次连接的花费).
+ * 确定半连接消重策略函数,MySQL提供了5种半连接消重策略.
+ * 1.转换子查询为连接操作(Pull Out Subquery):这种方式是子查询的上拉操作,把子查询变换为连接操作的内表,用连接操作替代子查询.
+ * 2.重复淘汰(Duplicate Weedout):运用半连接算法的过程中使用临时表,先去掉子查询涉及的表的重复的记录,然后与外表做连接匹配.
+ * 这是根据子查询的语义直接进行的优化,如IN类型子查询通常这样处理.
+ * 3.首次匹配(FirstMatch):与重复淘汰不同的是,不对子查询涉及的表的重复记录提前处理,而是在外表和作为内表的子查询做连接时,
+ * 外表的每一个元组遇到第一个匹配的即停止对内表中其他元组的检索,这是一种相对快捷的连接方式.
+ * 4.松散扫描(LoosenScan):当子查询中的数据稀疏且存在索引时,利用索引对子查询的表的元素能够快速且高效地进行查找.
+ * 相对上面的方法,该方法更为快速.
+ * 5.物化子查询(Materialize):把子查询物化到一个临时表中,物化的过程中,尽量使用索引完成物化.
+ * 使用物化后的临时表执行连接操作,在使用临时表做连接时,如果索引不可用,则使用全表扫描.
+ * MySQL提供的5中方式在对子查询转化的内表读取以及内表的元组的获取方面,有着不同的差别,或提前消除重复元素或用索引获取元组.
+ * 5种策略的选取依靠代价估算进行评估.
+ * 调用关系:
+ * JOIN::optimize -> make_join_readinfo -> setup_semijoin_dups_elimination
+*/
 static bool setup_semijoin_dups_elimination(JOIN *join, uint no_jbuf_after) {
   uint tableno;
   THD *thd = join->thd;
@@ -2735,6 +2751,7 @@ static Item *make_cond_remainder(Item *cond, bool exclude_index) {
   @param  keyno          Index for which extract and push the condition
   @param  trace_obj      trace object where information is to be added
 */
+//NOTE:完成普通表的索引条件下推
 void QEP_TAB::push_index_cond(const JOIN_TAB *join_tab, uint keyno,
                               Opt_trace_object *trace_obj) {
   JOIN *const join_ = join();
@@ -3103,6 +3120,9 @@ void QEP_TAB::init_join_cache(JOIN_TAB *join_tab) {
 /** NOTE:make_join_readinfo函数用于确认连接是否需要排序,并建立半连接的消除重复的策略;
  * 为连接中的每个非常量表进行增加缓存、下推索引条件等方式的信息处理.
  * 这些操作都是为执行器查询执行计划做准备.
+ * 调用关系:
+ * JOIN::optimzie -> make_join_readinfo -> setup_semijoin_dups_elimination
+ *                                      -> push_index_cond
 */
 bool make_join_readinfo(JOIN *join, uint no_jbuf_after) {
   const bool statistics = !join->thd->lex->is_explain();
@@ -3118,11 +3138,13 @@ bool make_join_readinfo(JOIN *join, uint no_jbuf_after) {
   Opt_trace_object wrapper(trace);
   Opt_trace_array trace_refine_plan(trace, "refine_plan");
 
+  //NOTE:建立半连接重复元组消除策略(重复的元组按半连接语义保留一个即可)
   if (setup_semijoin_dups_elimination(join, no_jbuf_after))
     return true; /* purecov: inspected */
 
+  //NOTE:遍历除常量表外的所有表,为每个表建立连接缓存、下推索引条件到表等
   for (uint i = join->const_tables; i < join->tables; i++) {
-    QEP_TAB *const qep_tab = &join->qep_tab[i];
+    QEP_TAB *const qep_tab = &join->qep_tab[i];  //NOTE:为tab上的各成员赋值
     if (!qep_tab->position()) continue;
 
     JOIN_TAB *const tab = join->best_ref[i];
@@ -3144,16 +3166,25 @@ bool make_join_readinfo(JOIN *join, uint no_jbuf_after) {
     if (tab->use_join_cache() != JOIN_CACHE::ALG_NONE)
       qep_tab->init_join_cache(tab);
 
+    //NOTE:对不同类型的表进行处理,主要是确定有无缓存可用,索引条件是否可以下推(如可下推,则算是一个优化点)
     switch (qep_tab->type()) {
       case JT_EQ_REF:
       case JT_REF_OR_NULL:
       case JT_REF:
       case JT_SYSTEM:
+      /** NOTE:循环的起始位置,是从常量表的下一个位置开始的,所以不可能有常量表被遍历.
+       * 但是,如果连接中包含外连接等,则外连接中包括的常量表是不能放到连接的最前面的,所以可能被遍历到.
+      */
       case JT_CONST:
+      /** NOTE:主要调用了:
+       * 1)setup_join_buffering:为连接建立缓存
+       * 2)push_index_cond:把索引条件下推,可快速获取单表数据
+      */
         if (table->covering_keys.is_set(qep_tab->ref().key) &&
             !table->no_keyread)
           table->set_keyread(true);
         else
+          //NOTE:完成普通表的索引条件下推工作
           qep_tab->push_index_cond(tab, qep_tab->ref().key,
                                    &trace_refine_table);
         break;
@@ -3185,6 +3216,7 @@ bool make_join_readinfo(JOIN *join, uint no_jbuf_after) {
                   rows_w_const_cond / tab->position()->rows_fetched);
           }
         }
+        //NOTE:动态快速扫描(MySQL支持两种方式,包括QS_RANGE,QS_DYNAMIC_RANGE)
         if (qep_tab->using_dynamic_range) {
           join->thd->set_status_no_good_index_used();
           if (statistics) join->thd->inc_status_select_range_check();
@@ -3211,6 +3243,7 @@ bool make_join_readinfo(JOIN *join, uint no_jbuf_after) {
             DBUG_ASSERT(qep_tab->quick()->index != MAX_KEY);
             table->set_keyread(true);
           }
+          //NOTE:把索引条件下推,可快速获取单表数据
           if (!table->key_read)
             qep_tab->push_index_cond(tab, qep_tab->quick()->index,
                                      &trace_refine_table);
@@ -3279,6 +3312,7 @@ bool make_join_readinfo(JOIN *join, uint no_jbuf_after) {
       qep_tab->materialize_table = QEP_TAB::MATERIALIZE_TABLE_FUNCTION;
       if (tab->dependent) qep_tab->rematerialize = true;
     } else if (table_ref->uses_materialization()) {
+    //NOTE:优先访问物化起源表
       qep_tab->materialize_table = QEP_TAB::MATERIALIZE_DERIVED;
     }
 
