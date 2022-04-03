@@ -675,6 +675,7 @@ bool JOIN::optimize() {
 
   error = -1; /* if goto err */
 
+  //NOTE:尝试用索引代替排序操作(避免不必要的排序)
   if (optimize_distinct_group_order()) return true;
 
   if ((select_lex->active_options() & SELECT_NO_JOIN_CACHE) ||
@@ -884,6 +885,7 @@ bool JOIN::optimize() {
 
   if (!plan_is_const()) {
     // Test if we can use an index instead of sorting
+    //NOTE:尝试使用索引代替排序操作(调用test_if_skip_sort_order)
     test_skip_sort();
 
     if (finalize_table_conditions()) return true;
@@ -1498,7 +1500,10 @@ bool JOIN::optimize_distinct_group_order() {
 
   return false;
 }
-
+/** NOTE:
+ * 调用关系:尝试使用索引代替排序操作(避免不必要排序)
+ * JOIN::optimize -> JOIN::test_skip_sort
+*/
 void JOIN::test_skip_sort() {
   DBUG_TRACE;
   ASSERT_BEST_REF_IN_JOIN_ORDER(this);
@@ -2024,6 +2029,10 @@ class Plan_change_watchdog {
     1    We can use an index.
 */
 /** NOTE:test_if_skip_sort_order函数尝试使用索引代替排序操作,这是排序的优化方式之一.
+ * JOIN::optimze调用多次,用于化解SQL中的ORDERBY操作、带有DISTINCT、GROUPBY的ORDERBY操作等.
+ * 调用关系:
+ * JOIN::optimize -> JOIN::test_skip_sort() -> test_if_skip_sort_order
+ * JOIN::optimize -> JOIN::optimize_distinct_group_order -> test_if_skip_sort_order
 */
 static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
                                     ha_rows select_limit, const bool no_changes,
