@@ -5023,7 +5023,9 @@ void JOIN::set_prefix_tables() {
 
   - Fill in remaining information for the generated join order.
 */
-
+/** NOTE:
+ * MySQL8.0接口make_join_plan,MySQL5.7接口make_join_statistics
+*/
 bool JOIN::make_join_plan() {
   DBUG_TRACE;
 
@@ -5060,6 +5062,7 @@ bool JOIN::make_join_plan() {
 
   // Build the key access information, which is the basis for ref access.
   if (where_cond || select_lex->outer_join) {
+    //NOTE:通过调用add_key_fields找出可用的索引,以备使用,找出索引信息,是为了利用索引快速完成查询
     if (update_ref_and_keys(thd, &keyuse_array, join_tab, tables, where_cond,
                             ~select_lex->outer_join, select_lex, &sargables))
       return true;
@@ -5071,7 +5074,10 @@ bool JOIN::make_join_plan() {
     on the first optimization only.
   */
   if (!select_lex->sj_pullout_done && !select_lex->sj_nests.empty() &&
-      pull_out_semijoin_tables(this))
+      pull_out_semijoin_tables(this))  
+      /** NOTE:基于'功能依赖',从半连接中拉出一些表作为引用关系存在
+       * 引用关系相当于指针,使得原位置不存放对象,而是一个地址式的指针,用eq_ref指向真正对象.
+      */
     return true;
 
   select_lex->sj_pullout_done = true;
@@ -5107,6 +5113,7 @@ bool JOIN::make_join_plan() {
 
   allow_outer_refs = true;
 
+  //NOTE:使用物化优化半连接
   if (sj_nests && optimize_semijoin_nests_for_materialization(this))
     return true;
 
@@ -5118,6 +5125,7 @@ bool JOIN::make_join_plan() {
   if (thd->killed || thd->is_error()) return true;
 
   // If this is a subquery, decide between In-to-exists and materialization
+  //NOTE:确定子查询的优化策略,可选的子查询优化策略为EXISTS strategy、materialization二者之一.
   if (unit->item && decide_subquery_strategy()) return true;
 
   refine_best_rowcount();
@@ -6301,7 +6309,7 @@ bool uses_index_fields_only(Item *item, TABLE *tbl, uint keyno,
 
   @return false if successful, true if error
 */
-
+//NOTE:使用物化优化半连接
 static bool optimize_semijoin_nests_for_materialization(JOIN *join) {
   DBUG_TRACE;
   Opt_trace_context *const trace = &join->thd->opt_trace;
@@ -6457,7 +6465,9 @@ static bool find_eq_ref_candidate(TABLE_LIST *tl, table_map sj_inner_tables) {
     Making the subquery (i.e. its semi-join nest) correlated prevents us from
     using Materialization or LooseScan to execute it.
 */
-
+/** NOTE:基于'功能依赖',从半连接中拉出一些表作为引用关系存在
+ * 引用关系相当于指针,使得原位置不存放对象,而是一个地址式的指针,用eq_ref指向真正对象.
+*/
 static bool pull_out_semijoin_tables(JOIN *join) {
   DBUG_TRACE;
 
@@ -8096,7 +8106,7 @@ static void add_loose_index_scan_and_skip_scan_keys(JOIN *join,
 
   @returns false if success, true if error
 */
-
+//NOTE:找出可用的索引,以备使用,找出索引信息,是为了利用索引快速完成查询
 static bool update_ref_and_keys(THD *thd, Key_use_array *keyuse,
                                 JOIN_TAB *join_tab, uint tables, Item *cond,
                                 table_map normal_tables, SELECT_LEX *select_lex,
@@ -10800,6 +10810,7 @@ static void calculate_materialization_costs(JOIN *join, TABLE_LIST *sj_nest,
    @note If UNION this is called on each contained JOIN.
 
  */
+//NOTE:确定子查询的优化策略,可选的子查询优化策略为EXISTS strategy、materialization二者之一.
 bool JOIN::decide_subquery_strategy() {
   DBUG_ASSERT(unit->item);
 
