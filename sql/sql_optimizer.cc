@@ -683,6 +683,7 @@ bool JOIN::optimize() {
     no_jbuf_after = 0;
 
   /* Perform FULLTEXT search before all regular searches */
+  //NOTE:全文索引优化
   if (select_lex->has_ft_funcs() && optimize_fts_query()) return true;
 
   /*
@@ -10572,7 +10573,18 @@ void JOIN::optimize_keyuse() {
   Function sets FT hints, initializes FT handlers
   and checks if FT index can be used as covered.
 */
-
+/** NOTE:用于全文索引(Full-Text Search,FTS)优化,即对全文检索的查询语句进行优化.
+ * MySQL8.0接口为optimize_fts_query,MySQL5.7接口为optimize_fts_limit_query
+ * 支持的格式如下:
+ * select col_obj1,...,col_objN from table_obj order by col_objx desc limit y;
+ * 要用optimize_fts_query函数进行优化,必须满足以下条件:
+ * 1.查询语句必须是单表查询(FROM-LIST,只一个表Table_obj)
+ * 2.没有WHERE子句
+ * 3.只有一个单一的ORDERBY子句
+ * 4.ORDERBY子句按照降序排序
+ * 5.只有一个LIMIT子句
+ * 6.使用了全文检索函数(函数类型为FT_FUNC)
+*/
 bool JOIN::optimize_fts_query() {
   ASSERT_BEST_REF_IN_JOIN_ORDER(this);
 
