@@ -1816,7 +1816,11 @@ void JOIN::cleanup_item_list(const mem_root_deque<Item *> &items) const {
   @param thd    thread handler
   @returns false if success, true if error
 */
-
+/**
+ * SELECT块语句的优化入口SELECT_LEX::optimize
+ * SELECT优化器JOIN::optimize
+ * UNION优化器SELECT_LEX_UNIT::optimize
+*/
 bool SELECT_LEX::optimize(THD *thd) {
   DBUG_TRACE;
 
@@ -1832,6 +1836,7 @@ bool SELECT_LEX::optimize(THD *thd) {
   join = join_local;
   thd->unlock_query_plan();
 
+  //NOTE:调用JOIN::optimize完成优化
   if (join->optimize()) return true;
 
   if (join->zero_result_cause && !is_implicitly_grouped()) return false;
@@ -3123,6 +3128,50 @@ void QEP_TAB::init_join_cache(JOIN_TAB *join_tab) {
  * 调用关系:
  * JOIN::optimzie -> make_join_readinfo -> setup_semijoin_dups_elimination
  *                                      -> push_index_cond
+ * 
+ * 首先,优化器计算代价后会生成一个JOIN_TAB的左支树,每一个JOIN_TAB包含相关表的指针、表的读取方式、访问表所包含的索引等信息,
+ * 优化器会在make_join_readinfo中对JOIN_TAB中表的访问方式进行相应的修正,
+ * 并进一步将where cond中和索引相关的条件记录到table的句柄中,堆栈如下:
+ * #0  make_cond_for_index (cond=0x2b69680179e8, table=0x2b6968012100, keyno=0, other_tbls_ok=true)
+ * #1  in push_index_cond (tab=0x2b696802aa48, keyno=0, other_tbls_ok=true, trace_obj=0x2b696413ec30)
+ * #2  in make_join_readinfo (join=0x2b6968017db0, options=0, no_jbuf_after=4294967295)
+ * #3  in JOIN::optimize (this=0x2b6968017db0)
+ * #4  in mysql_execute_select (thd=0x3176760, select_lex=0x3179470, free_join=true)
+ * 其次,make_cond_for_index是一个递归的过程,对where_cond中的每一个条件进行判断,对满足条件的 cond 重新组合成一个新的cond，最后将新的 cond 挂在table->file 下面（table->file指的是操作物理表的接口函数,此变量为thd下私有的,不共享,共享的是tab->table->s）,
+ * 详细参考make_cond_for_index的详细实现,设置的堆栈如下：
+ * #0  ha_innobase::idx_cond_push (this=0x2b696800e810, keyno=0, idx_cond=0x2b69680179e8)
+ * #1  0x0000000000a60a55 in push_index_cond (tab=0x2b696802aa48, keyno=0, other_tbls_ok=true, trace_obj=0x2b696413ec30)#2  0x0000000000a6362f in make_join_readinfo (join=0x2b6968017db0, options=0, no_jbuf_after=4294967295)
+ * #3  0x0000000000d9b8bd in JOIN::optimize (this=0x2b6968017db0
+ * #4  0x0000000000a5b9ae in mysql_execute_select (thd=0x3176760, select_lex=0x3179470, free_join=true)
+ * 再次,server层根据生成的JOIN_TAB读取engine层的内容,在engine读取的时候,会进行index_condition_pushdown的调用,即ICP的调用,堆栈如下:
+ * #0  Item_func_like::val_int (this=0x2b6978005a28)
+ * #1  0x0000000001187b66 in innobase_index_cond (file=0x2b696800e810)
+ * #2  0x0000000001393566 in row_search_idx_cond_check (mysql_rec=0x2b69680129f0  <incomplete sequence \361>, prebuilt=0x2b69680130f8, rec=0x2b692b56e4cf "\200", offsets=0x2b697008d450)
+ * #3  0x0000000001397e2b in row_search_for_mysql (buf=0x2b69680129f0  <incomplete sequence \361>, mode=2, prebuilt=0x2b69680130f8, match_mode=1, direction=0)
+ * #4  0x00000000011696b9 in ha_innobase::index_read (this=0x2b696800e810, buf=0x2b69680129f0  <incomplete sequence \361>, key_ptr=0x2b697800a660 "", key_len=5, find_flag=HA_READ_KEY_EXACT)
+ * #5  0x00000000006ecc58 in handler::index_read_map (this=0x2b696800e810, buf=0x2b69680129f0  <incomplete sequence \361>, key=0x2b697800a660 "", keypart_map=1, find_flag=HA_READ_KEY_EXACT)
+ * #6  0x00000000006d6bb4 in handler::ha_index_read_map (this=0x2b696800e810, buf=0x2b69680129f0  <incomplete sequence \361>, key=0x2b697800a660 "", keypart_map=1, find_flag=HA_READ_KEY_EXACT)
+ * #7  0x00000000009a1870 in join_read_always_key (tab=0x2b697800a1b8)
+ * #8  0x000000000099d480 in sub_select (join=0x2b6978005df0, join_tab=0x2b697800a1b8, end_of_records=false)
+ * #9  0x000000000099c6c0 in do_select (join=0x2b6978005df0)
+ * #10 0x00000000009980a4 in JOIN::exec (this=0x2b6978005df0)
+ * #11 0x0000000000a5bac0 in mysql_execute_select (thd=0x32801a0, select_lex=0x3282eb0, free_join=true)
+ * 可见在ICP的判断是调用相关item的函数的,虽然同是调用server层的函数,但是没有ICP的调用需要根据主建找到记录,然后再匹配,而有了ICP可以省略一次主键查找数据的过程,进而提升效率.
+ * ICP使用限制及问题:
+ * 只支持select语句;
+ * 5.6中只支持MyISAM与InnoDB引擎;
+ * ICP的优化策略可用于range、ref、eq_ref、ref_or_null类型的访问数据方法;
+ * 不支持主建索引的 ICP;
+ * 当SQL使用覆盖索引时但只检索部分数据时,ICP无法使用,详细的分析可以参考bug#68554中Olav Sandstå的分析,代码实现部分可以参考make_join_readinfo;
+ * 在查询的时候即使正确的使用索引的前Ｎ个字段（即遵循前缀索引的原则），还是会用到 ICP，无故的多了 ICP 相关的判断，这应该是一个退化的问题，例：
+ * mysql> explain select * from icp where age=1 and name = 'a1';
+ *       +----+-------------+-------+------+---------------+------+---------+-------------+------+-----------------------+
+ *       | id | select_type | table | type | possible_keys | key  | key_len | ref         | rows | Extra                 |
+ *       +----+-------------+-------+------+---------------+------+---------+-------------+------+-----------------------+
+ *       |  1 | SIMPLE      | icp   | ref  | aind          | aind | 38      | const,const |    1 | Using index condition |
+ *       +----+-------------+-------+------+---------------+------+---------+-------------+------+-----------------------+
+ *       1 row in set (3.26 sec)
+ * PS: engine condition pushdown 是 NDB 使用的，其它引擎不支持。 
 */
 bool make_join_readinfo(JOIN *join, uint no_jbuf_after) {
   const bool statistics = !join->thd->lex->is_explain();
