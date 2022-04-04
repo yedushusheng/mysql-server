@@ -277,6 +277,27 @@ bool JOIN::alloc_indirection_slices() {
  *        make_join_select()        // ... to here 
  *      JOIN::exec()  //MySQL8.0:Sql_cmd_dml::execute_inner
  * JOIN::optimze函数是优化器的主函数,对SQL语句进行各种优化,包括逻辑查询优化和物理查询优化,得到查询执行计划.
+ * 调用关系:
+ * JOIN::optimize -> SELECT_LEX::get_optimizable_conditions
+ *                -> optimize_cond
+ *                -> optimize_aggregated_query
+ *                -> JOIN::make_join_plan
+ *                   -> update_ref_and_keys
+ *                   -> pull_out_semijoin_tables
+ *                   -> optimize_semijoin_nests_for_materialization
+ *                   -> extract_func_dependent_tables
+ *                   -> choose_table_order
+ *                      -> determine_search_depth
+ *                      -> greedy_search
+ *                   -> decide_subquery_strategy
+ *                   -> get_best_combination
+ *                -> substitute_for_best_equal_field
+ *                -> make_join_select
+ *                -> optimize_distinct_group_order
+ *                -> JOIN::optimize_fts_query
+ *                -> test_skip_sort
+ *                -> make_join_readinfo
+ *                -> make_tmp_tables_info
 */
 //NOTE:对外接口
 bool JOIN::optimize() {
@@ -5025,6 +5046,8 @@ void JOIN::set_prefix_tables() {
 */
 /** NOTE:
  * MySQL8.0接口make_join_plan,MySQL5.7接口make_join_statistics
+ * 调用关系:
+ * JOIN::prepare -> JOIN::make_join_plan
 */
 bool JOIN::make_join_plan() {
   DBUG_TRACE;
@@ -5088,6 +5111,7 @@ bool JOIN::make_join_plan() {
     if (extract_const_tables()) return true;
 
     // Detect tables that are functionally dependent on const values.
+    //NOTE:NOTE:获取常量表
     if (extract_func_dependent_tables()) return true;
   }
   // Possibly able to create more sargable predicates from const rows.
@@ -5118,6 +5142,7 @@ bool JOIN::make_join_plan() {
     return true;
 
   // Choose the table order based on analysis done so far.
+  //NOTE:求解多表连接最优连接路径
   if (Optimize_table_order(thd, this, nullptr).choose_table_order())
     return true;
 
@@ -5442,7 +5467,7 @@ bool JOIN::extract_const_tables() {
 
   The tables are given the type JT_CONST.
 */
-
+//NOTE:获取常量表
 bool JOIN::extract_func_dependent_tables() {
   // loop until no more const tables are found
   bool ref_changed;
@@ -5572,6 +5597,7 @@ bool JOIN::extract_func_dependent_tables() {
                   return true;
                 const int status =
                     join_read_const_table(tab, positions + const_tables - 1);
+                //NOTE:
                 if (status > 0)
                   return true;
                 else if (status == 0)

@@ -4397,6 +4397,10 @@ static bool get_optimizable_join_conditions(
 
    @returns true if OOM
 */
+/** NOTE:
+ * 调用关系:
+ * JOIN::optimize -> SELECT_LEX::get_optimizable_conditions
+*/
 bool SELECT_LEX::get_optimizable_conditions(THD *thd, Item **new_where,
                                             Item **new_having) {
   /*

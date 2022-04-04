@@ -489,7 +489,10 @@ class Item_exists_subselect : public Item_subselect {
 
   explicit Item_exists_subselect(const POS &pos) : super(pos) {}
 
-  /** NOTE:Item_subselect::select_transformer被resolve_subquery调用
+  /** NOTE:处理的子查询类型如下:
+   * 1.普通的子查询（不带有IN/ALL/ANY/SOME谓词的子查询）
+   * 2.带有IN/ALL/ANY/SOME谓词的子查询
+   * Item_subselect::select_transformer被resolve_subquery调用
    * 该函数被4个子类Item_singlerow_subselect、Item_in_subselect、
    * Item_allany_subselect、Item_exists_subselect继承,根据具体的类型实现各自的优化
   */

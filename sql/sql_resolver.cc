@@ -171,7 +171,24 @@ static Item *create_rollup_switcher(THD *thd, SELECT_LEX *select_lex,
 /**NOTE:外部接口 prepare入口(对应MySQL5.6 JOIN::prepare())
  * 为获得最优的查询计划,需要通过SELECT_LEX::prepare(JOIN::prepare)函数做一些初始化赋值、计算等准备工作.
  * 注意,在这个阶段,已经着手进行子查询的优化处理工作了.
- * Sql_cmd_select::prepare_inner调用
+ * 调用关系:
+ * Sql_cmd_select::prepare_inner -> SELECT_LEX::prepare -> SELECT_LEX::prepare_values
+ *                                                         -> SELECT_LEX::simplify_joins
+ *                                                      -> setup_tables
+ *                                                      -> setup_wild
+ *                                                      -> setup_base_ref_items
+ *                                                      -> setup_fields
+ *                                                      -> setup_conds
+ *                                                      -> setup_order
+ *                                                      -> remove_redundant_subquery_clauses
+ *                                                      -> resolve_subquery
+ *                                                         -> select_transformer
+ *                                                      -> split_sum_func2
+ *                                                      -> setup_ftfuncs
+ *                                                      -> flatten_subqueries
+ *                                                      -> apply_local_transforms
+ *                                                         -> SELECT_LEX::simplify_joins
+ *                                                      -> push_conditions_to_derived_tables
 */
 bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
   DBUG_TRACE;
@@ -187,6 +204,7 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
 
   SELECT_LEX_UNIT *const unit = master_unit();
 
+  //NOTE:将外层join中的nullable条件推导到inner join
   if (!top_join_list.empty()) propagate_nullability(&top_join_list, false);
 
   /*
@@ -241,6 +259,7 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
 
   if (setup_tables(thd, get_table_list(), false)) return true;
 
+  //NOTE:处理derived table/view
   if ((derived_table_count || table_func_count) &&
       resolve_placeholder_tables(thd, true))
     return true;
@@ -613,6 +632,10 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
 
   Since this is called at the end after applying local tranformations,
   call this function while traversing the query block hierarchy top-down.
+*/
+/** NOTE:条件下推到虚表
+ * 调用关系:
+ * SELECT_LEX::prepare -> SELECT_LEX::push_conditions_to_derived_tables
 */
 bool SELECT_LEX::push_conditions_to_derived_tables(THD *thd) {
   if (materialized_derived_table_count > 0)
@@ -1258,7 +1281,7 @@ void SELECT_LEX::remap_tables(THD *thd) {
 
   @return false if success, true if error
 */
-
+//NOTE:处理derived table/view
 bool SELECT_LEX::resolve_placeholder_tables(THD *thd, bool apply_semijoin) {
   DBUG_TRACE;
 
