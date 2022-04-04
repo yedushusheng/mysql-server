@@ -1946,6 +1946,30 @@ void SELECT_LEX::reset_nj_counters(mem_root_deque<TABLE_LIST *> *join_list) {
  * 主要工作包括两个方面,一是外连接消除,二是嵌套连接清除.
  * 外连接消除,把可以转换为内连接的外连接进行转换.对于以嵌套形式存在的外连接也进行处理.
  * 嵌套连接清除,把一些用于标识嵌套的括号尽可能清除.
+ * 
+ * 情形一:外连接转换为内连接,满足空值拒绝条件,直接转换.
+ * 这意味着外连接可以被转为内连接的条件是:对于内接的表,在WHERE或ON表达式上存在有满足空值拒绝的条件在内表的列上,
+ * 则这样的外连接可以被转换为内连接,例如:
+ * SELECT * FROM t1 LEFT JOIN t2 ON t2.a=t1.a WHERE t2.b<5
+ * 其中,LEFT JOIN表示为左外连接;t1是外表;t2是内表(空值拒绝的条件在内表t2的列上);WHERE条件上存在有内表上的谓词t2.b<5,满足空值拒绝.
+ * 所以,上述代码可以转换为:
+ * SELECT * FROM t1 INNER JOIN t2 ON t2.a=t1.a WHERE t2.b<5
+ * 这个式子等价于:
+ * SELECT * FROM t1,t2 ON t2.a=t1.a WHERE t2.b<5 AND t2.a=t1.a
+ * 再如:
+ * SELECT * FROM t1 LEFT JOIN(t2,t3) ON t2.a=t1.a,t3.b=t1.b WHERE t2.c<5
+ * 可以转换为:
+ * SELECT * FROM t1,(t2,t3) WHERE t2.c<5 AND t2.a=t1.a,t3.b=t1.b
+ * 情形二:嵌套连接消除,去除不必要的括号.可结合外连接消除嵌套连接.
+ * 例如:
+ * SELECT * FROM t1,(t2,t3) WHERE t2.c<5 AND t2.a=t1.a AND t3.b=t1.b
+ * 去除"t2,t3"的括号,转换为:
+ * SELECT * FROM t1,t2,t3 WHERE t2.c<5 AND t2.a=t1.a AND t3.b=t1.b
+ * 再如,嵌套连接和外连接都消除,SQL如下:
+ * SELECT * FROM (t1 LEFT JOIN t2 ON t2.a=t1.a) LEFT JOIN t3 ON t3.b=t2.b WHERE t2.a>10
+ * 转换为:
+ * SELECT * FROM (t1,(t2,t3)) WHERE t1.a=t2.a AND t2.b=t3.b WHERE t2.a>10
+ * 
  * 调用关系:
  * SELECT_LEX::prepare -> SELECT_LEX::prepare_values -> SELECT_LEX::simplify_joins
 */
@@ -3012,6 +3036,10 @@ static bool build_sj_exprs(THD *thd, mem_root_deque<Item *> *sj_outer_exprs,
   decorated with IS TRUE or IS NOT FALSE (respectively IS NOT TRUE or IS
   FALSE).
 */
+/** NOTE:完成一个查询语句中所有IN子查询向半连接的转换
+ * 调用关系:
+ * SELECT_LEX::prepare -> flatten_subqueries -> SELECT_LEX::convert_subquery_to_semijoin
+*/
 bool SELECT_LEX::convert_subquery_to_semijoin(
     THD *thd, Item_exists_subselect *subq_pred) {
   TABLE_LIST *emb_tbl_nest = nullptr;
@@ -3733,6 +3761,14 @@ bool SELECT_LEX::merge_derived(THD *thd, TABLE_LIST *derived_table) {
    @retval true If there was an error.
    @retval false If successful.
 */
+/** NOTE:IN转换为EXISTS格式
+ * SELECT FROM ot,... WHERE oe in (select ie from it1..itN WHERE subq_where) AND outer_where
+ * 如上格式的子查询被转换为半连接的格式如下(ot表示外表,it表示内表):
+ * SELECT FROM ot SEMI JOIN (it1...itN) WHERE outer_where AND subq_where AND oe=ie
+ * 转换后,经过该条件替换函数处理之后,条件部分发生较大变化,如上例,子查询的条件subq_where合并到父查询的WHERE子句汇总,生成新条件oe=ie.
+ * 调用关系:
+ * SELECT_LEX::prepare -> flatten_subqueries -> replace_subcondition
+*/
 static bool replace_subcondition(THD *thd, Item **tree, Item *old_cond,
                                  Item *new_cond, bool do_fix_fields,
                                  bool *found_ptr = nullptr) {
@@ -3814,8 +3850,17 @@ static bool replace_subcondition(THD *thd, Item **tree, Item *old_cond,
 /** NOTE:flatten_subqueries函数对可以对半连接的子查询进行转换,即把子查询的表对象上拉到FROM子句,
  * 把FROM子句原先的表对象和子查询中被上拉的表对象进行半连接操作.
  * 这种转换称为"扁平化子查询".
+ * 
+ * SELECT FROM ot,... WHERE oe in (select ie from it1..itN WHERE subq_where) AND outer_where
+ * 如上格式的子查询被转换为半连接的格式如下(ot表示外表,it表示内表):
+ * SELECT FROM ot SEMI JOIN (it1...itN) WHERE outer_where AND subq_where AND oe=ie
+ * 转换后,经过该条件替换函数处理之后,条件部分发生较大变化,如上例,子查询的条件subq_where合并到父查询的WHERE子句汇总,生成新条件oe=ie.
+ * 
  * 调用关系:
- * SELECT_LEX::prepare -> SELECT_LEX::flatten_subqueries
+ * SELECT_LEX::prepare -> SELECT_LEX::flatten_subqueries -> transform_table_subquery_to_join_with_derived
+ *                                                       -> simplify_const_condition
+ *                                                       -> replace_subcondition
+ *                                                       -> convert_subquery_to_semijoin
 */
 bool SELECT_LEX::flatten_subqueries(THD *thd) {
   DBUG_TRACE;
@@ -3849,12 +3894,14 @@ bool SELECT_LEX::flatten_subqueries(THD *thd) {
     know.
    */
   uint subq_no;
+  //NOTE:第一步,从底层向上,先转换各子句中存在的子查询
   for (subq = subq_begin, subq_no = 0; subq < subq_end; subq++, subq_no++) {
     auto subq_item = *subq;
     // Transformation of IN and EXISTS subqueries is supported
+    //NOTE:功能限制:到MySQL V5.6.10为止,只支持IN格式的子查询转换为半连接,MySQL8.0支持IN/EXISTS
     DBUG_ASSERT(subq_item->substype() == Item_subselect::IN_SUBS ||
                 subq_item->substype() == Item_subselect::EXISTS_SUBS);
-
+    //NOTE:获取子句中的查询语句
     SELECT_LEX *child_select = subq_item->unit->first_select();
 
     // Check that we proceeded bottom-up
@@ -3879,6 +3926,11 @@ bool SELECT_LEX::flatten_subqueries(THD *thd) {
       - prefer correlated subqueries over uncorrelated;
       - prefer subqueries that have greater number of outer tables;
   */
+  /** NOTE:第二步:对子查询进行转换:
+   * 转换前,对子查询数组(多个子查询)进行排序,排序的方式是:
+   * 1)相关子查询比不相关子查询靠前
+   * 2)有更多外表的子查询靠前
+  */
   std::sort(subq_begin, subq_begin + sj_candidates->size(),
             [](Item_exists_subselect *el1, Item_exists_subselect *el2) {
               return el1->sj_convert_priority > el2->sj_convert_priority;
@@ -3897,6 +3949,7 @@ bool SELECT_LEX::flatten_subqueries(THD *thd) {
                         "IN (SELECT)", "joined derived table");
     oto1.add("chosen", true);
     if (transform_table_subquery_to_join_with_derived(thd, subq_item))
+    //NOTE:子查询消除:将子查询转换为join (derived table)
       return true;
   }
   /*
@@ -3935,6 +3988,7 @@ bool SELECT_LEX::flatten_subqueries(THD *thd) {
         !subq_where->walk(&Item::is_non_const_over_literals, enum_walk::POSTFIX,
                           nullptr) &&
         simplify_const_condition(thd, &subq_where, false, &cond_value))
+        //NOTE:简化常量条件
       return true;
 
     if (!cond_value) {
@@ -3973,6 +4027,7 @@ bool SELECT_LEX::flatten_subqueries(THD *thd) {
                       ? &m_where_cond
                       : subq_item->embedding_join_nest->join_cond_ref();
     if (replace_subcondition(thd, tree, subq_item, truth_item, false))
+    //NOTE:替换子查询条件
       return true; /* purecov: inspected */
   }
 
@@ -3986,11 +4041,16 @@ bool SELECT_LEX::flatten_subqueries(THD *thd) {
         trace, oto0, oto1, subq_item->unit->first_select()->select_number,
         "IN (SELECT)", subq_item->can_do_aj ? "antijoin" : "semijoin");
     oto1.add("chosen", true);
+    //NOTE:处理IN_SUBS类型的子查询为半连接操作,其他类型的子查询不予处理
     if (convert_subquery_to_semijoin(thd, *subq)) return true;
+    //NOTE:完成一个查询语句中所有IN子查询向半连接的转换
   }
   /*
     Finalize the subqueries that we did not convert,
     ie. perform IN->EXISTS rewrite.
+  */
+  /** NOTE:第三步:对于第二步之后不能通过convert_subquery_to_semijoin函数处理的子查询,
+   * 把IN转换为EXISTS格式
   */
   for (subq = subq_begin; subq < subq_end; subq++) {
     auto subq_item = *subq;
@@ -4003,6 +4063,7 @@ bool SELECT_LEX::flatten_subqueries(THD *thd) {
     thd->lex->set_current_select(subq_item->unit->first_select());
 
     // This is the only part of the function which uses a JOIN.
+    //NOTE:实现每个子句中的子查询的优化
     res = subq_item->select_transformer(thd, subq_item->unit->first_select());
 
     thd->lex->set_current_select(save_select_lex);
@@ -4026,6 +4087,7 @@ bool SELECT_LEX::flatten_subqueries(THD *thd) {
     Item **tree = subquery_in_join_clause
                       ? (subq_item->embedding_join_nest->join_cond_ref())
                       : &m_where_cond;
+    //NOTE:IN转换为EXISTS格式
     if (replace_subcondition(thd, tree, *subq, substitute, do_fix_fields))
       return true;
     subq_item->substitution = nullptr;
@@ -5301,7 +5363,7 @@ static bool update_context_to_derived(Item *expr, SELECT_LEX *new_derived);
   @param subq  Item for subquery
   @returns true if error
 */
-
+//NOTE:子查询消除:将子查询转换为join (derived table)
 bool SELECT_LEX::transform_table_subquery_to_join_with_derived(
     THD *thd, Item_exists_subselect *subq) {
   DBUG_ASSERT(first_execution);
