@@ -1927,7 +1927,7 @@ class Join_tab_compare_embedded_first {
  * 3.greedy_search:通过使用混杂贪婪式和穷尽式探索方法,搜索表之间的各种组合以得到最优的查询计划.
  * 在MySQL5.6X,多表连接优化算法去掉了上述的第二种算法,留下了第一种和第三种算法.
  * 调用关系:
- * JOIN::make_join_plan()
+ * JOIN::optimize -> JOIN::make_join_plan -> Optimize_table_order::choose_table_orde
  * optimize_semijoin_nests_for_materialization
  * JOIN::compare_costs_of_subquery_strategies
 */
