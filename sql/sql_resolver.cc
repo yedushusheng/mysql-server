@@ -1366,8 +1366,9 @@ bool SELECT_LEX::is_row_count_valid_for_semi_join() {
 
 */
 /** NOTE:优化IN/ANY/ALL/EXISTS式子查询
- * 用于对子查询进行预先判断,如果可以用半连接优化,则保存信息,待SELECT_LEX::prepare方法调用flatten_subqueries函数时(MySQL5.6),执行优化操作.
+ * MySQL5.7:用于对子查询进行预先判断,如果可以用半连接优化,则保存信息,待SELECT_LEX::prepare方法调用flatten_subqueries函数时(MySQL5.6),执行优化操作.
  * MySQL8.0中在SELECT_LEX::prepare中调用flatten_subqueries.
+ * 
  * 可优化的方式如下:
  * 1.转换子查询为半连接
  * 半连接:当一张表在另一张表找到匹配的记录之后,半连接(semi-jion)返回第一张表中的记录.
