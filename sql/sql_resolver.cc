@@ -1411,6 +1411,7 @@ bool SELECT_LEX::resolve_subquery(THD *thd) {
   */
 
   // Predicate for possible semi-join candidates (IN and EXISTS)
+  //NOTE:semi-join(IN和EXISTS)的谓词
   Item_exists_subselect *const predicate =
       subq_predicate->substype() == Item_subselect::EXISTS_SUBS ||
               subq_predicate->substype() == Item_subselect::IN_SUBS
@@ -1418,7 +1419,7 @@ bool SELECT_LEX::resolve_subquery(THD *thd) {
           : nullptr;
 
   // Predicate for IN subquery predicate
-  //NOTE:子查询,IN操作
+  //NOTE:子查询,IN操作的谓词
   Item_in_subselect *const in_predicate =
       subq_predicate->substype() == Item_subselect::IN_SUBS
           ? down_cast<Item_in_subselect *>(subq_predicate)
@@ -1589,7 +1590,7 @@ bool SELECT_LEX::resolve_subquery(THD *thd) {
       17. Certain other subquery transformations, incompatible with this one,
       have not been done.
   */
-
+  //NOTE:如果semi-join失败,则尝试转换为derived table
   if (!choice_made && try_convert_to_derived && predicate != nullptr &&  // 1
       !is_part_of_union() &&                                             // 2
       (in_predicate != nullptr || no_aggregates) &&                      // 3
