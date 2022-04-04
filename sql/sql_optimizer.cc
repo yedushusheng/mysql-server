@@ -259,9 +259,9 @@ bool JOIN::alloc_indirection_slices() {
  *      JOIN::optimize()            // optimizer is from here ... MySQL8.0与5.6一致
  *        optimize_cond()
  *        opt_sum_query()
- *        make_join_statistics()
+ *        make_join_statistics()  //MySQL8.0 make_join_plan
  *          get_quick_record_count()
- *          choose_plan()
+ *          choose_plan()  //MySQL8.0 choose_table_order
  *            // Find the best way to access tables 
  *            // as specified by the user.         
  *            optimize_straight_join()
@@ -2885,7 +2885,10 @@ static JOIN_TAB *alloc_jtab_array(THD *thd, uint table_count) {
    @todo the block which sets tab->type should move to adjust_access_methods
    for unification.
 */
-
+/** NOTE:设置为外连接填充信息,重置嵌套连接信息
+ * 调用关系:
+ * JOIN::optimize -> JOIN::make_join_plan -> JOIN::get_best_combination
+*/
 bool JOIN::get_best_combination() {
   DBUG_TRACE;
 
@@ -6335,7 +6338,11 @@ bool uses_index_fields_only(Item *item, TABLE *tbl, uint keyno,
 
   @return false if successful, true if error
 */
-//NOTE:使用物化优化半连接
+/** NOTE:使用物化优化半连接
+ * 调用关系:
+ * JOIN::optimize -> JOIN::make_join_plan -> optimize_semijoin_nests_for_materialization
+ * JOIN::compare_costs_of_subquery_strategies -> optimize_semijoin_nests_for_materialization
+*/
 static bool optimize_semijoin_nests_for_materialization(JOIN *join) {
   DBUG_TRACE;
   Opt_trace_context *const trace = &join->thd->opt_trace;
@@ -10836,7 +10843,10 @@ static void calculate_materialization_costs(JOIN *join, TABLE_LIST *sj_nest,
    @note If UNION this is called on each contained JOIN.
 
  */
-//NOTE:确定子查询的优化策略,可选的子查询优化策略为EXISTS strategy、materialization二者之一.
+/** NOTE:确定子查询的优化策略,可选的子查询优化策略为EXISTS strategy、materialization二者之一.
+ * 调用关系:
+ * JOIN::optimize -> JOIN::make_join_plan -> JOIN::decide_subquery_strategy
+*/
 bool JOIN::decide_subquery_strategy() {
   DBUG_ASSERT(unit->item);
 
@@ -10858,7 +10868,7 @@ bool JOIN::decide_subquery_strategy() {
   DBUG_ASSERT(chosen_method != Subquery_strategy::SUBQ_MATERIALIZATION);
 
   if ((chosen_method == Subquery_strategy::CANDIDATE_FOR_IN2EXISTS_OR_MAT) &&
-      compare_costs_of_subquery_strategies(&chosen_method))
+      compare_costs_of_subquery_strategies(&chosen_method))  //NOTE:exists策略
     return true;
 
   switch (chosen_method) {
@@ -10897,6 +10907,10 @@ bool JOIN::decide_subquery_strategy() {
    @param[out] method  chosen method (EXISTS or materialization) will be put
                        here.
    @returns false if success
+*/
+/** NOTE:子查询优化策略选择
+ * 调用关系:
+ * JOIN::optimize -> JOIN::make_join_plan -> JOIN::decide_subquery_strategy -> JOIN::compare_costs_of_subquery_strategies
 */
 bool JOIN::compare_costs_of_subquery_strategies(Subquery_strategy *method) {
   *method = Subquery_strategy::SUBQ_EXISTS;
