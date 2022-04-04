@@ -661,7 +661,11 @@ bool SELECT_LEX_UNIT::prepare(THD *thd, Query_result *sel_result,
   return false;
 }
 
-//NOTE:外部接口 union的优化入口
+/** NOTE:外部接口 union的优化入口
+ * SELECT块语句的优化入口SELECT_LEX::optimize
+ * SELECT优化器JOIN::optimize
+ * UNION优化器SELECT_LEX_UNIT::optimize
+*/
 bool SELECT_LEX_UNIT::optimize(THD *thd, TABLE *materialize_destination,
                                bool create_iterators) {
   DBUG_TRACE;
