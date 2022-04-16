@@ -2300,6 +2300,7 @@ bool SELECT_LEX::record_join_nest_info(mem_root_deque<TABLE_LIST *> *tables) {
       table->sj_inner_tables = table->nested_join->used_tables;
 
     if (table->is_sj_or_aj_nest()) {
+      //NOTE:初始化半连接的表sj_nests
       sj_nests.push_back(table);
     }
 

@@ -589,7 +589,9 @@ struct POSITION {
   - a join between the result of the set of previous plan nodes and
     this plan node.
 */
-//NOTE:连接表是介于关系(TABLE_LIST类)与连接类(JOIN类)之间的一个过渡对象,存放了关系的一些相关信息,也存放了连接操作需要的一些信息,所以称为连接表
+/** NOTE:连接表是介于关系(TABLE_LIST类)与连接类(JOIN类)之间的一个过渡对象,
+ * 存放了关系的一些相关信息,也存放了连接操作需要的一些信息,所以称为连接表
+*/
 class JOIN_TAB : public QEP_shared_owner {
  public:
   JOIN_TAB();

@@ -503,15 +503,15 @@ class Index_hint {
 };
 
 /*
-  Class SELECT_LEX_UNIT represents a query expression.
-  Class SELECT_LEX represents a query block.
+  Class SELECT_LEX_UNIT represents a query expression.(NOTE:查询表达式)
+  Class SELECT_LEX represents a query block.(NOTE:查询块)
   A query expression contains one or more query blocks (more than one means
   that we have a UNION query).
   These classes are connected as follows:
    Both classes have a master, a slave, a next and a prev field.
    For class SELECT_LEX, master and slave connect to objects of type
    SELECT_LEX_UNIT, whereas for class SELECT_LEX_UNIT, they connect
-   to SELECT_LEX.
+   to SELECT_LEX.(NOTE:SELECT_LEX类的master和slave与SELECT_LEX_UNIT相关)
    master is pointer to outer node.
    slave is pointer to the first inner node
 
@@ -544,6 +544,9 @@ class Index_hint {
    INTERSECT etc later) then it has a special select_lex called
    fake_select_lex. It used for storing global parameters (like ORDER BY,
    LIMIT) and executing union.
+   (NOTE:如果查询表达式包含多个查询语句块,比如union,intersect,
+   存在一个特殊称为fake_select_lex的select_lex,
+   它用来存储全局的参数,比如ORDER BY,LIMIT,还用来执行union)
    Subqueries used in global ORDER BY clause will be attached to this
    fake_select_lex, which will allow them to correctly resolve fields of
    the containing UNION and outer selects.
@@ -763,6 +766,7 @@ class SELECT_LEX_UNIT {
   explicit SELECT_LEX_UNIT(enum_parsing_context parsing_context);
 
   /// @return true for a query expression without UNION or multi-level ORDER
+  // NOTE:判断是否为简单查询(查询不包含UNION或者fake_select_lex的时候返回TRUE)
   bool is_simple() const { return !(is_union() || fake_select_lex); }
 
   /// Values for SELECT_LEX_UNIT::cleaned
@@ -1157,7 +1161,11 @@ enum class enum_explain_type {
   a query consisting of a SELECT keyword, followed by a table list,
   optionally followed by a WHERE clause, a GROUP BY, etc.
 */
-/** NOTE:SELECT_LEX/SELECT_UNIT用来表达select和union操作
+/** NOTE:
+ * 语法分析器的结果是查询树,使用st_select_lex(MySQL8.0 SELECT_LEX)类表示,类的实例保存了一条SQL语句被分解后的各子句的内容.
+ * st_select_lex类继承自st_select_lex_node类,获得了父类的一些基本信息,如e_sql_cache sql_cacheSQL缓存信息.
+ * 
+ * SELECT_LEX/SELECT_UNIT用来表达select和union操作
  * SELECT_LEX表示SELECT操作符,SELECT_UNIT表示嵌套查询
  * 以前版本是继承自SELECT_NODE
  * MySQL5.6语法树是st_select_lex,MySQL8.0语法树是SELECT_LEX
@@ -1312,7 +1320,7 @@ class SELECT_LEX {
       straight_join &= tbl->straight;
     return straight_join || (active_options() & SELECT_STRAIGHT_JOIN);
   }
-
+  //NOTE:获取最后一个select
   SELECT_LEX *last_select() {
     SELECT_LEX *mylast = this;
     for (; mylast->next_select(); mylast = mylast->next_select()) {
@@ -1321,10 +1329,17 @@ class SELECT_LEX {
   }
 
   SELECT_LEX *next_select_in_list() const { return link_next; }
+  /**NOTE:全部的SELECT_LEX节点all_selects_list(这些结点通过link_prev,link_next连接)
+   * 通过link_next和link_prev构成所有select子句的双向链表
+   * 
+   * 参见:LEX::new_static_query SELECT_LEX *LEX::new_union_query
+   * MySQL5.6参见SELECT_NODE定义,mysql_new_select[MySQL5.6接口]函数以及SELECT_LEX::include_global函数[MySQL5.6接口]
+  */
 
   void mark_as_dependent(SELECT_LEX *last, bool aggregate);
 
   /// @return true if query block is explicitly grouped (non-empty GROUP BY)
+  //NOTE:判断是否存在group by
   bool is_explicitly_grouped() const { return group_list.elements > 0; }
 
   /**
@@ -1332,6 +1347,7 @@ class SELECT_LEX {
     explicitly grouped but contains references to set functions.
     The query will return max. 1 row (@see also is_single_grouped()).
   */
+  //NOTE:存在聚合函数,但是没有group by
   bool is_implicitly_grouped() const {
     return m_agg_func_used && group_list.elements == 0;
   }
@@ -1360,6 +1376,7 @@ class SELECT_LEX {
   bool is_grouped() const { return group_list.elements > 0 || m_agg_func_used; }
 
   /// @return true if this query block contains DISTINCT at start of select list
+  //NOTE:判断是否存在distinct
   bool is_distinct() const { return active_options() & SELECT_DISTINCT; }
 
   /**
@@ -1368,6 +1385,7 @@ class SELECT_LEX {
     @note returns false if ORDER BY has been eliminated, e.g if the query
           can return max. 1 row.
   */
+  //NOTE:判断是否存在order by
   bool is_ordered() const { return order_list.elements > 0; }
 
   /**
@@ -1391,9 +1409,11 @@ class SELECT_LEX {
   }
 
   /// @return true if this query block has a LIMIT clause
+  //NOTE:判断是否存在limit
   bool has_limit() const { return select_limit != nullptr; }
 
   /// @return true if query block references full-text functions
+  //NOTE:判断是否存在full-text函数
   bool has_ft_funcs() const { return ftfunc_list->elements > 0; }
 
   /// @returns true if query block is a recursive member of a recursive unit
@@ -1421,6 +1441,7 @@ class SELECT_LEX {
 
   uint get_in_sum_expr() const { return in_sum_expr; }
 
+  //NOTE:存储各个分解的SQL信息,比如Item,函数,order by,表
   bool add_item_to_list(Item *item);
   bool add_ftfunc_to_list(Item_func_match *func);
   void add_order_to_list(ORDER *order);
@@ -1909,6 +1930,7 @@ class SELECT_LEX {
   bool resolve_rollup_wfs(THD *thd);
 
   bool setup_conds(THD *thd);
+  //NOTE:优化器的主要两个接口
   bool prepare(THD *thd, mem_root_deque<Item *> *insert_field_list);
   bool optimize(THD *thd);
   void reset_nj_counters(mem_root_deque<TABLE_LIST *> *join_list = nullptr);
@@ -1976,7 +1998,9 @@ class SELECT_LEX {
   mem_root_deque<TABLE_LIST *> sj_nests;
 
   /// List of tables in FROM clause - use TABLE_LIST::next_local to traverse
-  //NOTE:FROM子句中的表对象,TABLE_LIST的链表(通过next_local),参见SELECT_LEX::add_table_to_list函数
+  /** NOTE:FROM子句中的表对象,TABLE_LIST的链表(通过next_local),
+   * 参见SELECT_LEX::add_table_to_list函数
+  */
   SQL_I_List<TABLE_LIST> table_list{};  
 
   /**
@@ -3815,7 +3839,7 @@ struct LEX : public Query_tables_list {
   */
  private:
   /* current SELECT_LEX in parsing */
-  SELECT_LEX *m_current_select;  //NOTE:当前解析的
+  SELECT_LEX *m_current_select;  //NOTE:当前解析的,select_lex是第一个最顶层的查询块,这个是当前的查询块
 
  public:
   inline SELECT_LEX *current_select() const { return m_current_select; }

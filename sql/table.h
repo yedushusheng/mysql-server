@@ -669,6 +669,7 @@ struct Key_name {
 
 /** NOTE:代表表的元数据,例如字段定义,索引定义等等(TABLE代表一个打开的表实例)
  * TABLE_SHARE用来代表数据库的元数据,frm文件是TABLE_SHARE的永续存储,对象的实例从frm文件构建
+ * TABLE_SHARE用来在不同表TABLE对象之间共享
  *                  Item
  *                   |
  * TABLE_LIST ----- LEX ----- SELECT_LEX/SELECT_UNIT
