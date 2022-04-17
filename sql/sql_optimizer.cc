@@ -414,7 +414,7 @@ bool JOIN::optimize() {
     goto setup_subq_exit;
   }
 
-  //NOTE:条件表达式优化(where)
+  //NOTE:条件表达式优化(where/外连接[存在关联])
   if (where_cond || select_lex->outer_join) {
     if (optimize_cond(thd, &where_cond, &cond_equal, &select_lex->top_join_list,
                       &select_lex->cond_value)) {
