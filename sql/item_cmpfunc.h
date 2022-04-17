@@ -2357,6 +2357,7 @@ class Item_cond : public Item_bool_func {
   The class Item_equal is used to represent conjunctions of equality
   predicates of the form field1 = field2, and field=const in where
   conditions and on expressions.
+  (NOTE:Item_equal类用于表示where条件和ON表达式中的等值谓词,比如field1=field2,field=const)
 
   All equality predicates of the form field1=field2 contained in a
   conjunction are substituted for a sequence of items of this class.
@@ -2426,6 +2427,18 @@ class Item_cond : public Item_bool_func {
   not supposed to be evaluated.  Yet in some cases we call the method val_int()
   for them. We have to take care of restricting the predicate such an
   object represents f1=f2= ...=fn to the projection of known fields fi1=...=fik.
+*/
+/** NOTE:约束条件是指WHERE或JOIN/ON或HAVING子句中的谓词表达式,其分为两种:
+ * 一种是限制条件,用来过滤单表的元组;另一种是连接条件,满足连接条件的元组才会连接,连接条件表达式一般包含两个或两个以上关系的变量.
+ * MySQL用Item类表示约束条件表达式,这是一个父类,由一系列的子类继承这个父类.
+ * Item_equal与Item类之间关系:
+ * Item_equal
+ *   --Item_bool_func
+ *     --Item_int_func
+ *       --Item_func
+ *         --Item_result_field
+ *           --Item
+ * Item_equal类继承自Item_bool_func,Item_bool_func继承自Item_int_func,一次类推直到顶层类Item.
 */
 class Item_equal final : public Item_bool_func {
   List<Item_field> fields; /* list of equal field items                    */
@@ -2522,9 +2535,12 @@ class COND_EQUAL {
  public:
   uint max_members;               /* max number of members the current level
                                      list and all lower level lists */
+                                  //NOTE:本层及本层以下的成员个数(条件有嵌套)
   COND_EQUAL *upper_levels;       /* multiple equalities of upper and levels */
+                                  //NOTE:上层的所有等值判断的约束条件
   List<Item_equal> current_level; /* list of multiple equalities of
                                      the current and level           */
+                                  //NOTE:当前等式表达式
   COND_EQUAL() { upper_levels = nullptr; }
 };
 
