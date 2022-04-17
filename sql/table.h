@@ -3511,6 +3511,9 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
     tables. Unlike 'next_local', this in this list views are *not*
     leaves. Created in setup_tables() -> make_leaf_tables().
   */
+  /** NOTE:所有基本表(包括子查询和视图)的链表,与next_local不同,在这个链表中存在view
+   * 在setup_tables->make_leaf_tables中创建
+  */
   TABLE_LIST *next_leaf{nullptr};
   Item *derived_where_cond{nullptr};   ///< WHERE condition from derived table
   Item *check_option{nullptr};         ///< WITH CHECK OPTION condition
