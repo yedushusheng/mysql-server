@@ -2596,6 +2596,21 @@ class Table_function;
  *  handler ---    TABLE ---  TABLE_SHARE
  *                   |
  *                  JOIN
+ * 
+ * MySQL查询优化器主要结构体之间的关系:
+ * SQL命令           语法分析                       查询优化                       查询执行
+ *           st_select_lex/SELECT_LEX      JOIN::prepare JOIN::optimize         JOIN::exec
+ *                     |_______________________________
+ *                     |                          _____|___                     Const_estimate
+ *     ----SQL_I_List<TABLE_LIST> table_list      |         |
+ *     |    Item各类对象:WHERE、HAVING子句       TABLE    JOIN_TAB
+ *     |     SQL_I_List<ORDER> group_list      POSITION   Key_use/SQL_SELECT/QUICK_SELECT_I
+ *     |     SQL_I_List<ORDER> order_list  
+ *     |
+ *  TABLE_LIST(逻辑表) <--> TABLE(物理表) 
+ *    Item                      \|/
+ *    ORDER                    handle
+ * 
  * TABLE_LIST的初始化:
  * 1.TABLE_LIST *tl = lex->current_select->table_list.first;
  * 2.TABLE_LIST *tl = lex->all_selects_list->table_list.first;

@@ -319,6 +319,11 @@ enum quick_type { QS_NONE, QS_RANGE, QS_DYNAMIC_RANGE };
   A position of table within a join order. This structure is primarily used
   as a part of @c join->positions and @c join->best_positions arrays.
 
+  (NOTE:一个POSITION元素包含信息包括:
+  - 哪些表被访问
+  - 选择的访问方式
+  - Semi-join策略选择
+  --Semi-join优化状态)
   One POSITION element contains information about:
    - Which table is accessed
    - Which access method was chosen
@@ -342,7 +347,8 @@ enum quick_type { QS_NONE, QS_RANGE, QS_DYNAMIC_RANGE };
   This class has to stay a POD, because it is memcpy'd in many places.
 */
 
-/**NOTE:位置类(对应MySQL5.5/5.6的struct st_position)
+/**NOTE:MySQL查询优化相关的连接对象主要有连接类(JOIN),约束条件(Item),位置(POSITION)等.
+ * 位置类(对应MySQL5.5/5.6的struct st_position)
  * 在连接顺序中,位置是指被连接的表的位置(一个表在多表连接构成的连接顺序中处于的位置).
  * 这个位置上存了被访问的表、被使用的访问方法、半连接策略的选择、半连接优化状态等.
  * MySQL的多表连接算法支持的是从左到右的类似左深树的连接方式,
@@ -591,6 +597,19 @@ struct POSITION {
 */
 /** NOTE:连接表是介于关系(TABLE_LIST类)与连接类(JOIN类)之间的一个过渡对象,
  * 存放了关系的一些相关信息,也存放了连接操作需要的一些信息,所以称为连接表
+ * 在语法解析后被查询或者连接的表存储与TABLE_LIST链表上,在优化阶段所有的信息存放在JOIN对象中(这里有JOIN_TAB)
+ * SQL命令           语法分析                       查询优化                       查询执行
+ *           st_select_lex/SELECT_LEX      JOIN::prepare JOIN::optimize         JOIN::exec
+ *                     |_______________________________
+ *                     |                          _____|___                     Const_estimate
+ *     ----SQL_I_List<TABLE_LIST> table_list      |         |
+ *     |    Item各类对象:WHERE、HAVING子句       TABLE    JOIN_TAB
+ *     |     SQL_I_List<ORDER> group_list      POSITION   Key_use/SQL_SELECT/QUICK_SELECT_I
+ *     |     SQL_I_List<ORDER> order_list  
+ *     |
+ *  TABLE_LIST(逻辑表) <--> TABLE(物理表) 
+ *    Item                      \|/
+ *    ORDER                    handle
 */
 class JOIN_TAB : public QEP_shared_owner {
  public:
@@ -628,6 +647,7 @@ class JOIN_TAB : public QEP_shared_owner {
 
  private:
   Key_use *m_keyuse; /**< pointer to first used key               */
+  //NOTE:执行第一个可使用的索引
 
   /**
     Pointer to the associated join condition:

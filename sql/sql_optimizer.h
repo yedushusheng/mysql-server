@@ -182,7 +182,7 @@ class JOIN {
   ~JOIN() {}
 
   /// Query block that is optimized and executed using this JOIN
-  SELECT_LEX *const select_lex;  //NOTE:对应的SELECT_LEX
+  SELECT_LEX *const select_lex;  //NOTE:当前JOIN优化和执行对应的SELECT_LEX
   /// Query expression referring this query block
   SELECT_LEX_UNIT *const unit;
   /// Thread handler
@@ -192,6 +192,9 @@ class JOIN {
     Optimal query execution plan. Initialized with a tentative plan in
     JOIN::make_join_plan() and later replaced with the optimal plan in
     get_best_combination().
+  */
+  /** NOTE:join_tab存放连接中的所有的连接关系对象,存放的顺序参见get_best_combination函数分析
+   * 在JOIN::make_join_plan()中初始化,get_best_combination()中会优化替换
   */
   JOIN_TAB *join_tab{nullptr};
   /// Array of QEP_TABs
@@ -205,6 +208,7 @@ class JOIN {
   */
   JOIN_TAB **best_ref{nullptr};
   /// mapping between table indexes and JOIN_TABs
+  //NOTE:位图,标识表在连接(JOIN)中的位置
   JOIN_TAB **map2table{nullptr};
   ///< mapping between table indexes and QEB_TABs
   QEP_TAB **map2qep_tab{nullptr};
@@ -256,10 +260,15 @@ class JOIN {
      4. possible holes in array
      5. semi-joined tables used with materialization strategy
   */
-  uint tables{0};          ///< Total number of tables in query block
+  //NOTE:MySQL对表做细致区分,如下成员标识不同类型的表的个数
+  uint tables{0};          ///< Total number of tables in query block  
+                           //NOTE:在查询块中出现的基表的个数
   uint primary_tables{0};  ///< Number of primary input tables in query block
+                           //NOTE:在查询块中出现的主要的表的个数(包括物化的临时表等)
   uint const_tables{0};    ///< Number of primary tables deemed constant
+                           //NOTE:常量表的个数
   uint tmp_tables{0};      ///< Number of temporary tables used by query
+                           //NOTE:临时表的个数
   uint send_group_parts{0};
   /**
     Indicates that the data will be aggregated (typically GROUP BY),
@@ -321,11 +330,20 @@ class JOIN {
 
     @note This is a scratch array, not used after get_best_combination().
   */
+  /** NOTE:JOIN优化的结果,即确定POSITION
+   * 最后优化的结果,意味着最终的最优查询执行计划
+   * 多表连接,每个表在什么位置(即以什么样的次序与其他表连接),会有个最优次序(代价花费最小).
+   * 这个次序存放于best_positions数组中.
+   * 
+   * 构成当前连接(JOIN)的最优表的连接次序(作为一个数组,线性存放多个表对象,
+   * 用以表示这些表按数组指定的次序连接得到当前连接)
+  */
   POSITION *best_positions{nullptr};
 
   /******* Join optimization state members start *******/
 
   /* Current join optimization state */
+  //NOTE:当前路径,在求解最优路径(best_positions)的过程中,表示某一刻的一个路径
   POSITION *positions{nullptr};
 
   /* We also maintain a stack of join optimization states in * join->positions[]
@@ -342,6 +360,7 @@ class JOIN {
     after optimization phase - cost of picked join order (not taking into
     account the changes made by test_if_skip_sort_order()).
   */
+  //NOTE:最优查询路径对应的最小花费
   double best_read{0.0};
   /**
     The estimated row count of the plan with best read time (see above).
@@ -362,7 +381,7 @@ class JOIN {
      to build the tmp table's own tmp_table_param.
   */
   Temp_table_param tmp_table_param;
-  MYSQL_LOCK *lock;
+  MYSQL_LOCK *lock;  //NOTE:锁信息
 
   enum class RollupState { NONE, INITED, READY };
   RollupState rollup_state;
@@ -520,7 +539,7 @@ class JOIN {
     optimizes tables away.
   */
   TABLE_LIST *tables_list;  //NOTE:查询涉及的表
-  COND_EQUAL *cond_equal{nullptr};
+  COND_EQUAL *cond_equal{nullptr};  //NOTE:条件子句
   /*
     Join tab to return to. Points to an element of join->join_tab array, or to
     join->join_tab[-1].
@@ -604,6 +623,7 @@ class JOIN {
   bool allow_outer_refs{false};
 
   /* Temporary tables used to weed-out semi-join duplicates */
+  //NOTE:半连接相关
   List<TABLE> sj_tmp_tables{};
   List<Semijoin_mat_exec> sjm_exec_list{};
   /* end of allocation caching storage */
@@ -631,7 +651,7 @@ class JOIN {
   */
   bool plan_is_single_table() { return primary_tables - const_tables == 1; }
 
-  bool optimize();
+  bool optimize();  //NOTE:正式优化阶段,使用逻辑、物理优化的方式,进行查询的各种操作估算
   void reset();
   bool prepare_result();
   void destroy();
