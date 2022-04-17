@@ -826,6 +826,7 @@ class SELECT_LEX_UNIT {
   /* LIMIT clause runtime counters */
   ha_rows select_limit_cnt, offset_limit_cnt;
   /// Points to subquery if this query expression is used in one, otherwise NULL
+  //NOTE:指向子查询,如果不存在则为NULL
   Item_subselect *item;
   /**
     Helper query block for query expression with UNION or multi-level

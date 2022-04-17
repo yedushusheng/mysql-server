@@ -173,19 +173,19 @@ static Item *create_rollup_switcher(THD *thd, SELECT_LEX *select_lex,
  * 注意,在这个阶段,已经着手进行子查询的优化处理工作了.
  * 调用关系:
  * Sql_cmd_select::prepare_inner -> SELECT_LEX::prepare -> SELECT_LEX::prepare_values
- *                                                         -> SELECT_LEX::simplify_joins
+ *                                                         -> SELECT_LEX::simplify_joins(消除外连接,嵌套连接:外连接->内连接)
  *                                                      -> setup_tables
  *                                                      -> setup_wild
  *                                                      -> setup_base_ref_items
  *                                                      -> setup_fields
  *                                                      -> setup_conds
  *                                                      -> setup_order
- *                                                      -> remove_redundant_subquery_clauses
- *                                                      -> resolve_subquery
+ *                                                      -> remove_redundant_subquery_clauses(移除多余子查询)
+ *                                                      -> resolve_subquery(子查询优化)
  *                                                         -> select_transformer
  *                                                      -> split_sum_func2
  *                                                      -> setup_ftfuncs
- *                                                      -> flatten_subqueries
+ *                                                      -> flatten_subqueries(子查询转换为半连接)
  *                                                      -> apply_local_transforms
  *                                                         -> SELECT_LEX::simplify_joins
  *                                                      -> push_conditions_to_derived_tables
@@ -478,6 +478,7 @@ bool SELECT_LEX::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
   // below since substitutions may be made in the HAVING clause which would not
   // otherwise get done.
 
+  //NOTE:标量子查询转为derived
   if (!(thd->lex->context_analysis_only & CONTEXT_ANALYSIS_ONLY_VIEW) &&
       (thd->optimizer_switch_flag(OPTIMIZER_SWITCH_SUBQUERY_TO_DERIVED) ||
        (parent_lex->m_sql_cmd != nullptr &&
@@ -4234,6 +4235,7 @@ void SELECT_LEX::remove_redundant_subquery_clauses(
   };
   uint possible_changes;
 
+  //NOTE:SINGLEROW的时候如果存在limit则移除,排序也移除
   if (subq_predicate->substype() == Item_subselect::SINGLEROW_SUBS) {
     if (has_limit()) return;
     possible_changes = REMOVE_ORDER;
