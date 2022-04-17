@@ -4867,7 +4867,9 @@ void THD::reset_for_next_command() {
   @param thd          Current session.
   @param parser_state Parser state.
 */
-
+/** NOTE:MySQL语法分析器的入口函数(MySQL5.7是mysql_parse函数,MySQL8.0是dispatch_sql_command函数)
+ * MySQL语法分析器负责把MySQL的SQL语句分解为查询树(AST),存放于THD结构体的select_lex类定义的对象上.
+*/
 void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
   DBUG_TRACE;
   DBUG_PRINT("dispatch_sql_command", ("query: '%s'", thd->query().str));
@@ -4875,7 +4877,7 @@ void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
   DBUG_EXECUTE_IF("parser_debug", turn_parser_debug_on(););
 
   mysql_reset_thd_for_next_command(thd);
-  lex_start(thd);
+  lex_start(thd);//NOTE:初始化语法分析器
 
   thd->m_parser_state = parser_state;
   invoke_pre_parse_rewrite_plugins(thd);
@@ -4889,7 +4891,7 @@ void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
   bool err = thd->get_stmt_da()->is_error();
 
   if (!err) {
-    err = parse_sql(thd, parser_state, nullptr);
+    err = parse_sql(thd, parser_state, nullptr);//NOTE:分析SQL
     if (!err) err = invoke_post_parse_rewrite_plugins(thd, false);
 
     found_semicolon = parser_state->m_lip.found_semicolon;
@@ -4924,7 +4926,7 @@ void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
     } else {
       thd->set_query_for_display(thd->query().str, thd->query().length);
     }
-
+    //NOTE:查询缓存命中,只做日志记录(不再需要执行SQL语句的分析和执行工作)
     if (!(opt_general_log_raw || thd->slave_thread)) {
       if (thd->rewritten_query().length())
         query_logger.general_log_write(thd, COM_QUERY,
@@ -5032,7 +5034,7 @@ void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
   sp_cache_enforce_limit(thd->sp_func_cache, stored_program_cache_size);
   thd->lex->destroy();
   thd->end_statement();
-  thd->cleanup_after_query();
+  thd->cleanup_after_query();//NOTE:结束语法分析,清理环境等
   DBUG_ASSERT(thd->change_list.is_empty());
 
   DEBUG_SYNC(thd, "query_rewritten");

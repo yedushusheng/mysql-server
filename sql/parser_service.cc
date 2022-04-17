@@ -229,6 +229,8 @@ void mysql_parser_set_current_database(MYSQL_THD thd,
   }
 }
 
+/** NOTE:语法解析
+*/
 int mysql_parser_parse(MYSQL_THD thd, const MYSQL_LEX_STRING query,
                        unsigned char is_prepared,
                        sql_condition_handler_function handle_condition,
