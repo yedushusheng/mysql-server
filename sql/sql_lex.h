@@ -1164,7 +1164,7 @@ enum class enum_explain_type {
 */
 /** NOTE:
  * 语法分析器的结果是查询树,使用st_select_lex(MySQL8.0 SELECT_LEX)类表示,类的实例保存了一条SQL语句被分解后的各子句的内容.
- * st_select_lex类继承自st_select_lex_node类,获得了父类的一些基本信息,如e_sql_cache sql_cacheSQL缓存信息.
+ * st_select_lex类继承自st_select_lex_node类,获得了父类的一些基本信息,如sql_cacheSQL缓存信息.
  * 
  * SELECT_LEX/SELECT_UNIT用来表达select和union操作
  * SELECT_LEX表示SELECT操作符,SELECT_UNIT表示嵌套查询
