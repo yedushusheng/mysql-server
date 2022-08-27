@@ -2084,7 +2084,7 @@ class SELECT_LEX {
   */
   /// table embedding the above list
   TABLE_LIST *embedding{nullptr};  
-  /**NOTE:(语法解析过程中)指向当前的嵌套结点,参见SELECT_LEX::init_query,在这个函数中初始化为0
+  /** NOTE:(语法解析过程中)指向当前的嵌套结点,参见SELECT_LEX::init_query,在这个函数中初始化为0
    * SELECT_LEX::init_nested_join,在这个函数中更新为新创建的TABLE_LIST
   */
   /**
@@ -2093,8 +2093,11 @@ class SELECT_LEX {
     processing is done, this is a list of base tables only.
     Use TABLE_LIST::next_leaf to traverse the list.
   */
- /**NOTE:基本表,从SQL查询语句中分解出的基表
-  * /
+ /** NOTE:基本表,从SQL查询语句中分解出的基表
+  * 在setup_tables执行后，该变量是基本表和虚表的列表；
+  * 在虚表处理后，该变量仅仅是基本表的列表
+  * 使用TABLE_LIST::next_leaf来遍历列表
+  */
   TABLE_LIST *leaf_tables{nullptr};
   // Last table for LATERAL join, used by table functions
   TABLE_LIST *end_lateral_table{nullptr};
