@@ -3436,6 +3436,7 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
      E.g. for a query
      @verbatim SELECT * FROM (SELECT a FROM t1) b @endverbatim
   */
+  //NOTE:虚表和视图
   SELECT_LEX_UNIT *derived{nullptr}; /* SELECT_LEX_UNIT of derived table */
 
   /// If non-NULL, the CTE which this table is derived from.
