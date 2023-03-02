@@ -33,7 +33,7 @@ class Schema;
 
 struct CHARSET_INFO;
 struct HA_CREATE_INFO;
-
+/** Note:Database操作相关接口 */
 bool mysql_create_db(THD *thd, const char *db, HA_CREATE_INFO *create);
 bool mysql_alter_db(THD *thd, const char *db, HA_CREATE_INFO *create);
 bool mysql_rm_db(THD *thd, const LEX_CSTRING &db, bool if_exists);

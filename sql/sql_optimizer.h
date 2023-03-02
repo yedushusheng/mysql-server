@@ -171,7 +171,9 @@ class ORDER_with_src {
  * const char* zero_result_cause
  * 4.其他
  * 
- * 
+ * 说明:
+ * 在MySQL中,执行计划的实现是基于JOIN和QEP_TAB这两个对象
+ * 其中JOIN类表示一个查询语句块的优化和执行,每个select查询语句（即Query_block对象）在处理的时候,都会被当做JOIN对象
 */
 class JOIN {
  public:

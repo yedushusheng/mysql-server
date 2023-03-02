@@ -267,6 +267,12 @@ bool make_group_fields(JOIN *main_join, JOIN *curr_join);
 bool check_unique_constraint(TABLE *table);
 ulonglong unique_hash(const Field *field, ulonglong *hash);
 
+/** Note:https://blog.csdn.net/n88Lpo/article/details/127469643
+ * 火山引擎执行迭代器使用
+ * QEP_TAB是Query Execution Plan Table的缩写,这里的表Table对象主要包含物化表、临时表、派生表、常量表等
+ * JOIN::optimize()是优化执行器的统一入口,在这里会把一个查询语句块Query_block最终优化成QEP_TAB
+ * 在MySQL-8.0.22版本之后,又引入访问方式AccessPath和执行迭代器Iterator对象,再结合JOIN和QEP_TAB对象,最终得到整个解析计划的执行路径
+*/
 class QEP_TAB : public QEP_shared_owner {
  public:
   QEP_TAB()

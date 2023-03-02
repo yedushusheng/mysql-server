@@ -2307,6 +2307,12 @@ struct Page_track_t {
 
   savepoint_*, prepare, recover, and *_by_xid pointers can be 0.
 */
+/** Note:Handler接口
+ * 如果想要在某个存储引擎开发新的功能，需要分别执行如下操作:
+ * 1. 在handlerton中定义接口
+ * 2. 在具体类中实现该接口的逻辑调用，里面调用具体存储引擎的接口
+ * 3. 在存储引擎中具体实现该接口功能
+*/
 struct handlerton {
   /**
     Historical marker for if the engine is available or not.
