@@ -36,6 +36,7 @@ namespace cache {
 template <typename T>
 class Cache_element;
 
+// Note:单实例
 Shared_dictionary_cache *Shared_dictionary_cache::instance() {
   static Shared_dictionary_cache s_cache;
   return &s_cache;
@@ -87,14 +88,20 @@ bool Shared_dictionary_cache::reset_tables_and_tablespaces(THD *thd) {
 }
 
 // Get an element from the cache, given the key.
+/** Note:主要接口
+ * 通过key查找(Shared_multi_map->get()共享内存中获取),如果找到则返回
+ * 如果未找到则调用get_uncached从持久化存储(innodb表)读取,然后将找到的结果写回缓存(Shared_multi_map->put())
+*/
 template <typename K, typename T>
 bool Shared_dictionary_cache::get(THD *thd, const K &key,
                                   Cache_element<T> **element) {
   bool error = false;
   DBUG_ASSERT(element);
+  // Note:共享内存获取
   if (m_map<T>()->get(key, element)) {
     // Handle cache miss.
     const T *new_object = nullptr;
+    // Note:cache miss,则到磁盘获取
     error = get_uncached(thd, key, ISO_READ_COMMITTED, &new_object);
 
     // Add the new object, and assign the output element, even in the case of
@@ -105,11 +112,15 @@ bool Shared_dictionary_cache::get(THD *thd, const K &key,
 }
 
 // Read an object directly from disk, given the key.
+/** Note:主要接口
+ * 直接从innodb表读取object对象，并且设置一个key
+*/
 template <typename K, typename T>
 bool Shared_dictionary_cache::get_uncached(THD *thd, const K &key,
                                            enum_tx_isolation isolation,
                                            const T **object) const {
   DBUG_ASSERT(object);
+  // Note:调用Storage_adapter接口从磁盘的innodb表获取数据
   bool error = Storage_adapter::get(thd, key, isolation, false, object);
   DBUG_ASSERT(!error || thd->is_system_thread() || thd->killed ||
               thd->is_error());
@@ -118,6 +129,10 @@ bool Shared_dictionary_cache::get_uncached(THD *thd, const K &key,
 }
 
 // Add an object to the shared cache.
+/** Note:主要接口
+ * 将element_cache放入相应的map,如果map中已经存在该element_cache,
+ * 返回这个element_cache的引用,element_cache的引用计数加1
+*/
 template <typename T>
 void Shared_dictionary_cache::put(const T *object, Cache_element<T> **element) {
   DBUG_ASSERT(object);

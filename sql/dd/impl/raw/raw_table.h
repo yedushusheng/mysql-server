@@ -40,6 +40,9 @@ class Raw_record_set;
 
 ///////////////////////////////////////////////////////////////////////////
 
+/** Note:表操作
+ * 直接调用handler接口实现表的各种操作
+*/
 class Raw_table {
  public:
   Raw_table(thr_lock_type lock_type, const String_type &name);

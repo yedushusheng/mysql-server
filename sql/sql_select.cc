@@ -407,6 +407,7 @@ err:
 
   if (error_handler_active) thd->pop_internal_handler();
 
+  // Note:清理
   lex->cleanup(thd, false);
 
   return true;
@@ -516,7 +517,36 @@ bool Sql_cmd_select::prepare_inner(THD *thd) {
   return false;
 }
 
-//NOTE:外部接口 DML执行入口
+/** NOTE:外部接口 DML执行入口
+ * 大致调用流程(8.0.13):
+ * mysql_execute_command()
+ *   lex->m_sql_cmd->execute()
+ *   Sql_cmd_dml::execute()
+ *     Sql_cmd_dml::prepare()
+ *       Sql_cmd_select::precheck()
+ *       Sql_cmd_select::open_tables_for_query()
+ *       Sql_cmd_select::prepare_inner()
+ *         SELECT_LEX_UNIT::prepare_limit()
+ *         SELECT_LEX_UNIT::prepare() (not simple or simple SELECT_LEX::prepare)
+ *           SELECT_LEX::prepare()
+ *             ......
+ *       Sql_cmd_dml::execute_inner
+ *         SELECT_LEX_UNIT::optimize() (not simple or simple SELECT_LEX::optimize)
+ *           SELECT_LEX::optimize()  
+ *             JOIN::optimize()
+ *             SELECT_LEX_UNIT::optimize()
+ *               ......
+ *         SELECT_LEX_UNIT::execute() (not simple or simple SELECT_LEX::optimize)
+ *           SELECT_LEX::execute()  
+ *             JOIN::exec()
+ *               JOIN::prepare_result()
+ *               do_select()
+ *                 sub_select()
+ *                   ......
+ *             SELECT_LEX_UNIT::execute()
+ *               ......
+ *   SELECT_LEX_UNIT::cleanup(false)
+*/
 bool Sql_cmd_dml::execute(THD *thd) {
   DBUG_TRACE;
 

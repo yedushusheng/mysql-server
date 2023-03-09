@@ -1344,6 +1344,11 @@ void set_linear_hash_mask(partition_info *part_info, uint num_parts) {
   part_info->linear_hash_mask = mask - 1;
 }
 
+/** Note:线性哈希(LINEAR HASH) 
+ * 语法:
+ * CREATE TABLE test (id INT)
+ * PARTITION BY LINEAR HASH (id) PARTITIONS 1000;
+*/
 /*
   This function calculates the partition id provided the result of the hash
   function using linear hashing parameters, mask and number of partitions.
@@ -2541,6 +2546,14 @@ inline static uint32 get_part_id_for_sub(uint32 loc_part_id, uint32 sub_part_id,
   return (uint32)((loc_part_id * num_subparts) + sub_part_id);
 }
 
+/** Note:取模哈希算法：根据表达式计算分区ID
+ * 语法：
+ * CREATE TABLE test (id INT)
+ * PARTITION BY HASH (id) PARTITIONS 1000;
+ * 特点:
+ * 数据分布较为均匀
+ * 增删分区时需要变化的数据量较大
+ */
 /*
   Calculate part_id for (SUB)PARTITION BY HASH
 

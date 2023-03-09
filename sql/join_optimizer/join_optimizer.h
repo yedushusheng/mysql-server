@@ -72,6 +72,10 @@ struct AccessPath;
 class THD;
 class SELECT_LEX;
 
+/** Note:Hyper Graph优化器
+ * 在经典的volcano模型中，每个query会转成一颗树去执行，而join部分也会转为其中的子树。
+ * 不同的join tree对应不同的执行顺序，经典的join tree可以分为三类：left-deep、zig-zag 和 bushy
+*/
 /**
   The main entry point for the hypergraph join optimizer; takes in a query
   block and returns an access path to execute it (or nullptr, for error).

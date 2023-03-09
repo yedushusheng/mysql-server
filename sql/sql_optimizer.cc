@@ -1337,6 +1337,9 @@ int JOIN::replace_index_subquery() {
   return 1;
 }
 
+/** Note:SQL优化
+ * group by优化
+ */
 bool JOIN::optimize_distinct_group_order() {
   DBUG_TRACE;
   ASSERT_BEST_REF_IN_JOIN_ORDER(this);

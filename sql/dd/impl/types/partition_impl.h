@@ -56,6 +56,9 @@ class Weak_object;
 
 ///////////////////////////////////////////////////////////////////////////
 
+/** Note:分区的元数据
+ * Table_impl中也包含所有分区的元信息集合Collection<Partition *> m_partitions，存放每个分区的id、引擎、选项、范围值、父子分区等。
+ * */
 class Partition_impl : public Entity_object_impl, public Partition {
  public:
   Partition_impl();

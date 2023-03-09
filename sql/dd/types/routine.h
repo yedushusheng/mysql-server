@@ -56,7 +56,7 @@ class Routines;
         inheritance hierarchy; thus, direct subclasses
         must inherit this class virtually.
 */
-
+// Note:用于函数和存储过程的抽象基类
 class Routine : virtual public Entity_object {
  public:
   typedef Routine_impl Impl;

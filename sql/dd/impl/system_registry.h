@@ -396,6 +396,9 @@ class System_tables {
                           const Object_table, Types, type_name, true>
       System_table_registry_type;
   System_table_registry_type m_registry;
+  /** Note: 把代表每个数据字典表的Object_table对象注册到System_tables类的实例属性m_registry中。
+   * 除了数据字典表，m_registry中还包含了mysql库中的其它MySQL系统表。
+*/
 
  public:
   // The ordered iterator type must be public.

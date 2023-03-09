@@ -58,7 +58,10 @@ class Cache_element;
 
   @tparam  T  Dictionary object type.
 */
-
+/** Note:map结构
+ * 可以根据对象ID或NAME获得对应的cache元素.
+ * 这个是局部缓存Local_multi_map和全局缓存Shared_multi_map的基类。
+ */
 template <typename T>
 class Multi_map_base {
  private:

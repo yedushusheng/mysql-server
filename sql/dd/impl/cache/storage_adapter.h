@@ -39,6 +39,13 @@ namespace dd_cache_unittest {
 class CacheStorageTest;
 }
 
+/**
+ * Note:数据字典表本身的元数据也会保存到数据字典表里，但是某个数据字典表创建的时候，有一些数据字典表还没有创建，这就有问题了。
+ * 我们以 columns、indexes 这 2 个数据字典表为例来说明：columns 表先于 indexes 表创建，columns 表创建成功之后，需要把索引元数据保存到 indexes 表中，而此时 indexes 表还没有创建，columns 表的索引元数据自然也就没办法保存到 indexes 表中了。
+ * MySQL 解决这个问题的方案是引入一个中间层，用于临时存放所有数据字典表的各种元数据，等到所有数据字典表都创建完成之后，再把临时存放在中间层的所有数据字典表的元数据保存到相应的数据字典表中。
+ * 这里所谓的中间层实际上是一个存储适配器，源码中对应的类名为 Storage_adapter，这是一个实现了单例模式的类。
+ * MySQL在初始化数据目录的过程中，Storage_adapter类的实例属性m_core_registry就是所有数据字典表元数据的临时存放场所。
+ */
 namespace dd {
 
 namespace cache {
@@ -55,7 +62,13 @@ namespace cache {
   When retrieving objects from the registry using core_get(), a clone of the
   object will be returned, and this is therefore owned by the caller.
 */
-
+/** Note:存储core属性的数据字典对象
+ * 这个类抽象了对DD对象的metadata进行存储的方法。
+ * 它是一个静态类。对于新创建的对象（表，索引，表空间等）都会通过该类进行一个clone， clone之后该类会将该对象的metadata存储到对应的系统表中。
+ * 另外，它也提供接口用来从系统表中获取metadata并生成调用需要的DD对象。
+ * 该类同时也提供了一个缓存，每次调用存储新对象的时候，它会自动将一个对象clone缓存起来。
+ * 该类成员函数中core_xxx都是负责操作缓存。
+*/
 class Storage_adapter {
   friend class dd_cache_unittest::CacheStorageTest;
 
@@ -77,7 +90,8 @@ class Storage_adapter {
 
     @return Next object id to be used.
   */
-
+  /** Note:为新的对象产生一个ID标识。
+  */
   template <typename T>
   Object_id next_oid();
 
@@ -91,11 +105,13 @@ class Storage_adapter {
     @param       key       Key for which to get the object.
     @param [out] object    Object retrieved, possibly nullptr if not present.
   */
-
+  // Note:根据对象名称从缓存中返回一个对象的clone
   template <typename K, typename T>
   void core_get(const K &key, const T **object);
 
   Object_registry m_core_registry;  // Object registry storing core DD objects.
+  /** Note:所有数据字典表元数据的临时存放场所 */
+
   mysql_mutex_t m_lock;             // Single mutex to protect the registry.
   static bool s_use_fake_storage;   // Whether to use the core registry to
                                     // simulate the storage engine.
@@ -112,6 +128,7 @@ class Storage_adapter {
   }
 
  public:
+  // Note:这里可以获取到单例
   static Storage_adapter *instance();
 
   /**
@@ -120,7 +137,7 @@ class Storage_adapter {
     @tparam      T         Dictionary object type.
     @return      Number of elements.
   */
-
+  // Note:根据对象类型返回缓存区中所有对象的数量
   template <typename T>
   size_t core_size();
 
@@ -131,7 +148,7 @@ class Storage_adapter {
     @param       key       Name key for which to get the object id.
     @return      Object id, INVALID_OBJECT_ID if the object is not present.
   */
-
+  // Note:获取对象ID标识
   template <typename T>
   Object_id core_get_id(const typename T::Name_key &key);
 
@@ -171,7 +188,10 @@ class Storage_adapter {
     @retval      false   No error.
     @retval      true    Error.
   */
-
+  /** Note:该函数可以根据对象类型及名称获取对象。
+   * 如果该对象已经被缓存，那么调用core_get获取clone对象。
+   * 否则会根据对象类型到对应的metadata数据表中查找并构造一个对象。
+  */
   template <typename K, typename T>
   static bool get(THD *thd, const K &key, enum_tx_isolation isolation,
                   bool bypass_core_registry, const T **object);
@@ -183,7 +203,7 @@ class Storage_adapter {
     @param   thd     Thread context.
     @param   object  Object to be dropped.
   */
-
+  // Note:缓存中清除一个对象
   template <typename T>
   void core_drop(THD *thd, const T *object);
 
@@ -197,7 +217,7 @@ class Storage_adapter {
     @retval  false   No error.
     @retval  true    Error.
   */
-
+  // Note:从对象所对应的各个metadata数据表中清除相关数据
   template <typename T>
   static bool drop(THD *thd, const T *object);
 
@@ -212,7 +232,7 @@ class Storage_adapter {
     @param   thd     Thread context.
     @param   object  Object to be stored.
   */
-
+  // Note:缓冲区中添加一个DD对象
   template <typename T>
   void core_store(THD *thd, T *object);
 
@@ -226,7 +246,8 @@ class Storage_adapter {
     @retval  false   No error.
     @retval  true    Error.
   */
-
+  /** Note:该函数会根据DD对象类型，将metadata存入相关的系统表中。
+  */
   template <typename T>
   static bool store(THD *thd, T *object);
 
@@ -238,7 +259,7 @@ class Storage_adapter {
     @param       key       Key for object to get from persistent storage.
     @param       object    Object to drop from the core registry.
   */
-
+  // Note:同步缓存中的DD对象
   template <typename T>
   bool core_sync(THD *thd, const typename T::Name_key &key, const T *object);
 
@@ -251,7 +272,7 @@ class Storage_adapter {
   /**
     Dump the contents of the core storage.
   */
-
+  // Note:备份缓存中对象
   void dump();
 };
 

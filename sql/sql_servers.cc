@@ -201,6 +201,7 @@ bool servers_init(bool dont_read_servers_table) {
     return true;
 
   /* initialise our servers cache */
+  // Note:初始化的时候设置一下servers_cache缓存
   servers_cache = new collation_unordered_map<std::string, FOREIGN_SERVER *>(
       system_charset_info, key_memory_servers);
 

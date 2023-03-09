@@ -48,20 +48,24 @@ namespace dd {
 namespace cache {
 
 // Template function to find an element and mark it as used.
+// Note:查找element_cache并标记为已使用
 template <typename T>
 template <typename K>
 Cache_element<T> *Shared_multi_map<T>::use_if_present(const K &key) {
   mysql_mutex_assert_owner(&m_lock);
   Cache_element<T> *e = nullptr;
   // Look up in the appropriate map and get the element.
+  // Note:判断map中是否存在该element_cache
   m_map<K>()->get(key, &e);
 
   // Use the element if present.
   if (e) {
     // Remove the element from the free list.
+    // Note:从free_list中删除该element_cache
     if (e->usage() == 0) m_free_list.remove(e);
 
     // Mark the element as being used, and return it.
+    // Note:map中存在该element_cache,返回这个element_cache的引用,element_cache引用计数+1
     e->use();
     return e;
   }
@@ -249,6 +253,7 @@ template <typename T>
 template <typename K>
 bool Shared_multi_map<T>::get(const K &key, Cache_element<T> **element) {
   Autolocker lock(this);
+  // Note:查找该key是否存在缓存中,如果存在则获取引用(引用计数+1),否则返回空
   *element = use_if_present(key);
   if (*element) return false;
 
@@ -274,6 +279,10 @@ bool Shared_multi_map<T>::get(const K &key, Cache_element<T> **element) {
 }
 
 // Put a new object and element wrapper into the map.
+/** Note:主要接口
+ * 将element_cache放入相应的map,如果map中已经存在该element_cache,
+ * 返回这个element_cache的引用,element_cache的引用计数加1
+*/
 template <typename T>
 template <typename K>
 void Shared_multi_map<T>::put(const K *key, const T *object,

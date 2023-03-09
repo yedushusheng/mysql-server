@@ -14157,6 +14157,9 @@ static bool dd_is_only_column(const dd::Index *index,
 @param[in,out]	dd_table	data dictionary cache object
 @return error number
 @retval 0 on success */
+/** Note:该函数将会为Innodb存储引擎创建它自己需要的系统列。
+ * 实际上就是把原来Innodb自己的系统表统一到DD中。
+*/
 int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
                                             const List<Create_field> *,
                                             const KEY *, uint,
@@ -14167,6 +14170,7 @@ int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
   bool has_fulltext = false;
   const dd::Index *fts_doc_id_index = nullptr;
 
+  /* Note:检查各个定义的索引是否合法。*/
   for (dd::Index *i : *dd_table->indexes()) {
     /* The name "PRIMARY" is reserved for the PRIMARY KEY */
     ut_ad((i->type() == dd::Index::IT_PRIMARY) ==
@@ -14179,7 +14183,8 @@ int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
       ut_ad(i->type() != dd::Index::IT_PRIMARY);
       fts_doc_id_index = i;
     }
-
+    
+    /* Note:验证索引算法是否有效 */
     switch (i->algorithm()) {
       case dd::Index::IA_SE_SPECIFIC:
         ut_ad(0);
@@ -14227,7 +14232,7 @@ int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
     my_error(ER_UNSUPPORTED_INDEX_ALGORITHM, MYF(0), i->name().c_str());
     return ER_UNSUPPORTED_INDEX_ALGORITHM;
   }
-
+  /* Note:验证并处理全文索引 */
   if (has_fulltext) {
     /* Add FTS_DOC_ID_INDEX(FTS_DOC_ID) if needed */
     const dd::Column *fts_doc_id =
@@ -14293,7 +14298,7 @@ int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
                                  fts_doc_id);
     }
   }
-
+  /* Note:如果当前没有定义主键，Innodb将自动增加DB_ROW_ID作为主键。 */
   if (primary == nullptr) {
     dd::Column *db_row_id = dd_add_hidden_column(
         dd_table, "DB_ROW_ID", DATA_ROW_ID_LEN, dd::enum_column_types::INT24);
@@ -14309,7 +14314,7 @@ int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
   /* Add PRIMARY KEY columns to each secondary index, including:
   1. all PRIMARY KEY column prefixes
   2. full PRIMARY KEY columns which don't exist in the secondary index */
-
+  /* Note:为二级索引增加主键列 */
   std::vector<const dd::Index_element *,
               ut_allocator<const dd::Index_element *>>
       pk_elements;
@@ -14339,6 +14344,7 @@ int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
   }
 
   /* Add the InnoDB system columns DB_TRX_ID, DB_ROLL_PTR. */
+  /* Note:增加系统列 DB_TRX_ID, DB_ROLL_PTR. */
   dd::Column *db_trx_id = dd_add_hidden_column(
       dd_table, "DB_TRX_ID", DATA_TRX_ID_LEN, dd::enum_column_types::INT24);
   if (db_trx_id == nullptr) {

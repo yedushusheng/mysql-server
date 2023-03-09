@@ -50,6 +50,9 @@ class Properties;
 
 ///////////////////////////////////////////////////////////////////////////
 
+/** Note:record操作
+ * 直接调用handler接口实现record的各种操作
+*/
 class Raw_record {
  public:
   Raw_record(TABLE *table);

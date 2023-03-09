@@ -827,6 +827,12 @@ class Timestamp_timezone_guard {
   THD *m_thd;
 };
 
+/** Note:外部接口(在sql/dd/cache/dictionary_client.h中定义)
+ * 功能：获取一个数据字典对象
+ * Data Dictionary提供了统一的client API供Server层和引擎层使用，
+ * 包含对元数据访问的acquire()/drop()/store()/update()基本操作
+ * 底层实现了对InnoDB存储存放的数据字典表的读写操作，包含开表(open table)、构造主键、主键查找等过程。
+*/
 // Get a dictionary object.
 template <typename K, typename T>
 bool Dictionary_client::acquire(const K &key, const T **object,
@@ -2518,6 +2524,7 @@ template <>
 bool Dictionary_client::store(Table_stat *object) {
   // Store dictionary objects with UTC time
   Timestamp_timezone_guard ts(m_thd);
+  /* Note:调用下面函数完成存储 */
   return Storage_adapter::store<Table_stat>(m_thd, object);
 }
 

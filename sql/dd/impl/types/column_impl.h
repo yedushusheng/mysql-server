@@ -60,6 +60,11 @@ class Weak_object;
 
 ///////////////////////////////////////////////////////////////////////////
 
+/** Note:每一个表中列操作类
+ * 从Abstract_table_impl继承来的Collection<Column *> m_columns就表示表的所有列集合，
+ * 集合中的每一个对象Column_impl表示该列的元信息，包括数值类型、是否为NULL、是否自增、默认值等。
+ * 同时也包含指向Abstract_table_impl的指针，将该列与其对应的表联系起来。
+ * */
 class Column_impl : public Entity_object_impl, public Column {
  public:
   Column_impl();

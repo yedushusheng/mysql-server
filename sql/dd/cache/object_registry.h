@@ -56,7 +56,7 @@ namespace cache {
   The individual maps containing DD object pointers are allocated on demand
   to avoid excessive performance overhead during object instantiation.
 */
-
+// Note:存储不同类型的对象和对应的cache元素
 class Object_registry {
  private:
   template <typename T>

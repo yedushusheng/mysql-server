@@ -630,6 +630,7 @@ string PrintDottyHypergraph(const JoinHypergraph &graph) {
   return digraph;
 }
 
+/** Note:构建Hyper Graph */
 /**
   Convert a join rooted at “expr” into a join hypergraph that encapsulates
   the constraints given by the relational expressions (e.g. inner joins are
@@ -728,6 +729,7 @@ void MakeJoinGraphFromRelationalExpression(const RelationalExpression *expr,
 
 }  // namespace
 
+/** Note:自底向上的构建节点和边 */
 bool MakeJoinHypergraph(THD *thd, SELECT_LEX *select_lex, string *trace,
                         JoinHypergraph *graph) {
   JOIN *join = select_lex->join;
@@ -740,6 +742,7 @@ bool MakeJoinHypergraph(THD *thd, SELECT_LEX *select_lex, string *trace,
     *trace += "\n";
   }
 
+  //Note: 1. 构建expression tree
   RelationalExpression *root =
       MakeRelationalExpressionFromJoinList(thd, select_lex->top_join_list);
 
@@ -769,6 +772,7 @@ bool MakeJoinHypergraph(THD *thd, SELECT_LEX *select_lex, string *trace,
   if (ConcretizeAllMultipleEquals(thd, root)) {
     return true;
   }
+  //Note: 2. 谓词下推:对于无法推到 join/table 中到where 条件，会构建出inner join
   PushDownJoinConditions(thd, root);
 
   MakeHashJoinConditions(thd, root);
@@ -787,6 +791,7 @@ bool MakeJoinHypergraph(THD *thd, SELECT_LEX *select_lex, string *trace,
   std::fill(begin(graph->table_num_to_node_num),
             end(graph->table_num_to_node_num), -1);
 #endif
+  //Note: 3. 构建HyperGraph
   MakeJoinGraphFromRelationalExpression(root, trace, graph);
 
   if (trace != nullptr) {

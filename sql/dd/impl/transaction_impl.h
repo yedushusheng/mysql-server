@@ -69,6 +69,8 @@ class Raw_table;
 
 ///////////////////////////////////////////////////////////////////////////
 
+/** Note:打开数据字典表的相关操作
+*/
 /**
   Auxiliary class for opening dictionary tables.
 */
@@ -85,7 +87,7 @@ class Open_dictionary_tables_ctx {
   Raw_table *get_table() const {
     return get_table(T::DD_table::instance().name());
   }
-
+  /** Note:根据访问对象类型，将依赖的DD Table加入到open table list中 */
   template <typename X>
   void register_tables() {
     X::Impl::register_tables(this);
@@ -95,7 +97,7 @@ class Open_dictionary_tables_ctx {
   void add_table() {
     this->add_table(X::instance().name());
   }
-
+  /* Note:调用Server层接口打开所有表 */
   /**
     Open all the DD tables in list Open_dictionary_tables_ctx::m_tables.
 

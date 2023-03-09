@@ -144,6 +144,24 @@ void Storage_adapter::core_update(const dd::Tablespace *new_tsp) {
   m_core_registry.put(element);
 }
 
+/** Note:主要接口
+ * 从持久存储层获取一个数据字典对应
+ * Storage_adapter是访问持久存储引擎的处理类，包括get()/drop()/store()等接口。
+ * 当初次获取一个表的元信息时，会调用Storage_adapter::get()接口。
+ * 
+ * Storage_adapter::get()
+ *   // 根据访问对象类型，将依赖的DD tables加入到open table list中
+ *   |--Open_dictionary_tables_ctx::register_tables<T>()
+ *     |--Table_impl::register_tables()
+ *   |--Open_dictionary_tables_ctx::open_tables() // 调用Server层接口打开所有表
+ *   |--Raw_table::find_record() // 直接调用handler接口根据传入的key（比如表名）查找记录
+ *     |--handler::ha_index_read_idx_map() // index read
+ *   // 从读取到的record中解析出对应属性，调用field[field_no]->val_xx()函数
+ *   |--Table_impl::restore_attributes()
+ *     // 通过调用restore_children()函数从与该对象关联的其他DD表中根据主外键读取完整的元数据定义
+ *     |--Table_impl::restore_children()
+ *   |--返回完整的DD cache对象
+*/
 // Get a dictionary object from persistent storage.
 template <typename K, typename T>
 bool Storage_adapter::get(THD *thd, const K &key, enum_tx_isolation isolation,
@@ -158,14 +176,16 @@ bool Storage_adapter::get(THD *thd, const K &key, enum_tx_isolation isolation,
 
   // We may have a cache miss while checking for existing tables during
   // server start. At this stage, the object will be considered not existing.
+  // Note:在bootstrap::Stage::CREATED_TABLES阶段之前的所有查询都认为数据字典对象不存在
   if (bootstrap::DD_bootstrap_ctx::instance().get_stage() <
       bootstrap::Stage::CREATED_TABLES)
     return false;
 
   // Start a DD transaction to get the object.
   Transaction_ro trx(thd, isolation);
-  trx.otx.register_tables<T>();
+  trx.otx.register_tables<T>();  /** Note:根据访问对象类型，将依赖的DD tables加入到open table list中 */ 
 
+  /** Note:调用Server层接口打开所有表 */
   if (trx.otx.open_tables()) {
     DBUG_ASSERT(thd->is_system_thread() || thd->killed || thd->is_error());
     return true;
@@ -177,6 +197,7 @@ bool Storage_adapter::get(THD *thd, const K &key, enum_tx_isolation isolation,
 
   // Find record by the object-id.
   std::unique_ptr<Raw_record> r;
+  /** Note:直接调用handler接口根据传入的key（比如表名）查找记录 */
   if (t->find_record(key, r)) {
     DBUG_ASSERT(thd->is_system_thread() || thd->killed || thd->is_error());
     return true;
@@ -309,13 +330,14 @@ class Open_dictionary_tables_error_handler : public Internal_error_handler {
 // Store a dictionary object to persistent storage.
 template <typename T>
 bool Storage_adapter::store(THD *thd, T *object) {
+  // Note:如果是测试或者未到真正需要建表的阶段，只存入缓存，不进行持久化存储
   if (s_use_fake_storage ||
       bootstrap::DD_bootstrap_ctx::instance().get_stage() <
           bootstrap::Stage::CREATED_TABLES) {
     instance()->core_store(thd, object);
     return false;
   }
-
+  // Note:这里会验证DD对象的有效性
   if (object->impl()->validate()) {
     DBUG_ASSERT(thd->is_system_thread() || thd->killed || thd->is_error());
     return true;
@@ -323,12 +345,15 @@ bool Storage_adapter::store(THD *thd, T *object) {
 
   // Store the object into the dd tables. We need to switch transaction
   // ctx to do this.
+  /** Note:切换上下文，包括更新系统表的时候关闭binlog、修改auto_increament_increament增量、设置一些相关变量等与修改DD相关的上下文。
+  */
   Update_dictionary_tables_ctx ctx(thd);
   ctx.otx.register_tables<T>();
   DEBUG_SYNC(thd, "before_storing_dd_object");
 
   Open_dictionary_tables_error_handler error_handler;
   thd->push_internal_handler(&error_handler);
+  // Note:object->impl()->store 这里会将DD对象存入相关的系统表。具体比如表，列， 表空间是如何持久化到系统表中的。
   if (ctx.otx.open_tables() || object->impl()->store(&ctx.otx)) {
     DBUG_ASSERT(thd->is_system_thread() || thd->killed || thd->is_error());
     thd->pop_internal_handler();

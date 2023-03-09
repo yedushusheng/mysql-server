@@ -104,6 +104,7 @@ using namespace dd::tables;
 ///////////////////////////////////////////////////////////////////////////
 
 namespace {
+/** Note:把具体类型的数据字典表注册到System_tables的实例m_registry中 */
 template <typename X>
 void register_table(dd::System_tables::Types type) {
   dd::System_tables::instance()->add(

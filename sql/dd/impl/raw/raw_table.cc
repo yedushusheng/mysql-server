@@ -41,7 +41,7 @@
 namespace dd {
 
 ///////////////////////////////////////////////////////////////////////////
-
+// Note:默认初始化mysql库
 Raw_table::Raw_table(thr_lock_type lock_type, const String_type &name)
     : m_table_list(STRING_WITH_LEN("mysql"), name.c_str(), name.length(),
                    name.c_str(), lock_type) {
@@ -60,6 +60,10 @@ Raw_table::Raw_table(thr_lock_type lock_type, const String_type &name)
   @return false - On success. 1) We found a row.
                               2) OR Either we don't have any matching rows
   @return true - On failure and error is reported.
+*/
+/** Note:主要接口
+ * 直接调用handler接口根据传入的key(比如表名)查找记录
+ * 即根据schema_id和table_name读取对应mysql.tables表的文件记录Raw_table::find_record
 */
 bool Raw_table::find_record(const Object_key &key,
                             std::unique_ptr<Raw_record> &r) {

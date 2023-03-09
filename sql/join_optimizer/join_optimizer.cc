@@ -668,6 +668,9 @@ AccessPath *CreateMaterializationPathForSortingAggregates(
 
 }  // namespace
 
+/** Note:优化器
+ * 寻找最优的执行计划(超图算法Hyper Graph)
+*/
 AccessPath *FindBestQueryPlan(THD *thd, SELECT_LEX *select_lex, string *trace) {
   JOIN *join = select_lex->join;
   if (CheckSupportedQuery(thd, join)) return nullptr;
@@ -677,6 +680,7 @@ AccessPath *FindBestQueryPlan(THD *thd, SELECT_LEX *select_lex, string *trace) {
 
   // Convert the join structures into a hypergraph.
   JoinHypergraph graph(thd->mem_root);
+  /** Note:构建Hyper Graph:自底而上的构建节点和边 */
   if (MakeJoinHypergraph(thd, select_lex, trace, &graph)) {
     return nullptr;
   }

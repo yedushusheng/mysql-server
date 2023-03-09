@@ -71,6 +71,11 @@ struct CHARSET_INFO;
 struct MEM_ROOT;
 struct TABLE_LIST;
 
+/** Note:直方图
+ * 
+ * 直方图（histogram）是数据库中的一种重要的统计信息，可以描述列中的数据分布情况。MariaDB在10.0版本就实现了这一功能，MySQL也在8.0版本增加了对直方图的支持。
+ * 直方图的基本原理是将数据排序后分成若干个桶（bucket），并记录每个桶中数据的最大值、最小值、出现频次占比等信息。按照数据分桶的方式和桶中储存的数据可以分为 Equi-width Histogram、Equi-height Histogram、Compressed Histogram等。 ​
+*/
 namespace histograms {
 
 /// The default (and invalid) value for "m_null_values_fraction".

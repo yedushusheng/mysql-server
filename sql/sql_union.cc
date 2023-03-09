@@ -1271,7 +1271,8 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
   @returns false if success, true if error
 */
 /** NOTE:外部接口 执行入口 
- * Sql_cmd_dml::execute_inner调用*/
+ * Sql_cmd_dml::execute_inner调用 
+ * */
 bool SELECT_LEX_UNIT::execute(THD *thd) {
   DBUG_TRACE;
   DBUG_ASSERT(is_optimized());

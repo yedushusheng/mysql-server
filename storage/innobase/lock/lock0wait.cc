@@ -590,6 +590,22 @@ static uint64_t lock_wait_snapshot_waiting_threads(
   return table_reservations;
 }
 
+/** Note:在获取了所有的等待事务关系图后，需要根据其阻塞的事务数量开始计算权重,过程如下:
+ * lock_wait_compute_initial_weights(): 
+ * 初始化权重,初始值为1.InnoDB新增了一个全局自增变量lock_wait_table_reservations,
+ * 在每个线程因为锁等待进入等待状态时,会获取当时的lock_wait_table_reservations的值,
+ * 所以每个事务自身的table_reservations与全局的lock_wait_table_reservations的差值代表了等待的时间,差值越大等待时间越长. 
+ * 所以在事务锁的调度算法中,为了防止有事务饿死的情况,将差值超过等待事务数量的事务权重设为等待事务数量.
+ * 
+ * lock_wait_compute_incoming_count(): 更新事务等待关系图中的入度情况, 即一个事务阻塞了多少个事务.
+ * 
+ * lock_wait_accumulate_weights():计算每个等待事务的权重,其策略是累加等待事务阻塞的事务权重,例如事务t1阻塞了事务t2,t3,t5,则t1事务的权重为:
+ * t1_weight = t1_weight + t2_weight + t3_weight + t5_weight;
+ * 
+ * lock_wait_publish_new_weights():更新等待事务权重.
+ * 事务在提交或者回滚之后都会释放其持有的 lock: lock_release().将其持有的锁授予哪个事务的顺序是,
+ * 第一顺位是高优先级的事务,其次是事务的权重排序,权重为1或者0(lock.schedule_weight的默认值)的事务依照FCFS的顺序.
+ * */
 /** Used to initialize schedule weights of nodes in wait-for-graph for the
 computation. Initially all nodes have weight 1, except for nodes which waited
 very long, for which we set the weight to WEIGHT_BOOST
@@ -621,12 +637,20 @@ static void lock_wait_compute_initial_weights(
   small enough to fit in signed 32-bit.
   We thus clamp WEIGHT_BOOST to 1e9 / n just to be safe.
   */
+  /* Note:WEIGHT_BOOST  设置成等待事务的数量或者 1e9. */
   const trx_schedule_weight_t WEIGHT_BOOST =
       n == 0 ? 1 : std::min<trx_schedule_weight_t>(n, 1e9 / n);
   new_weights.clear();
+  /* Note:默认权重值为 1. */
   new_weights.resize(n, 1);
+  /* Note:MAX_FAIR_WAIT 是两倍的等待事务数量. */
   const uint64_t MAX_FAIR_WAIT = 2 * n;
   for (size_t from = 0; from < n; ++from) {
+    /* Note:reservation_no 是事务进入等待状态时的 lock_wait_table_reservations 的值,
+     * table_reservations 是开始进行快照时 lock_wait_table_reservations 的值,
+     * 所以假如 infos[from].reservation_no + MAX_FAIR_WAIT 小于 table_reservations
+     * 的情况出现就代表事务 "from" 等待的时间较长, 为了防止饿死, 所以将其权重置为
+     * 两倍的等待事务数量(n). */    
     if (infos[from].reservation_no + MAX_FAIR_WAIT < table_reservations) {
       new_weights[from] = WEIGHT_BOOST;
     }
@@ -1368,6 +1392,7 @@ static void lock_wait_compute_and_publish_weights_except_cycles(
   MONITOR_INC(MONITOR_SCHEDULE_REFRESHES);
 }
 
+/** Note:更新全局等待事务的权重和死锁检测 */
 /** Takes a snapshot of transactions in waiting currently in slots, updates
 their schedule weights, searches for deadlocks among them and resolves them. */
 static void lock_wait_update_schedule_and_check_for_deadlocks() {
@@ -1405,11 +1430,14 @@ static void lock_wait_update_schedule_and_check_for_deadlocks() {
   bottleneck, one can check if declaring this vectors as static solves the
   issue.
   */
-  ut::vector<waiting_trx_info_t> infos;
+  ut::vector<waiting_trx_info_t> infos;  /* Note:记录事务的依赖关系. */
   ut::vector<int> outgoing;
-  ut::vector<trx_schedule_weight_t> new_weights;
+  ut::vector<trx_schedule_weight_t> new_weights;  /* Note:记录事务的权重. */
 
+  /* Note:获取事务的等待关系, 仅收集等待事务, 即 [from] 事务阻塞在 [to] 事务上. */
   auto table_reservations = lock_wait_snapshot_waiting_threads(infos);
+  /* Note:构建事务的等待关系图.
+   * outgoing 数组的下标代表是第 n 个事务, value 代表其等待的事务下标. */  
   lock_wait_build_wait_for_graph(infos, outgoing);
 
   /* We don't update trx->lock.schedule_weight for trxs on cycles. */
@@ -1417,11 +1445,19 @@ static void lock_wait_update_schedule_and_check_for_deadlocks() {
                                                       outgoing, new_weights);
 
   if (innobase_deadlock_detect) {
+    /* Note:假如打开了死锁检测, 处理死锁的情况. */
     /* This will also update trx->lock.schedule_weight for trxs on cycles. */
     lock_wait_find_and_handle_deadlocks(infos, outgoing, new_weights);
   }
 }
 
+/** Note:锁超时线程
+ * MySQL8.0.18版本针对死锁检测进行了优化, 将原先的死锁检测机制交由background thread: lock_wait_timeout_thread()来处理, 
+ * 思路是将当前的事务锁lock信息打一份快照, 由这份快照判断是否存在回环, 假如存在死锁即唤醒等待事务.
+ * 因为这个过程可以感知所有的锁等待关系, 所以InnoDB也基于这份快照来计算权重.
+ * 
+ * lock_wait_timeout_thread线程除了检查等待超时以外, 也会更新全局等待事务的权重和死锁检测
+*/
 /** A thread which wakes up threads whose lock wait may have lasted too long,
 analyzes wait-for-graph changes, checks for deadlocks and resolves them, and
 updates schedule weights. */
@@ -1440,6 +1476,7 @@ void lock_wait_timeout_thread() {
       lock_wait_check_slots_for_timeouts();
     }
 
+    /** Note:更新全局等待事务的权重和死锁检测 */
     lock_wait_update_schedule_and_check_for_deadlocks();
 
     /* When someone is waiting for a lock, we wake up every second (at worst)
