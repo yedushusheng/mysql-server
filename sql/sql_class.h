@@ -1736,6 +1736,9 @@ class THD : public MDL_context_owner,
     state of original transaction back. Also serves as a base class for
     read-write attachable transaction implementation.
   */
+  /** Note:访问系统表使用的事务类 
+   * 参考:http://mysql.taobao.org/monthly/2020/06/03/
+  */
   class Attachable_trx {
    public:
     Attachable_trx(THD *thd, Attachable_trx *prev_trx);
@@ -3044,6 +3047,8 @@ class THD : public MDL_context_owner,
     All the read-only class' requirements apply.
     Additional requirements are documented along the class
     declaration.
+  */
+  /** Note:启动attachable transaction
   */
   void begin_attachable_rw_transaction();
 

@@ -704,6 +704,7 @@ bool commit_or_rollback_tablespace_change(THD *thd, dd::Tablespace *space,
     error = thd->dd_client()->update(space);
   }
 
+  /** Note:如果写失败则需要回滚 */
   if (error) {
     trans_rollback_stmt(thd);
     trans_rollback(thd);

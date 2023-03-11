@@ -390,7 +390,7 @@ bool trans_commit_implicit(THD *thd, bool ignore_global_read_lock) {
   @retval false  Success
   @retval true   Failure
 */
-
+// Note:回滚当前事务,取消变更
 bool trans_rollback(THD *thd) {
   int res;
   DBUG_TRACE;
@@ -402,6 +402,7 @@ bool trans_rollback(THD *thd) {
   thd->server_status &=
       ~(SERVER_STATUS_IN_TRANS | SERVER_STATUS_IN_TRANS_READONLY);
   DBUG_PRINT("info", ("clearing SERVER_STATUS_IN_TRANS"));
+  // Note:调用handler接口处理事务
   res = ha_rollback_trans(thd, true);
   thd->variables.option_bits &= ~OPTION_BEGIN;
   thd->get_transaction()->reset_unsafe_rollback_flags(Transaction_ctx::SESSION);
@@ -554,6 +555,28 @@ bool trans_commit_stmt(THD *thd, bool ignore_global_read_lock) {
 
   @retval false  Success
   @retval true   Failure
+*/
+/** Note:回滚单个事务声明
+ * 事务在网络断开,事务正在执行时处理:
+ * 一个连接进行事务后,如果事务语句正在执行,那么网络断开后会在语句执行完成后回滚掉。
+ * 因为执行状态包不能送达客户端,因此会感知到这种网络断开的错误。
+ * 调试堆栈信息参考:
+ * (gdb) bt
+ * #0  innobase_rollback (hton=0x2e12440, thd=0x7ffefc000950, rollback_trx=false) at /home/mysql/soft/percona-server-5.7.29-32/storage/innobase/handler/ha_innodb.cc:5452
+ * #1  0x0000000000ea6ab8 in ha_rollback_low (thd=0x7ffefc000950, all=false) at /home/mysql/soft/percona-server-5.7.29-32/sql/handler.cc:2019
+ * #2  0x00000000017f0f23 in MYSQL_BIN_LOG::rollback (this=0x2d668a0 <mysql_bin_log>, thd=0x7ffefc000950, all=false) at /home/mysql/soft/percona-server-5.7.29-32/sql/binlog.cc:2532
+ * #3  0x0000000000ea6d40 in ha_rollback_trans (thd=0x7ffefc000950, all=false) at /home/mysql/soft/percona-server-5.7.29-32/sql/handler.cc:2106
+ * #4  0x00000000015c6a13 in trans_rollback_stmt (thd=0x7ffefc000950) at /home/mysql/soft/percona-server-5.7.29-32/sql/transaction.cc:515
+ * #5  0x00000000014c08de in mysql_execute_command (thd=0x7ffefc000950, first_level=true) at /home/mysql/soft/percona-server-5.7.29-32/sql/sql_parse.cc:5325
+ * #6  0x00000000014c2025 in mysql_parse (thd=0x7ffefc000950, parser_state=0x7fffe88824a0, update_userstat=false) at /home/mysql/soft/percona-server-5.7.29-32/sql/sql_parse.cc:5927
+ * #7  0x00000000014b6c5f in dispatch_command (thd=0x7ffefc000950, com_data=0x7fffe8882c90, command=COM_QUERY) at /home/mysql/soft/percona-server-5.7.29-32/sql/sql_parse.cc:1539
+ * #8  0x00000000014b5a94 in do_command (thd=0x7ffefc000950) at /home/mysql/soft/percona-server-5.7.29-32/sql/sql_parse.cc:1060
+ * #9  0x00000000015e9d32 in handle_connection (arg=0x3c09eb0) at /home/mysql/soft/percona-server-5.7.29-32/sql/conn_handler/connection_handler_per_thread.cc:325
+ * #10 0x00000000018b97f2 in pfs_spawn_thread (arg=0x3b784b0) at /home/mysql/soft/percona-server-5.7.29-32/storage/perfschema/pfs.cc:2198
+ * #11 0x00007ffff7bc6ea5 in start_thread () from /lib64/libpthread.so.0
+ * #12 0x00007ffff5fa08dd in clone () from /lib64/libc.so.6
+ * if (thd->is_error() || (thd->variables.option_bits & OPTION_MASTER_SQL_ERROR))
+ *       trans_rollback_stmt(thd);
 */
 bool trans_rollback_stmt(THD *thd) {
   DBUG_TRACE;
