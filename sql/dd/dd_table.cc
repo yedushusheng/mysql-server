@@ -113,7 +113,12 @@ namespace dd {
   values in DD tables so as to handle client compatibility and
   information schema requirements.
 */
-
+/** Note:外部接口
+ * 调用:
+ * sql_table.cc/fill_ha_fk_column_type
+ * sql/dd/dd_table.cc/fill_dd_columns_from_create_fields
+ * sql/dd/info_schema/metadata.cc/store_in_dd
+*/
 dd::enum_column_types get_new_field_type(enum_field_types type) {
   switch (type) {
     case MYSQL_TYPE_DECIMAL:
@@ -227,7 +232,13 @@ dd::enum_column_types get_new_field_type(enum_field_types type) {
   Function returns string representing column type by Create_field.
   This is required for the IS implementation which uses views on DD
 */
-
+/** Note:外部接口
+ * 调用:
+ * sql/dd/dd_routine.cc/fill_dd_function_return_type
+ * sql/dd/dd_routine.cc/fill_parameter_info_from_field
+ * fill_dd_columns_from_create_fields
+ * get_sql_type_by_field_info
+*/
 dd::String_type get_sql_type_by_create_field(TABLE *table,
                                              const Create_field &field) {
   DBUG_TRACE;
@@ -488,7 +499,12 @@ static dd::String_type now_with_opt_decimals(uint decimals) {
   Add column objects to dd::Abstract_table according to list of Create_field
   objects.
 */
-
+/** Note:外部接口
+ * 设置数据字典中的列信息
+ * 调用:
+ * sql/dd/dd_table.cc/fill_dd_view_columns
+ * sql/dd/dd_table.cc/fill_dd_table_from_create_info
+*/
 bool fill_dd_columns_from_create_fields(THD *thd, dd::Abstract_table *tab_obj,
                                         const List<Create_field> &create_fields,
                                         handler *file) {
@@ -1616,7 +1632,10 @@ static bool fill_dd_partition_from_create_info(
           /* These should not be included in the new table definition. */
           continue;
         }
-
+        /** Note:从create infio中为表增加分区
+         * add_partition -> new Partition_impl()
+         * 这是唯一初始化分区的入口
+        */
         dd::Partition *part_obj = tab_obj->add_partition();
 
         part_obj->set_name(part_elem->partition_name);
@@ -1891,6 +1910,11 @@ static bool engine_supports_provided_srs_id(THD *thd, const dd::Table &table,
   return false;
 }
 
+/** Note:外部接口
+ * 调用:
+ * sql/sql_table.cc/mysql_alter_table
+ * fill_dd_table_from_create_info
+*/
 bool invalid_tablespace_usage(THD *thd, const dd::String_type &schema_name,
                               const dd::String_type &table_name,
                               const HA_CREATE_INFO *create_info) {
@@ -2336,6 +2360,11 @@ bool is_server_ps_table_name(const dd::String_type &schema_name,
              nullptr;
 }
 
+/** Note:外部接口
+ * 调用:
+ * sql/dd/dd_table.cc/migrate_table_to_dd
+ * create_table
+*/
 std::unique_ptr<dd::Table> create_dd_user_table(
     THD *thd, const dd::Schema &sch_obj, const dd::String_type &table_name,
     HA_CREATE_INFO *create_info, const List<Create_field> &create_fields,
@@ -2366,6 +2395,15 @@ std::unique_ptr<dd::Table> create_dd_user_table(
   return tab_obj;
 }
 
+/** Note:外部接口
+ * 调用:
+ * Sql_cmd_ddl_table.cc/Sql_cmd_create_table::execute
+ * ->sql_table.cc/mysql_create_table
+ * 		->sql_table.cc/mysql_create_table_no_lock
+ * 			->sql_table.cc/create_table_impl
+ * 				-> sql_table.cc/rea_create_base_table
+ * 					->sql/dd/dd_table.cc/create_table
+*/
 std::unique_ptr<dd::Table> create_table(
     THD *thd, const dd::Schema &sch_obj, const dd::String_type &table_name,
     HA_CREATE_INFO *create_info, const List<Create_field> &create_fields,
@@ -2377,6 +2415,7 @@ std::unique_ptr<dd::Table> create_table(
   const dd::Object_table *dd_table =
       dict->get_dd_table(sch_obj.name(), table_name);
 
+  // Note:创建用户表或者系统表
   return dd_table
              ? create_dd_system_table(thd, sch_obj, table_name, create_info,
                                       create_fields, keyinfo, keys, fk_keyinfo,
@@ -2429,6 +2468,11 @@ bool table_exists(dd::cache::Dictionary_client *client, const char *schema_name,
   return false;
 }
 
+/** Note:外部接口
+ * 调用:
+ * sql/sql_table.cc
+ * storage/ndb/plugin/ha_ndb_ddl_fk.cc
+*/
 bool is_generated_foreign_key_name(const char *table_name,
                                    size_t table_name_length, handlerton *hton,
                                    const dd::Foreign_key &fk) {
@@ -2460,6 +2504,11 @@ static bool is_foreign_key_name_locked(THD *thd, const char *db,
 }
 #endif
 
+/** Note:外部接口
+ * 调用:
+ * sql/sql_table.cc
+ * storage/ndb/plugin/ndb_dd_client.cc
+*/
 bool rename_foreign_keys(THD *thd MY_ATTRIBUTE((unused)),
                          const char *old_db MY_ATTRIBUTE((unused)),
                          const char *old_table_name, handlerton *hton,
@@ -2568,6 +2617,13 @@ bool table_legacy_db_type(THD *thd, const char *schema_name,
 }
 /* purecov: end */
 
+/** Note:外部接口
+ * 调用:
+ * sql/sql_rename.cc
+ * sql/sql_table.cc
+ * sql/sql_truncate.cc
+ * sql/dd/dd_table.cc
+*/
 template <typename T>
 bool table_storage_engine(THD *thd, const T *obj, handlerton **hton) {
   DBUG_TRACE;
@@ -2594,6 +2650,10 @@ template bool table_storage_engine<dd::Tablespace>(THD *,
                                                    const dd::Tablespace *,
                                                    handlerton **);
 
+/** Note:外部接口
+ * 调用:
+ * sql_admin.cc/prepare_for_repair
+*/
 bool recreate_table(THD *thd, const char *schema_name, const char *table_name) {
   // There should be an exclusive metadata lock on the table
   DBUG_ASSERT(thd->mdl_context.owns_equal_or_stronger_lock(
@@ -2635,7 +2695,11 @@ bool recreate_table(THD *thd, const char *schema_name, const char *table_name) {
 
   @return dd::String_type representing column type.
 */
-
+/** Note:外部接口
+ * 根据field获取sql类型
+ * 调用:
+ * sql/dd/info_schema/metadata.cc/store_in_dd
+*/
 dd::String_type get_sql_type_by_field_info(THD *thd,
                                            enum_field_types field_type,
                                            uint32 field_length, uint32 decimals,
@@ -2657,6 +2721,11 @@ dd::String_type get_sql_type_by_field_info(THD *thd,
   return get_sql_type_by_create_field(&table, field);
 }
 
+/** Note:外部接口
+ * 设置row type
+ * 调用:
+ * sql/sql_base.cc/fix_row_type
+*/
 bool fix_row_type(THD *thd, dd::Table *table_def, row_type correct_row_type) {
   DBUG_ASSERT(table_def != nullptr);
 
@@ -2745,6 +2814,14 @@ bool is_general_tablespace_and_encrypted(const KEY k, THD *thd,
    @returns {false, true} if at least one tablespace is encrypted
    @returns {false, false} if no tablespace is encrypted
  */
+/** Note:外部接口
+ * 判断表空间是否加密
+ * 调用:
+ * sql_rename.cc/do_rename
+ * sql_table.cc/validate_table_encryption
+ * sql_table.cc/simple_rename_or_index_change
+ * sql_table.cc/mysql_alter_table
+*/
 Encrypt_result is_tablespace_encrypted(THD *thd, const Table &t,
                                        bool *is_general_tablespace) {
   std::vector<Object_id> tspids;
@@ -2779,6 +2856,10 @@ Encrypt_result is_tablespace_encrypted(THD *thd, const Table &t,
   return {error, encrypted};
 }
 
+/** Note:外部接口
+ * 调用:
+ * sql/dd/impl/sdi_api.cc
+*/
 bool has_primary_key(const Table &t) {
   auto &ic = t.indexes();
   return std::any_of(ic.begin(), ic.end(), [](const Index *ix) {
@@ -2786,6 +2867,11 @@ bool has_primary_key(const Table &t) {
   });
 }
 
+/** Note:外部接口
+ * 调用:
+ * sql_table.cc/prepare_check_constraints_for_alter
+ * sql_table.cc/lock_check_constraint_names_for_rename
+*/
 bool is_generated_check_constraint_name(const char *table_name,
                                         size_t table_name_length,
                                         const char *cc_name,
@@ -2798,6 +2884,11 @@ bool is_generated_check_constraint_name(const char *table_name,
                   sizeof(dd::CHECK_CONSTRAINT_NAME_SUBSTR) - 1) == 0));
 }
 
+/** Note:外部接口
+ * rename约束校验
+ * 调用:
+ * sql_table.cc/mysql_rename_table
+*/
 bool rename_check_constraints(const char *old_table_name, dd::Table *new_tab) {
   size_t old_table_name_length = strlen(old_table_name);
   for (auto &cc : *new_tab->check_constraints()) {
@@ -2873,6 +2964,14 @@ static void copy_tablespace_names(const HA_CREATE_INFO *ci, partition_info *pi,
    @returns {false, true} if at least one tablespace is encrypted
    @returns {false, false} if no tablespace is encrypted
  */
+/** Note:外部接口
+ * 判断表空间是否加密
+ * 调用:
+ * sql_rename.cc/do_rename
+ * sql_table.cc/validate_table_encryption
+ * sql_table.cc/simple_rename_or_index_change
+ * sql_table.cc/mysql_alter_table
+*/
 Encrypt_result is_tablespace_encrypted(THD *thd, const HA_CREATE_INFO *ci,
                                        bool *is_general_tablespace) {
   // If SE does not support encrypted tablespace, stop here.
@@ -2921,6 +3020,11 @@ Encrypt_result is_tablespace_encrypted(THD *thd, const HA_CREATE_INFO *ci,
   return {error, encrypted};
 }
 
+/** Note:外部接口
+ * 调用:
+ * sql/sql_show.cc
+ * sql/sql_table.cc
+*/
 bool uses_general_tablespace(const Table &t) {
   /*
     dd::Table::tablespace_id() and dd::Partition::tablespace_id() is set
@@ -2935,6 +3039,12 @@ bool uses_general_tablespace(const Table &t) {
   return false;
 }
 
+/** Note:外部接口
+ * 调用:
+ * sql/sql_table.cc/mysql_create_table
+ * sql/dd/impl/upgrade/server.cc/do_server_upgrade_checks
+ * sql/dd/upgrade_57/table.cc/migrate_table_to_dd
+*/
 void warn_on_deprecated_prefix_key_partition(THD *thd, const char *schema_name,
                                              const char *orig_table_name,
                                              const Table *table,
@@ -3037,6 +3147,13 @@ void warn_on_deprecated_prefix_key_partition(THD *thd, const char *schema_name,
   }
 }
 
+/** Note:外部接口
+ * 表空间文件控制(参数innodb_file_per_table)
+ * 调用:
+ * sql_show.cc/store_create_info
+ * sql_table.cc/mysql_prepare_alter_table
+ * handler0alter.cc/alter_part_change::prepare
+*/
 bool get_implicit_tablespace_options(THD *thd, const Table *table,
                                      ulonglong *autoextend_size) {
   DBUG_ASSERT(table->engine() == "InnoDB");

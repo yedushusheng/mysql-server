@@ -144,7 +144,7 @@ void Storage_adapter::core_update(const dd::Tablespace *new_tsp) {
   m_core_registry.put(element);
 }
 
-/** Note:主要接口
+/** Note:外部接口
  * 从持久存储层获取一个数据字典对应
  * Storage_adapter是访问持久存储引擎的处理类，包括get()/drop()/store()等接口。
  * 当初次获取一个表的元信息时，会调用Storage_adapter::get()接口。

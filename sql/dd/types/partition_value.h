@@ -41,6 +41,11 @@ class Table_partition_values;
 
 ///////////////////////////////////////////////////////////////////////////
 
+/**
+ * Note:分区修改相关操作
+ * 比如增加分区列的取值,获取分区值等
+ * 在类Partition_impl中调用
+ */
 class Partition_value : virtual public Weak_object {
  public:
   typedef Partition_value_impl Impl;

@@ -279,7 +279,7 @@ bool Shared_multi_map<T>::get(const K &key, Cache_element<T> **element) {
 }
 
 // Put a new object and element wrapper into the map.
-/** Note:主要接口
+/** Note:外部接口
  * 将element_cache放入相应的map,如果map中已经存在该element_cache,
  * 返回这个element_cache的引用,element_cache的引用计数加1
 */

@@ -88,7 +88,7 @@ bool Shared_dictionary_cache::reset_tables_and_tablespaces(THD *thd) {
 }
 
 // Get an element from the cache, given the key.
-/** Note:主要接口
+/** Note:外部接口
  * 通过key查找(Shared_multi_map->get()共享内存中获取),如果找到则返回
  * 如果未找到则调用get_uncached从持久化存储(innodb表)读取,然后将找到的结果写回缓存(Shared_multi_map->put())
 */
@@ -112,7 +112,7 @@ bool Shared_dictionary_cache::get(THD *thd, const K &key,
 }
 
 // Read an object directly from disk, given the key.
-/** Note:主要接口
+/** Note:外部接口
  * 直接从innodb表读取object对象，并且设置一个key
 */
 template <typename K, typename T>
@@ -129,7 +129,7 @@ bool Shared_dictionary_cache::get_uncached(THD *thd, const K &key,
 }
 
 // Add an object to the shared cache.
-/** Note:主要接口
+/** Note:外部接口
  * 将element_cache放入相应的map,如果map中已经存在该element_cache,
  * 返回这个element_cache的引用,element_cache的引用计数加1
 */

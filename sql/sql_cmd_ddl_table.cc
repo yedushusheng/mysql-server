@@ -116,6 +116,9 @@ static bool populate_table(THD *thd, LEX *lex) {
   return false;
 }
 
+/** Note:对外接口
+ * 执行各种SQL的入口
+*/
 bool Sql_cmd_create_table::execute(THD *thd) {
   LEX *const lex = thd->lex;
   SELECT_LEX *const select_lex = lex->select_lex;
@@ -395,6 +398,7 @@ bool Sql_cmd_create_table::execute(THD *thd) {
                                     &create_info);
     } else {
       /* Regular CREATE TABLE */
+      // Note:DDL入口
       res = mysql_create_table(thd, create_table, &create_info, &alter_info);
     }
     /* Pop Strict_error_handler */

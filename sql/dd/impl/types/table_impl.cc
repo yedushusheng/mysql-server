@@ -104,6 +104,9 @@ Table_impl::~Table_impl() { delete_container_pointers(m_foreign_key_parents); }
 
 ///////////////////////////////////////////////////////////////////////////
 
+/** Note:外部接口
+ * 验证是否非法操作
+ */
 bool Table_impl::validate() const {
   if (Abstract_table_impl::validate()) return true;
 
@@ -223,7 +226,9 @@ bool Table_impl::load_foreign_key_parents(Open_dictionary_tables_ctx *otx) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-
+/** Note:外部接口
+ * 加载外键
+*/
 bool Table_impl::reload_foreign_key_parents(THD *thd) {
   /*
      Use READ UNCOMMITTED isolation, so this method works correctly when
@@ -245,7 +250,9 @@ bool Table_impl::reload_foreign_key_parents(THD *thd) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-
+/** Note:外部接口
+ * 
+*/
 bool Table_impl::restore_children(Open_dictionary_tables_ctx *otx) {
   // NOTE: the order of restoring collections is important because:
   //   - Index-objects reference Column-objects
@@ -351,7 +358,29 @@ bool Table_impl::store_triggers(Open_dictionary_tables_ctx *otx) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-
+/** Note:外部接口
+ * 数据字典持久化中使用
+ * rea_create_base_table
+ *   --> dd::create_tabl  // 创建数据字典对象dd::Table
+ *      --> dd::create_dd_system_table / dd::create_dd_user_table
+ *   --> dd::cache::Dictionary_client::store<dd::Table> // 存入数据字典信息
+ *      --> dd::cache::Storage_adapter::store<dd::Table> // 使用storage_adapter接口加载table信息
+ *        --> dd::Table_impl::store_attributes
+ * 	   --> dd::Raw_record::update  // 数据字典更新持久化
+ *        --> dd::Table_impl::store_children
+ *   --> ha_create_table // 实际创建表
+ * 这里比较难以理解的是store_attributes,store_children,store_attributes会存本数据字典对象的属性值;
+ * dd::Raw_record::update调用Innodb接口,将数据字典修改持久化。
+ * 同时dd::cache::Storage_adapter::store<dd::Table>会递归调用store_children,将与建表相关的数据字典表的也存起来:
+ * bool Table_impl::store_children(Open_dictionary_tables_ctx *otx) {
+ *   // ...
+ *   return Abstract_table_impl::store_children(otx) ||
+ *          m_indexes.store_items(otx) || m_foreign_keys.store_items(otx) ||
+ *          m_partitions.store_items(otx) || store_triggers(otx) ||
+ *          (!skip_check_constraints && m_check_constraints.store_items(otx));
+ * }
+ * 即调用dd::Table_impl::store_children会同时将indexes、foreign_keys等数据字典表更新
+*/
 bool Table_impl::store_children(Open_dictionary_tables_ctx *otx) {
   /*
     Do not store check constraints if upgrade is from the DD version before
@@ -371,6 +400,9 @@ bool Table_impl::store_children(Open_dictionary_tables_ctx *otx) {
 
 ///////////////////////////////////////////////////////////////////////////
 
+/** Note:外部接口
+ * 删除触发器、分区、外键、索引等
+ */
 bool Table_impl::drop_children(Open_dictionary_tables_ctx *otx) const {
   // Note that partition collection has to be dropped first
   // as it has foreign key to indexes.
@@ -393,6 +425,9 @@ bool Table_impl::drop_children(Open_dictionary_tables_ctx *otx) const {
 
 /////////////////////////////////////////////////////////////////////////
 
+/** Note:对外接口
+ * 重新加载table属性 
+ */
 bool Table_impl::restore_attributes(const Raw_record &r) {
   {
     enum_table_type table_type =
@@ -460,6 +495,9 @@ bool Table_impl::restore_attributes(const Raw_record &r) {
 
 ///////////////////////////////////////////////////////////////////////////
 
+/** Note:外部接口
+ * 加载table的属性
+*/
 bool Table_impl::store_attributes(Raw_record *r) {
   //
   // Special cases dealing with NULL values for nullable fields
@@ -540,6 +578,7 @@ bool Table_impl::store_attributes(Raw_record *r) {
 static_assert(Tables::NUMBER_OF_FIELDS == 37,
               "Tables definition has changed, check if serialize() and "
               "deserialize() need to be updated!");
+// Note:table串行化
 void Table_impl::serialize(Sdi_wcontext *wctx, Sdi_writer *w) const {
   // Temporary table definitions are never persisted.
   DBUG_ASSERT(!m_is_temporary);
@@ -582,6 +621,7 @@ void Table_impl::serialize(Sdi_wcontext *wctx, Sdi_writer *w) const {
 
 ///////////////////////////////////////////////////////////////////////////
 
+// Note:table解串行化
 bool Table_impl::deserialize(Sdi_rcontext *rctx, const RJ_Value &val) {
   Abstract_table_impl::deserialize(rctx, val);
   read(&m_se_private_id, val, "se_private_id");

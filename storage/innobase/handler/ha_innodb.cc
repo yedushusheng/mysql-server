@@ -14475,6 +14475,17 @@ created. Can be adjusted by SE, the changes will be saved into data-dictionary
 at statement commit time.
 @return error number
 @retval 0 on success */
+/** Note:InnoDB创建表
+ * Sql_cmd_ddl_table.cc/Sql_cmd_create_table::execute
+ * ->sql_table.cc/mysql_create_table
+ * 		->sql_table.cc/mysql_create_table_no_lock
+ * 			->sql_table.cc/create_table_impl
+ * 				->sql_table.cc/rea_create_base_table
+ * 					->sql/dd/dd_table.cc/create_table：数据字典创建表
+ * 					->sql/handler.cc/ha_create_table
+ * 						->sql/handler.cc/handler::ha_create：handler创建表
+ * 							->storage/innobase/handler/ha_innodb.cc/ha_innobase::create
+*/
 int ha_innobase::create(const char *name, TABLE *form,
                         HA_CREATE_INFO *create_info, dd::Table *table_def) {
   THD *thd = ha_thd();

@@ -1061,7 +1061,14 @@ static bool rea_create_tmp_table(
   @retval false  ok
   @retval true   error
 */
-
+/** Note:具体创建表的操作(比如设置字段和对应的值)
+ * 调用:
+ * Sql_cmd_ddl_table.cc/Sql_cmd_create_table::execute
+ * ->sql_table.cc/mysql_create_table
+ * 		->sql_table.cc/mysql_create_table_no_lock
+ * 			->sql_table.cc/create_table_impl
+ * 				-> sql_table.cc/rea_create_base_table
+*/
 static bool rea_create_base_table(
     THD *thd, const char *path, const dd::Schema &sch_obj, const char *db,
     const char *table_name, HA_CREATE_INFO *create_info,
@@ -1074,6 +1081,7 @@ static bool rea_create_base_table(
     handlerton **post_ddl_ht) {
   DBUG_TRACE;
 
+  // Note:数据字典层面创建表
   std::unique_ptr<dd::Table> table_def_res = dd::create_table(
       thd, sch_obj, table_name, create_info, create_fields, key_info, keys,
       keys_onoff, fk_key_info, fk_keys, check_cons_spec, file);
@@ -1167,6 +1175,7 @@ static bool rea_create_base_table(
       create_info->db_type->post_ddl)
     *post_ddl_ht = create_info->db_type;
 
+  // Note:具体的handler处理create table
   if (ha_create_table(thd, path, db, table_name, create_info, false, false,
                       table_def)) {
     /*
@@ -8483,7 +8492,12 @@ static Table_exists_result check_if_table_exists(
   @retval false OK
   @retval true  error
 */
-
+/** Note:创建表的具体实现
+ * 调用:
+ * Sql_cmd_ddl_table.cc/Sql_cmd_create_table::execute
+ * ->sql_table.cc/mysql_create_table
+ * 		->sql_table.cc/mysql_create_table_no_lock
+*/
 static bool create_table_impl(
     THD *thd, const dd::Schema &schema, const char *db, const char *table_name,
     const char *error_table_name, const char *path, HA_CREATE_INFO *create_info,
@@ -8729,6 +8743,7 @@ static bool create_table_impl(
     If "no_ha_table" is false also create table in storage engine.
   */
   if (create_info->options & HA_LEX_CREATE_TMP_TABLE) {
+    // Note:create tmp table
     if (rea_create_tmp_table(thd, path, schema, db, table_name, create_info,
                              alter_info->create_list, *key_count, *key_info,
                              keys_onoff,
@@ -8736,6 +8751,7 @@ static bool create_table_impl(
                              file.get(), no_ha_table, is_trans, table_def))
       return true;
   } else {
+    // Note:create base table
     if (rea_create_base_table(thd, path, schema, db, table_name, create_info,
                               alter_info->create_list, *key_count, *key_info,
                               keys_onoff, *fk_key_count, *fk_key_info,
@@ -8862,6 +8878,10 @@ static void warn_on_deprecated_zerofill(THD *thd,
   Simple wrapper around create_table_impl() to be used
   in various version of CREATE TABLE statement.
 */
+/** Note:创建表
+ * 调用:
+ * mysql_create_table
+*/
 bool mysql_create_table_no_lock(THD *thd, const char *db,
                                 const char *table_name,
                                 HA_CREATE_INFO *create_info,
@@ -8977,6 +8997,7 @@ bool mysql_create_table_no_lock(THD *thd, const char *db,
 
   if (thd->is_plugin_fake_ddl()) no_ha_table = true;
 
+  // Note:create table具体实现
   return create_table_impl(
       thd, *schema, db, table_name, table_name, path, create_info, alter_info,
       false, select_field_count, find_parent_keys, no_ha_table, false, is_trans,
@@ -9729,7 +9750,10 @@ bool collect_fk_names_for_new_fks(THD *thd, const char *db_name,
   with other commands (i.e. implicit commit before and after,
   close of thread tables.
 */
-
+/** Note:DDL create table
+ * 调用:
+ * Sql_cmd_ddl_table.cc/Sql_cmd_create_table::execute
+*/
 bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
                         HA_CREATE_INFO *create_info, Alter_info *alter_info) {
   bool result = false;
@@ -9839,6 +9863,7 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
   if (!thd->variables.explicit_defaults_for_timestamp)
     promote_first_timestamp_column(&alter_info->create_list);
 
+  // Note:create table
   result = mysql_create_table_no_lock(
       thd, create_table->db, create_table->table_name, create_info, alter_info,
       0,

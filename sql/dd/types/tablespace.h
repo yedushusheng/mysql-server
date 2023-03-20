@@ -50,7 +50,11 @@ class Tablespaces;
 }
 
 ///////////////////////////////////////////////////////////////////////////
-
+/** Notw:表空间
+ * 以show create table mysql.tables为例,输出结果中含有
+ * TABLESPACE mysql
+ * 这里是给每个表设置一个存储空间(或目录)
+*/
 class Tablespace : virtual public Entity_object {
  public:
   typedef Tablespace_impl Impl;

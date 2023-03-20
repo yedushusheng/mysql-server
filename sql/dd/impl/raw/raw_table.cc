@@ -61,7 +61,7 @@ Raw_table::Raw_table(thr_lock_type lock_type, const String_type &name)
                               2) OR Either we don't have any matching rows
   @return true - On failure and error is reported.
 */
-/** Note:主要接口
+/** Note:外部接口
  * 直接调用handler接口根据传入的key(比如表名)查找记录
  * 即根据schema_id和table_name读取对应mysql.tables表的文件记录Raw_table::find_record
 */

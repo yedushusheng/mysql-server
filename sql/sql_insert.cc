@@ -467,7 +467,10 @@ bool Sql_cmd_insert_base::check_privileges(THD *thd) {
 
   @returns false if success, true if error
 */
-
+/** Note:插入数据的入口
+ * 调用:
+ * Sql_cmd_dml::execute
+*/
 bool Sql_cmd_insert_values::execute_inner(THD *thd) {
   DBUG_TRACE;
 
@@ -629,7 +632,8 @@ bool Sql_cmd_insert_values::execute_inner(THD *thd) {
         // continue when IGNORE clause is used.
         continue;
       }
-
+      
+      // Note:写记录,最后调用handler::ha_write_row接口实现写入
       if (write_record(thd, insert_table, &info, &update)) {
         has_error = true;
         break;

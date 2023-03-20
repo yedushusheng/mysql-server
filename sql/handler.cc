@@ -4993,12 +4993,12 @@ void handler::ha_drop_table(const char *name) {
 
   @sa handler::create()
 */
-
+// Note:handler create table
 int handler::ha_create(const char *name, TABLE *form, HA_CREATE_INFO *info,
                        dd::Table *table_def) {
   DBUG_ASSERT(m_lock_type == F_UNLCK);
   mark_trx_read_write();
-
+  // Note:具体存储引擎create table实现
   return create(name, form, info, table_def);
 }
 
@@ -5128,6 +5128,16 @@ int handler::index_next_same(uchar *buf, const uchar *key, uint keylen) {
   @retval
    1  error
 */
+/** Note:具体的引擎创建表
+ * 调用:
+ * Sql_cmd_ddl_table.cc/Sql_cmd_create_table::execute
+ * ->sql_table.cc/mysql_create_table
+ * 		->sql_table.cc/mysql_create_table_no_lock
+ * 			->sql_table.cc/create_table_impl
+ * 				-> sql_table.cc/rea_create_base_table
+ * 					->sql/dd/dd_table.cc/ create_table：数据字典创建表
+ * 					->sql/handler.cc/ha_create_table
+*/
 int ha_create_table(THD *thd, const char *path, const char *db,
                     const char *table_name, HA_CREATE_INFO *create_info,
                     bool update_create_info, bool is_temp_table,
@@ -5167,6 +5177,7 @@ int ha_create_table(THD *thd, const char *path, const char *db,
 
   name = get_canonical_filename(table.file, share.path.str, name_buff);
 
+  // Note:create table
   error = table.file->ha_create(name, &table, create_info, table_def);
 
   if (error) {
@@ -5314,7 +5325,7 @@ bool ha_check_if_table_exists(THD *thd, const char *db, const char *name,
     @retval    true              If the table name is a system table.
     @retval    false             If the table name is a user-level table.
 */
-
+// Note:检查是否为系统表(查询数据字典)
 static bool check_if_system_table(const char *db, const char *table_name,
                                   bool *is_sql_layer_system_table) {
   // Check if we have the system database name in the command.
@@ -7812,6 +7823,9 @@ int handler::ha_reset() {
   return retval;
 }
 
+/** Note:对外接口
+ * 写行数据
+*/
 int handler::ha_write_row(uchar *buf) {
   int error;
   Log_func *log_func = Write_rows_log_event::binlog_row_logging_function;
@@ -7840,6 +7854,9 @@ int handler::ha_write_row(uchar *buf) {
   return 0;
 }
 
+/** Note:对外接口
+ * 更新行数据
+*/
 int handler::ha_update_row(const uchar *old_data, uchar *new_data) {
   int error;
   DBUG_ASSERT(table_share->tmp_table != NO_TMP_TABLE || m_lock_type == F_WRLCK);
@@ -7868,6 +7885,9 @@ int handler::ha_update_row(const uchar *old_data, uchar *new_data) {
   return 0;
 }
 
+/** Note:对外接口
+ * 删除行数据
+*/
 int handler::ha_delete_row(const uchar *buf) {
   int error;
   DBUG_ASSERT(table_share->tmp_table != NO_TMP_TABLE || m_lock_type == F_WRLCK);

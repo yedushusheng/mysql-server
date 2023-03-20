@@ -1404,7 +1404,7 @@ typedef Bitmap<MAX_FIELDS> Field_map;
 */
 struct TABLE {
   TABLE_SHARE *s{nullptr};  //NOTE:表的定义
-  handler *file{nullptr};  //NOTE:存储引擎
+  handler *file{nullptr};  //NOTE:存储引擎handler(比如使用table->file->ha_write_row()写行数据)
   TABLE *next{nullptr}, *prev{nullptr};  //NOTE:THD中的open_tables关系(表的遍历)
 
  private:

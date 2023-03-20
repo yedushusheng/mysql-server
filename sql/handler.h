@@ -4050,7 +4050,10 @@ class Ft_hints {
   Methods:
     get_partition_handler()
 */
-// NOTE:存储引擎接口
+/** NOTE:存储引擎接口
+ * MySQL是采用插件式的存储引擎,这里通过在MySQL Server层定义一组接口
+ * 对应的存储引擎需要实现这些handler接口,在真正执行SQL的时候调用具体存储引擎的接口实现
+*/
 class handler {
   friend class Partition_handler;
 
