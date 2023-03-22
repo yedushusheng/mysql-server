@@ -6835,6 +6835,9 @@ int mysqld_main(int argc, char **argv)
     the performance schema itself, the next step is to register all the
     server instruments.
   */
+  /** Note:psi开头的key变量的值,会调用注册storag/performance/pfs.cc中的register_*函数注册all_server_mutexes,
+   * all_server_rwlocks,all_server_threads等变量
+  */
   init_server_psi_keys();
 
   /*
@@ -7278,6 +7281,9 @@ int mysqld_main(int argc, char **argv)
     */
     my_getopt_skip_unknown = false;
 
+    /** Note:在sql/sys_vars中声明所有mysql参数,在sys_var类型的构造函数中将这些注册到all_sys_vars
+     * 解析命令和配置文件传入的参数,这里主要是为了解析pfs相关的参数,写入到pfs_param的成员中
+    */
     if ((ho_error = handle_options(&remaining_argc, &remaining_argv, no_opts,
                                    mysqld_get_one_option)))
       abort = true;
@@ -11450,6 +11456,9 @@ static void init_server_psi_keys(void) {
   const char *category = "sql";
   int count;
 
+  /** Note:psi开头的key变量的值,会调用注册storage/perfschema/pfs.cc中的register_*函数注册
+   * all_server_mutexes,all_server_rwlocks,all_server_threads等变量
+  */
   count = static_cast<int>(array_elements(all_server_mutexes));
   mysql_mutex_register(category, all_server_mutexes, count);
 
