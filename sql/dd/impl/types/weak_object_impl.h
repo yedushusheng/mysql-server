@@ -39,7 +39,11 @@ class Raw_new_record;
 class Raw_record;
 
 ///////////////////////////////////////////////////////////////////////////
-
+/** Note:数据字典基类Weak_object的实现
+ * 这里封装了一些基本的接口(虚函数和纯虚函数实现)
+ * 比如store/drop(打开,清理数据字典)
+ * restore_attribute/store_attributes(加载具体对象的属性,子类实现)
+*/
 class Weak_object_impl : virtual public Weak_object {
  public:
   Weak_object_impl() {}

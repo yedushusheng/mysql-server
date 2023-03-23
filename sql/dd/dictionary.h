@@ -32,6 +32,10 @@ class MDL_ticket;
 class Plugin_table;
 // class Tablespace;
 
+/** Note:主要是封装了数据字典的两类操作:
+ * 1. 数据字典库表访问接口(class Dictionary)
+ * 2. MDL锁
+*/
 namespace dd {
 
 ///////////////////////////////////////////////////////////////////////////

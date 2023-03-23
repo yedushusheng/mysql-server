@@ -48,6 +48,9 @@ struct Raw_key;
 // - use '_range_key' suffix to name keys identifying 0 or N rows.
 
 ///////////////////////////////////////////////////////////////////////////
+/** Note:封装了一系列访问对象Object使用的key
+ * 
+*/
 
 // Key type to be used for keys that are not supported by an object type.
 class Void_key : public Object_key {

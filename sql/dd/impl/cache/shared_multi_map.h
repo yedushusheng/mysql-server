@@ -112,6 +112,9 @@ namespace cache {
   @tparam  T  Dictionary object type.
 */
 
+/** Note:实现共享缓存
+ * 内部实现原理主要是操作map对象
+*/
 template <typename T>
 class Shared_multi_map : public Multi_map_base<T> {
  private:

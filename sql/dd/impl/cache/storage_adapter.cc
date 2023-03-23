@@ -102,6 +102,7 @@ template <typename T>
 Object_id Storage_adapter::core_get_id(const typename T::Name_key &key) {
   Cache_element<typename T::Cache_partition> *element = nullptr;
   MUTEX_LOCK(lock, &m_lock);
+  // Note:从注册对象m_core_registry中按照key查找对应的缓存数据
   m_core_registry.get(key, &element);
   if (element) {
     DBUG_ASSERT(element->object());
@@ -126,6 +127,24 @@ void Storage_adapter::core_get(const K &key, const T **object) {
 }
 
 // Update the dictionary object for a dd entity in the core registry.
+/** 更新数据字典对象
+ * 调用:
+ * #0  dd::cache::Storage_adapter::core_update (this=0xf15f340 <dd::cache::Storage_adapter::instance()::s_instance>, new_tsp=0x7f4f2c0c1d60)
+ *     at /sql/dd/impl/cache/storage_adapter.cc:131
+ * #1  0x0000000006820744 in dd::cache::Dictionary_client::remove_uncommitted_objects<dd::Tablespace> (this=0x7f4f3c01d9f0, commit_to_shared_cache=true)
+ *     at /sql/dd/impl/cache/dictionary_client.cc:2847
+ * #2  0x00000000067fcd6f in dd::cache::Dictionary_client::commit_modified_objects (this=0x7f4f3c01d9f0)
+ *     at /sql/dd/impl/cache/dictionary_client.cc:2914
+ * #3  0x00000000044921b6 in trans_commit_implicit (thd=0x7f4f3c019f10, ignore_global_read_lock=false) at /sql/transaction.cc:378
+ * #4  0x00000000042ef9e0 in mysql_create_table (thd=0x7f4f3c019f10, create_table=0x7f4f2c0273e8, create_info=0x7f4fb04f34e0, alter_info=0x7f4fb04f3340)
+ *     at /sql/sql_table.cc:10143
+ * #5  0x000000000400a7e8 in Sql_cmd_create_table::execute (this=0x7f4f2c027ce0, thd=0x7f4f3c019f10) at /sql/sql_cmd_ddl_table.cc:428
+ * #6  0x0000000004148e9a in mysql_execute_command (thd=0x7f4f3c019f10, first_level=true) at /sql/sql_parse.cc:3645
+ * #7  0x0000000004154c8f in dispatch_sql_command (thd=0x7f4f3c019f10, parser_state=0x7f4fb04f4cf0, update_userstat=false)
+ *     at /sql/sql_parse.cc:5346
+ * #8  0x000000000413dc9b in dispatch_command (thd=0x7f4f3c019f10, com_data=0x7f4fb04f5e90, command=COM_QUERY) at /data1/casonjiang/TDProxyEngine/sql/sql_parse.cc:1958
+ * #9  0x0000000004139c4f in do_command (thd=0x7f4f3c019f10) at /sql/sql_parse.cc:1404
+*/
 void Storage_adapter::core_update(const dd::Tablespace *new_tsp) {
   if (new_tsp->id() != MYSQL_TABLESPACE_DD_ID) {
     return;
@@ -146,17 +165,17 @@ void Storage_adapter::core_update(const dd::Tablespace *new_tsp) {
 
 /** Note:外部接口
  * 从持久存储层获取一个数据字典对应
- * Storage_adapter是访问持久存储引擎的处理类，包括get()/drop()/store()等接口。
- * 当初次获取一个表的元信息时，会调用Storage_adapter::get()接口。
+ * Storage_adapter是访问持久存储引擎的处理类,包括get()/drop()/store()等接口。
+ * 当初次获取一个表的元信息时,会调用Storage_adapter::get()接口。
  * 
  * Storage_adapter::get()
- *   // 根据访问对象类型，将依赖的DD tables加入到open table list中
+ *   // 根据访问对象类型,将依赖的DD tables加入到open table list中
  *   |--Open_dictionary_tables_ctx::register_tables<T>()
  *     |--Table_impl::register_tables()
  *   |--Open_dictionary_tables_ctx::open_tables() // 调用Server层接口打开所有表
  *   |--Raw_table::find_record() // 直接调用handler接口根据传入的key（比如表名）查找记录
  *     |--handler::ha_index_read_idx_map() // index read
- *   // 从读取到的record中解析出对应属性，调用field[field_no]->val_xx()函数
+ *   // 从读取到的record中解析出对应属性,调用field[field_no]->val_xx()函数
  *   |--Table_impl::restore_attributes()
  *     // 通过调用restore_children()函数从与该对象关联的其他DD表中根据主外键读取完整的元数据定义
  *     |--Table_impl::restore_children()
@@ -183,7 +202,7 @@ bool Storage_adapter::get(THD *thd, const K &key, enum_tx_isolation isolation,
 
   // Start a DD transaction to get the object.
   Transaction_ro trx(thd, isolation);
-  trx.otx.register_tables<T>();  /** Note:根据访问对象类型，将依赖的DD tables加入到open table list中 */ 
+  trx.otx.register_tables<T>();  /** Note:根据访问对象类型,将依赖的DD tables加入到open table list中 */ 
 
   /** Note:调用Server层接口打开所有表 */
   if (trx.otx.open_tables()) {
@@ -259,6 +278,7 @@ void Storage_adapter::core_drop(THD *thd MY_ATTRIBUTE((unused)),
 }
 
 // Drop a dictionary object from persistent storage.
+// Note:从持久存储层(磁盘)删除一个数据子带你对象
 template <typename T>
 bool Storage_adapter::drop(THD *thd, const T *object) {
   if (s_use_fake_storage ||
@@ -291,6 +311,9 @@ bool Storage_adapter::drop(THD *thd, const T *object) {
 }
 
 // Store a dictionary object to core storage.
+/** Note:加载一个数据字典对象到core storage
+ * 
+*/
 template <typename T>
 void Storage_adapter::core_store(THD *thd, T *object) {
   DBUG_ASSERT(s_use_fake_storage || thd->is_dd_system_thread());
@@ -328,9 +351,44 @@ class Open_dictionary_tables_error_handler : public Internal_error_handler {
 };
 
 // Store a dictionary object to persistent storage.
+/** Note:数据字典对象存储到持久层
+ * 1. 由数据字典的客户端接口Dictionary_client::store调用
+ * 2. 最终使用具体的Object的方法实现加载,比如这里的Table_impl::store_attributes
+ * 3. 最后Raw_record::store负责记录的更新
+ * 
+ * 调用:
+ * #0  dd::Raw_record::store (this=0x7f4f2c037ce0, field_no=34, v=0, is_null=false) at /sql/dd/impl/raw/raw_record.h:73
+ * #1  0x0000000006bb5e56 in dd::Table_impl::store_attributes (this=0x7f4f2c020930, r=0x7f4f2c037ce0) at /sql/dd/impl/types/table_impl.cc:491
+ * #2  0x0000000006bedb87 in dd::Weak_object_impl_<true>::store (this=0x7f4f2c020930, otx=0x7f4fb04f1710)
+    at /sql/dd/impl/types/weak_object_impl.cc:122
+ * #3  0x0000000006a1086c in dd::cache::Storage_adapter::store<dd::Table> (thd=0x7f4f3c019f10, object=0x7f4f2c020c10)
+    at /sql/dd/impl/cache/storage_adapter.cc:335
+ * #4  0x000000000681de25 in dd::cache::Dictionary_client::store<dd::Table> (this=0x7f4f3c01d9f0, object=0x7f4f2c020c10)
+    at /sql/dd/impl/cache/dictionary_client.cc:2578
+ * #5  0x00000000042bca3c in rea_create_base_table (thd=0x7f4f3c019f10, path=0x7f4fb04f2d50 "./test/tx1", sch_obj=..., db=0x7f4f2c027a28 "test", 
+    table_name=0x7f4f2c026da8 "tx1", create_info=0x7f4fb04f34e0, create_fields=..., keys=1, key_info=0x7f4f2c029898, keys_onoff=Alter_info::ENABLE, fk_keys=0, 
+    fk_key_info=0x7f4f2c029978, check_cons_spec=0x7f4fb04f3400, file=0x7f4f2c027fe8, no_ha_table=false, do_not_store_in_dd=false, part_info=0x0, 
+    binlog_to_trx_cache=0x7f4fb04f316f, table_def_ptr=0x7f4fb04f2f60, post_ddl_ht=0x7f4fb04f3160) at /sql/sql_table.cc:1096
+ * #6  0x00000000042e6075 in create_table_impl (thd=0x7f4f3c019f10, schema=..., db=0x7f4f2c027a28 "test", table_name=0x7f4f2c026da8 "tx1", 
+    error_table_name=0x7f4f2c026da8 "tx1", path=0x7f4fb04f2d50 "./test/tx1", create_info=0x7f4fb04f34e0, alter_info=0x7f4fb04f3340, internal_tmp_table=false, 
+    select_field_count=0, find_parent_keys=true, no_ha_table=false, do_not_store_in_dd=false, is_trans=0x7f4fb04f316f, key_info=0x7f4fb04f2f80, key_count=0x7f4fb04f2f7c, 
+    keys_onoff=Alter_info::ENABLE, fk_key_info=0x7f4fb04f2f70, fk_key_count=0x7f4fb04f2f6c, existing_fk_info=0x0, existing_fk_count=0, existing_fk_table=0x0, 
+    fk_max_generated_name_number=0, table_def=0x7f4fb04f2f60, post_ddl_ht=0x7f4fb04f3160) at /sql/sql_table.cc:8916
+ * #7  0x00000000042e7c1d in mysql_create_table_no_lock (thd=0x7f4f3c019f10, db=0x7f4f2c027a28 "test", table_name=0x7f4f2c026da8 "tx1", create_info=0x7f4fb04f34e0, 
+    alter_info=0x7f4fb04f3340, select_field_count=0, find_parent_keys=true, is_trans=0x7f4fb04f316f, post_ddl_ht=0x7f4fb04f3160)
+    at /sql/sql_table.cc:9175
+ * #8  0x00000000042eee79 in mysql_create_table (thd=0x7f4f3c019f10, create_table=0x7f4f2c0273e8, create_info=0x7f4fb04f34e0, alter_info=0x7f4fb04f3340)
+    at /sql/sql_table.cc:10036
+ * #9  0x000000000400a7e8 in Sql_cmd_create_table::execute (this=0x7f4f2c027ce0, thd=0x7f4f3c019f10) at /sql/sql_cmd_ddl_table.cc:428
+ * #10 0x0000000004148e9a in mysql_execute_command (thd=0x7f4f3c019f10, first_level=true) at /sql/sql_parse.cc:3645
+ * #11 0x0000000004154c8f in dispatch_sql_command (thd=0x7f4f3c019f10, parser_state=0x7f4fb04f4cf0, update_userstat=false)
+    at /sql/sql_parse.cc:5346
+ * #12 0x000000000413dc9b in dispatch_command (thd=0x7f4f3c019f10, com_data=0x7f4fb04f5e90, command=COM_QUERY) at /sql/sql_parse.cc:1958
+ * #13 0x0000000004139c4f in do_command (thd=0x7f4f3c019f10) at /sql/sql_parse.cc:1404
+*/
 template <typename T>
 bool Storage_adapter::store(THD *thd, T *object) {
-  // Note:如果是测试或者未到真正需要建表的阶段，只存入缓存，不进行持久化存储
+  // Note:如果是测试或者未到真正需要建表的阶段,只存入缓存,不进行持久化存储
   if (s_use_fake_storage ||
       bootstrap::DD_bootstrap_ctx::instance().get_stage() <
           bootstrap::Stage::CREATED_TABLES) {
@@ -345,7 +403,7 @@ bool Storage_adapter::store(THD *thd, T *object) {
 
   // Store the object into the dd tables. We need to switch transaction
   // ctx to do this.
-  /** Note:切换上下文，包括更新系统表的时候关闭binlog、修改auto_increament_increament增量、设置一些相关变量等与修改DD相关的上下文。
+  /** Note:切换上下文,包括更新系统表的时候关闭binlog、修改auto_increament_increament增量、设置一些相关变量等与修改DD相关的上下文。
   */
   Update_dictionary_tables_ctx ctx(thd);
   ctx.otx.register_tables<T>();
@@ -353,7 +411,7 @@ bool Storage_adapter::store(THD *thd, T *object) {
 
   Open_dictionary_tables_error_handler error_handler;
   thd->push_internal_handler(&error_handler);
-  // Note:object->impl()->store 这里会将DD对象存入相关的系统表。具体比如表，列， 表空间是如何持久化到系统表中的。
+  // Note:object->impl()->store 这里会将DD对象存入相关的系统表。具体比如表,列, 表空间是如何持久化到系统表中的。
   if (ctx.otx.open_tables() || object->impl()->store(&ctx.otx)) {
     DBUG_ASSERT(thd->is_system_thread() || thd->killed || thd->is_error());
     thd->pop_internal_handler();
@@ -363,6 +421,7 @@ bool Storage_adapter::store(THD *thd, T *object) {
 
   // Do not create SDIs for tablespaces and tables while creating
   // dictionary entry during upgrade.
+  // Note:调用SDI接口实现持久层操作
   if (bootstrap::DD_bootstrap_ctx::instance().get_stage() >
           bootstrap::Stage::CREATED_TABLES &&
       dd::upgrade_57::allow_sdi_creation() && sdi::store(thd, object))
@@ -372,6 +431,7 @@ bool Storage_adapter::store(THD *thd, T *object) {
 }
 
 // Sync a dictionary object from persistent to core storage.
+// Note:从持久存储层加载数据字典对象(比如table)到缓存层的core storage
 template <typename T>
 bool Storage_adapter::core_sync(THD *thd, const typename T::Name_key &key,
                                 const T *object) {
@@ -428,9 +488,9 @@ bool Storage_adapter::core_sync(THD *thd, const typename T::Name_key &key,
   Cache_element<typename T::Cache_partition> *element =
       new Cache_element<typename T::Cache_partition>();
   element->set_object(new_obj);
-  element->recreate_keys();
+  element->recreate_keys();  //Note:重新生成key
   MUTEX_LOCK(lock, &m_lock);
-  m_core_registry.put(element);
+  m_core_registry.put(element);  // Note:注册新的对象
   return false;
 }
 

@@ -56,7 +56,18 @@ namespace cache {
   The individual maps containing DD object pointers are allocated on demand
   to avoid excessive performance overhead during object instantiation.
 */
-// Note:存储不同类型的对象和对应的cache元素
+/** Note:存储不同类型的对象和对应的cache元素,以及对应的操作
+ * 主要作用:
+ * 1.定义了缓存对象变量,通过这个可以创建局部local_multi_map和全局shared_multi_map的缓存
+ * 2.在使用的时候需要将对象Object注册,不使用的时候需要清理
+ * 这里封装了一系列的注册和销毁(put/erase...)
+ * 
+ * 比如在dictionary_client.h中定义:
+ * Object_registry m_release_registry;
+ * 用来记录从共享cache中获取的DD对象,以便自动释放
+ * 说明:
+ * 主要是client和storage_adapter使用
+*/
 class Object_registry {
  private:
   template <typename T>
@@ -78,6 +89,7 @@ class Object_registry {
   // Not inlined because it is big, and because it takes a lot of time
   // for the compiler to instantiate. Defined in dd.cc, along the similar
   // create_object() instantiations.
+  // Note:主要接口,实现注册的对象和具体缓存(局部/全局)的联系
   template <class T>
   void create_map(std::unique_ptr<T> *map);
 
@@ -315,7 +327,7 @@ class Object_registry {
   /**
     Remove and delete all objects from the registry.
   */
-
+  // Note:使用的时候注册,不使用的时候清理
   void erase_all() {
     erase<Abstract_table>();
     erase<Charset>();

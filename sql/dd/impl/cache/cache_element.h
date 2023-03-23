@@ -62,7 +62,8 @@ class Storage_adapter;
 
   @tparam  T  Dictionary object type being wrapped.
 */
-
+/** Note:Cache_element保存了用于在缓存中查找对象的key
+*/
 template <typename T>
 class Cache_element {
   friend class Storage_adapter;                     // Unit test access.

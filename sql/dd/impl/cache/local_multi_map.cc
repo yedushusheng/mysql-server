@@ -49,6 +49,8 @@ class Spatial_reference_system;
 class Tablespace;
 }  // namespace dd
 
+/** Note:局部缓存的实现方法
+*/
 namespace dd {
 namespace cache {
 

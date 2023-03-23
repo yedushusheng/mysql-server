@@ -148,6 +148,11 @@ class Raw_record {
 
 ///////////////////////////////////////////////////////////////////////////
 
+/** Note:外部接口
+ * 负责完成数据字典的信息到InnoDB的持久化
+ * 有数据字典客户端Dictionary_client::store调用
+ * 这里主要是调用具体存储引擎的handler接口实现数据行写入
+*/
 class Raw_new_record : public Raw_record {
  public:
   Raw_new_record(TABLE *table);

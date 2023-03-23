@@ -37,7 +37,8 @@ class View_table_usage;
 }
 
 ///////////////////////////////////////////////////////////////////////////
-
+/** Note:视图表的基类
+*/
 class View_table : virtual public Weak_object {
  public:
   typedef View_table_impl Impl;

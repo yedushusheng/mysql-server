@@ -36,12 +36,17 @@ namespace cache {
 template <typename T>
 class Cache_element;
 
-// Note:单实例
+/** Note:构造全局缓存实例
+ * 单实例
+*/
 Shared_dictionary_cache *Shared_dictionary_cache::instance() {
   static Shared_dictionary_cache s_cache;
   return &s_cache;
 }
 
+/** Note:全局共享缓存初始化
+ * 设置每一个缓存的对象Object的大小
+*/
 void Shared_dictionary_cache::init() {
   instance()->m_map<Collation>()->set_capacity(collation_capacity);
   instance()->m_map<Charset>()->set_capacity(charset_capacity);
@@ -61,6 +66,9 @@ void Shared_dictionary_cache::init() {
   instance()->m_map<Resource_group>()->set_capacity(resource_group_capacity);
 }
 
+/** Note:关闭全局共享缓存
+ * 清理每个对象的缓存
+*/
 void Shared_dictionary_cache::shutdown() {
   instance()->m_map<Abstract_table>()->shutdown();
   instance()->m_map<Collation>()->shutdown();
@@ -91,6 +99,32 @@ bool Shared_dictionary_cache::reset_tables_and_tablespaces(THD *thd) {
 /** Note:外部接口
  * 通过key查找(Shared_multi_map->get()共享内存中获取),如果找到则返回
  * 如果未找到则调用get_uncached从持久化存储(innodb表)读取,然后将找到的结果写回缓存(Shared_multi_map->put())
+ * 
+ * 调用:
+ * #1  0x0000000006a004a4 in dd::cache::Shared_dictionary_cache::get<dd::Item_name_key, dd::Abstract_table> (
+    this=0xf14ce20 <dd::cache::Shared_dictionary_cache::instance()::s_cache>, thd=0x7f4f3c019f10, key=..., element=0x7f4fb04f27c8)
+    at /sql/dd/impl/cache/shared_dictionary_cache.cc:113
+ * #2  0x0000000006845d3c in dd::cache::Dictionary_client::acquire<dd::Item_name_key, dd::Abstract_table> (this=0x7f4f3c01d9f0, key=..., object=0x7f4fb04f2838, 
+    local_committed=0x7f4fb04f2837, local_uncommitted=0x7f4fb04f2836) at /sql/dd/impl/cache/dictionary_client.cc:910
+ * #3  0x0000000006809b66 in dd::cache::Dictionary_client::acquire<dd::Abstract_table> (this=0x7f4f3c01d9f0, schema_name=..., object_name=..., object=0x7f4fb04f2958)
+    at /sql/dd/impl/cache/dictionary_client.cc:1379
+ * #4  0x000000000673314e in dd::table_exists (client=0x7f4f3c01d9f0, schema_name=0x7f4f2c027a28 "test", name=0x7f4f2c026da8 "tx1", exists=0x7f4fb04f2caf)
+    at /sql/dd/dd_table.cc:2468
+ * #5  0x0000000003f79e53 in check_if_table_exists (thd=0x7f4f3c019f10, table=0x7f4f2c0273e8, exists=0x7f4fb04f2caf) at /sql/sql_base.cc:2506
+ * #6  0x0000000003f7c19a in open_table (thd=0x7f4f3c019f10, table_list=0x7f4f2c0273e8, ot_ctx=0x7f4fb04f2f30) at /sql/sql_base.cc:3108
+ * #7  0x0000000003f85ce8 in open_and_process_table (thd=0x7f4f3c019f10, lex=0x7f4f3c01d130, tables=0x7f4f2c0273e8, counter=0x7f4fb04f3168, 
+    prelocking_strategy=0x7f4fb04f3018, has_prelocking_list=false, ot_ctx=0x7f4fb04f2f30) at /sql/sql_base.cc:5085
+ * #8 0x0000000003f892cd in open_tables (thd=0x7f4f3c019f10, start=0x7f4f3c01d140, counter=0x7f4fb04f3168, flags=0, prelocking_strategy=0x7f4fb04f3018)
+    at /sql/sql_base.cc:5895
+ * #9 0x0000000003fa4f17 in open_tables (thd=0x7f4f3c019f10, tables=0x7f4f3c01d140, counter=0x7f4fb04f3168, flags=0) at /sql/sql_base.h:462
+ * #10 0x00000000042ee5c4 in mysql_create_table (thd=0x7f4f3c019f10, create_table=0x7f4f2c0273e8, create_info=0x7f4fb04f34e0, alter_info=0x7f4fb04f3340)
+    at /sql/sql_table.cc:9970
+ * #11 0x000000000400a7e8 in Sql_cmd_create_table::execute (this=0x7f4f2c027ce0, thd=0x7f4f3c019f10) at /sql/sql_cmd_ddl_table.cc:428
+ * #12 0x0000000004148e9a in mysql_execute_command (thd=0x7f4f3c019f10, first_level=true) at /sql/sql_parse.cc:3645
+ * #13 0x0000000004154c8f in dispatch_sql_command (thd=0x7f4f3c019f10, parser_state=0x7f4fb04f4cf0, update_userstat=false)
+    at /sql/sql_parse.cc:5346
+ * #14 0x000000000413dc9b in dispatch_command (thd=0x7f4f3c019f10, com_data=0x7f4fb04f5e90, command=COM_QUERY) at /sql/sql_parse.cc:1958
+ * #15 0x0000000004139c4f in do_command (thd=0x7f4f3c019f10) at /sql/sql_parse.cc:1404
 */
 template <typename K, typename T>
 bool Shared_dictionary_cache::get(THD *thd, const K &key,
@@ -106,6 +140,7 @@ bool Shared_dictionary_cache::get(THD *thd, const K &key,
 
     // Add the new object, and assign the output element, even in the case of
     // a miss error (needed to remove the missed key).
+    // Note:缓存没有命中,到InnoDB查找,同时将这个对象加入到缓存中
     m_map<T>()->put(&key, new_object, element);
   }
   return error;
@@ -113,6 +148,7 @@ bool Shared_dictionary_cache::get(THD *thd, const K &key,
 
 // Read an object directly from disk, given the key.
 /** Note:外部接口
+ * 对于在全局缓存中不存在的对象直接调用Storage_adapter::get从InnoDB表加载数据
  * 直接从innodb表读取object对象，并且设置一个key
 */
 template <typename K, typename T>

@@ -58,10 +58,10 @@ namespace cache {
 
 template <typename T>
 class Cache_element;
-/** Note:全局缓存所有不同的数据字典对象。
- * 该类定义了共享的DD对象缓存，该类取代了8.0之前的table_cache。
- * 数据库对象会根据对象类型从不同的map中获取对象。
- * 所有对DD对象的访问都需要经过该缓存。
+/** Note:全局缓存所有不同的数据字典对象
+ * 该类定义了共享的DD对象缓存,该类取代了8.0之前的table_cache
+ * 数据库对象会根据对象类型从不同的map中获取对象
+ * 所有对DD对象的访问都需要经过该缓存
 */
 class Shared_dictionary_cache {
  private:
@@ -69,7 +69,7 @@ class Shared_dictionary_cache {
   // all collations and character sets built into the server. The spatial
   // reference system cache size is chosen to hold a reasonable number of SRSs
   // for normal server use.
-  static const size_t collation_capacity = 256; // Note:设置一些缓存的最大容量，目前看来都是硬编码
+  static const size_t collation_capacity = 256; // Note:设置一些缓存的最大容量,目前看来都是硬编码
   static const size_t column_statistics_capacity = 32;
   static const size_t charset_capacity = 64;
   static const size_t event_capacity = 256;

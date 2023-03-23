@@ -42,7 +42,7 @@ namespace dd {
 ///////////////////////////////////////////////////////////////////////////
 // Primary_id_key
 ///////////////////////////////////////////////////////////////////////////
-
+// Note:主键
 Raw_key *Primary_id_key::create_access_key(Raw_table *db_table) const {
   // Positional index of PK-Index on object-id field.
   // It is 0 for any DD-table (PK-Index is the 1st index on a DD-table).
@@ -152,7 +152,43 @@ Raw_key *Global_name_key::create_access_key(Raw_table *db_table) const {
 ///////////////////////////////////////////////////////////////////////////
 // Item_name_key
 ///////////////////////////////////////////////////////////////////////////
-
+/** Note:外部接口
+ * 在raw_record相关操作(查找)中调用,这里是设置访问Object的key信息
+ * 
+ * 调用:
+ * #0  dd::Item_name_key::create_access_key (this=0x7f4fb04f2660, db_table=0x7f4f2c0a7430) at /sql/dd/impl/raw/object_keys.cc:168
+ * #1  0x0000000006a45243 in dd::Raw_table::find_record (this=0x7f4f2c0a7430, key=..., r=...) at /sql/dd/impl/raw/raw_table.cc:69
+ * #2  0x0000000006a0deee in dd::cache::Storage_adapter::get<dd::Item_name_key, dd::Abstract_table> (thd=0x7f4f3c019f10, key=..., isolation=ISO_READ_COMMITTED, 
+    bypass_core_registry=false, object=0x7f4fb04f2560) at /sql/dd/impl/cache/storage_adapter.cc:181
+ * #3  0x0000000006a00a70 in dd::cache::Shared_dictionary_cache::get_uncached<dd::Item_name_key, dd::Abstract_table> (
+    this=0xf14ce20 <dd::cache::Shared_dictionary_cache::instance()::s_cache>, thd=0x7f4f3c019f10, key=..., isolation=ISO_READ_COMMITTED, object=0x7f4fb04f2560)
+    at /sql/dd/impl/cache/shared_dictionary_cache.cc:128
+ * #4  0x0000000006a004a4 in dd::cache::Shared_dictionary_cache::get<dd::Item_name_key, dd::Abstract_table> (
+    this=0xf14ce20 <dd::cache::Shared_dictionary_cache::instance()::s_cache>, thd=0x7f4f3c019f10, key=..., element=0x7f4fb04f25d8)
+    at /sql/dd/impl/cache/shared_dictionary_cache.cc:113
+ * #5  0x0000000006845d3c in dd::cache::Dictionary_client::acquire<dd::Item_name_key, dd::Abstract_table> (this=0x7f4f3c01d9f0, key=..., object=0x7f4fb04f2648, 
+    local_committed=0x7f4fb04f2647, local_uncommitted=0x7f4fb04f2646) at /sql/dd/impl/cache/dictionary_client.cc:910
+ * #6  0x0000000006809b66 in dd::cache::Dictionary_client::acquire<dd::Abstract_table> (this=0x7f4f3c01d9f0, schema_name=..., object_name=..., object=0x7f4fb04f2778)
+    at /sql/dd/impl/cache/dictionary_client.cc:1379
+ * #7  0x00000000042e3950 in check_if_table_exists (thd=0x7f4f3c019f10, schema_name=0x7f4f2c027a28 "test", table_name=0x7f4f2c026da8 "tx1", alias=0x7f4f2c026da8 "tx1", 
+    ha_lex_create_tmp_table=false, ha_create_if_not_exists=false, internal_tmp_table=false) at /sql/sql_table.cc:8533
+ * #8  0x00000000042e5399 in create_table_impl (thd=0x7f4f3c019f10, schema=..., db=0x7f4f2c027a28 "test", table_name=0x7f4f2c026da8 "tx1", 
+    error_table_name=0x7f4f2c026da8 "tx1", path=0x7f4fb04f2d50 "./test/tx1", create_info=0x7f4fb04f34e0, alter_info=0x7f4fb04f3340, internal_tmp_table=false, 
+    select_field_count=0, find_parent_keys=true, no_ha_table=false, do_not_store_in_dd=false, is_trans=0x7f4fb04f316f, key_info=0x7f4fb04f2f80, key_count=0x7f4fb04f2f7c, 
+    keys_onoff=Alter_info::ENABLE, fk_key_info=0x7f4fb04f2f70, fk_key_count=0x7f4fb04f2f6c, existing_fk_info=0x0, existing_fk_count=0, existing_fk_table=0x0, 
+    fk_max_generated_name_number=0, table_def=0x7f4fb04f2f60, post_ddl_ht=0x7f4fb04f3160) at /sql/sql_table.cc:8823
+ * #9  0x00000000042e7c1d in mysql_create_table_no_lock (thd=0x7f4f3c019f10, db=0x7f4f2c027a28 "test", table_name=0x7f4f2c026da8 "tx1", create_info=0x7f4fb04f34e0, 
+    alter_info=0x7f4fb04f3340, select_field_count=0, find_parent_keys=true, is_trans=0x7f4fb04f316f, post_ddl_ht=0x7f4fb04f3160)
+    at /sql/sql_table.cc:9175
+ * #10 0x00000000042eee79 in mysql_create_table (thd=0x7f4f3c019f10, create_table=0x7f4f2c0273e8, create_info=0x7f4fb04f34e0, alter_info=0x7f4fb04f3340)
+    at /sql/sql_table.cc:10036
+ * #11 0x000000000400a7e8 in Sql_cmd_create_table::execute (this=0x7f4f2c027ce0, thd=0x7f4f3c019f10) at /sql/sql_cmd_ddl_table.cc:428
+ * #12 0x0000000004148e9a in mysql_execute_command (thd=0x7f4f3c019f10, first_level=true) at /sql/sql_parse.cc:3645
+ * #13 0x0000000004154c8f in dispatch_sql_command (thd=0x7f4f3c019f10, parser_state=0x7f4fb04f4cf0, update_userstat=false)
+    at /sql/sql_parse.cc:5346
+ * #14 0x000000000413dc9b in dispatch_command (thd=0x7f4f3c019f10, com_data=0x7f4fb04f5e90, command=COM_QUERY) at /sql/sql_parse.cc:1958
+ * #15 0x0000000004139c4f in do_command (thd=0x7f4f3c019f10) at /sql/sql_parse.cc:1404
+*/
 Raw_key *Item_name_key::create_access_key(Raw_table *db_table) const {
   /*
     Positional index of name index on the name field.

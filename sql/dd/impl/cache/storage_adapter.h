@@ -40,11 +40,12 @@ class CacheStorageTest;
 }
 
 /**
- * Note:数据字典表本身的元数据也会保存到数据字典表里，但是某个数据字典表创建的时候，有一些数据字典表还没有创建，这就有问题了。
- * 我们以 columns、indexes 这 2 个数据字典表为例来说明：columns 表先于 indexes 表创建，columns 表创建成功之后，需要把索引元数据保存到 indexes 表中，而此时 indexes 表还没有创建，columns 表的索引元数据自然也就没办法保存到 indexes 表中了。
- * MySQL 解决这个问题的方案是引入一个中间层，用于临时存放所有数据字典表的各种元数据，等到所有数据字典表都创建完成之后，再把临时存放在中间层的所有数据字典表的元数据保存到相应的数据字典表中。
- * 这里所谓的中间层实际上是一个存储适配器，源码中对应的类名为 Storage_adapter，这是一个实现了单例模式的类。
- * MySQL在初始化数据目录的过程中，Storage_adapter类的实例属性m_core_registry就是所有数据字典表元数据的临时存放场所。
+ * Note:数据字典表本身的元数据也会保存到数据字典表里,但是某个数据字典表创建的时候,有一些数据字典表还没有创建,这就有问题了。
+ * 我们以columns、indexes这2个数据字典表为例来说明：
+ * columns表先于indexes表创建,columns表创建成功之后,需要把索引元数据保存到 indexes 表中,而此时 indexes表还没有创建,columns表的索引元数据自然也就没办法保存到indexes表中了。
+ * MySQL解决这个问题的方案是引入一个中间层,用于临时存放所有数据字典表的各种元数据,等到所有数据字典表都创建完成之后,再把临时存放在中间层的所有数据字典表的元数据保存到相应的数据字典表中。
+ * 这里所谓的中间层实际上是一个存储适配器,源码中对应的类名为 Storage_adapter,这是一个实现了单例模式的类。
+ * MySQL在初始化数据目录的过程中,Storage_adapter类的实例属性m_core_registry就是所有数据字典表元数据的临时存放场所。
  */
 namespace dd {
 
@@ -64,10 +65,15 @@ namespace cache {
 */
 /** Note:存储core属性的数据字典对象
  * 这个类抽象了对DD对象的metadata进行存储的方法。
- * 它是一个静态类。对于新创建的对象（表，索引，表空间等）都会通过该类进行一个clone， clone之后该类会将该对象的metadata存储到对应的系统表中。
- * 另外，它也提供接口用来从系统表中获取metadata并生成调用需要的DD对象。
- * 该类同时也提供了一个缓存，每次调用存储新对象的时候，它会自动将一个对象clone缓存起来。
- * 该类成员函数中core_xxx都是负责操作缓存。
+ * 它是一个静态类。对于新创建的对象（表,索引,表空间等）都会通过该类进行一个clone, clone之后该类会将该对象的metadata存储到对应的系统表中。
+ * 另外,它也提供接口用来从系统表中获取metadata并生成调用需要的DD对象。
+ * 该类同时也提供了一个缓存,每次调用存储新对象的时候,它会自动将一个对象clone缓存起来。
+ * 
+ * 说明:
+ * 这里是负责操作存储引擎层的,因此会调用raw/raw_record.h相关接口,进而调用存储引擎handler接口
+ * 
+ * 该类成员函数中core_xxx都是负责操作缓存,比如core_dop.
+ * 不带core前缀的都是操作磁盘的,比如drop.
 */
 class Storage_adapter {
   friend class dd_cache_unittest::CacheStorageTest;
@@ -189,7 +195,7 @@ class Storage_adapter {
     @retval      true    Error.
   */
   /** Note:该函数可以根据对象类型及名称获取对象。
-   * 如果该对象已经被缓存，那么调用core_get获取clone对象。
+   * 如果该对象已经被缓存,那么调用core_get获取clone对象。
    * 否则会根据对象类型到对应的metadata数据表中查找并构造一个对象。
   */
   template <typename K, typename T>
@@ -246,7 +252,7 @@ class Storage_adapter {
     @retval  false   No error.
     @retval  true    Error.
   */
-  /** Note:该函数会根据DD对象类型，将metadata存入相关的系统表中。
+  /** Note:该函数会根据DD对象类型,将metadata存入相关的系统表中。
   */
   template <typename T>
   static bool store(THD *thd, T *object);

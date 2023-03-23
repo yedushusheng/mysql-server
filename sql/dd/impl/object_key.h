@@ -34,11 +34,13 @@ class Raw_table;
 
 ///////////////////////////////////////////////////////////////////////////
 
-/** Note:map中存放的对象包括Object_key和Element_cache 
- * Element_cache是对数据字典对象的一层封装，目的在于可以统一管理所有类型的数据字典对象。
+/** Note:设置访问Object的Object_key
+ * map中存放的对象包括Object_key和Element_cache 
+ * Element_cache是对数据字典对象的一层封装,目的在于可以统一管理所有类型的数据字典对象。
 */
 class Object_key {
  public:
+  // Note:设置访问对象Object(比如table)的key(比如table_name)
   virtual Raw_key *create_access_key(Raw_table *t) const = 0;
 
   virtual String_type str() const = 0;

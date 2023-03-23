@@ -37,7 +37,8 @@ namespace dd {
         inheritance hierarchy; thus, direct subclasses
         must inherit this class virtually.
 */
-
+/** Note:所有数据字典对象的基类
+*/
 class Weak_object {
  public:
   // XXX: temporary, debug-only.

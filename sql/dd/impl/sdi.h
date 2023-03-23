@@ -207,6 +207,10 @@ inline bool deserialize(THD *thd, const Sdi_type &sdi, Tablespace *tablespace) {
 
 /** @} End of group serialize_api */
 
+/** Note:SDI= Storing and Dropping
+ * 在缓存的Storage_adpter中操作持久层(磁盘)的时候使用
+ * SDI中封装了一系列磁盘持久化操作接口
+*/
 namespace sdi {
 
 /**

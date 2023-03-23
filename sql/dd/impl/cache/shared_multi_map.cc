@@ -73,6 +73,7 @@ Cache_element<T> *Shared_multi_map<T>::use_if_present(const K &key) {
 }
 
 // Remove an element from the map.
+// Note:从map中删除缓存元素
 template <typename T>
 void Shared_multi_map<T>::remove(Cache_element<T> *element, Autolocker *lock) {
   mysql_mutex_assert_owner(&m_lock);

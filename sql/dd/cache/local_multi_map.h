@@ -48,12 +48,15 @@ class Cache_element;
   @tparam  T  Dictionary object type.
 */
 
-/** Note:多级缓存:一级缓存
- * 为了避免每次对元数据对象的访问都需要去持久存储中读取多个表的数据，使生成的元数据内存对象能够复用，data dictionary实现了两级缓存的架构，
- * 第一级是client local独享的，核心数据结构为Local_multi_map，用于加速在当前线程中对于相同对象的重复访问，同时在当前线程涉及对DD对象的修改（DDL）时管理committed、uncommitted、dropped几种状态的对象。
- * 第二级就是比较常见的多线程共享的缓存，核心数据结构为Shared_multi_map，包含着所有线程都可以访问到其中的对象，所以会做并发控制的处理。
+/** Note:局部缓存实现
+ * 继承自Multi_map_base,共享缓存在shared_multi_map.h中定义
  * 
- * 两级缓存的底层实现很统一，都是基于hash map的，目前的实现是std::map。
+ * 多级缓存:一级缓存
+ * 为了避免每次对元数据对象的访问都需要去持久存储中读取多个表的数据,使生成的元数据内存对象能够复用,data dictionary实现了两级缓存的架构,
+ * 第一级是client local独享的,核心数据结构为Local_multi_map,用于加速在当前线程中对于相同对象的重复访问,同时在当前线程涉及对DD对象的修改（DDL）时管理committed、uncommitted、dropped几种状态的对象。
+ * 第二级就是比较常见的多线程共享的缓存,核心数据结构为Shared_multi_map,包含着所有线程都可以访问到其中的对象,所以会做并发控制的处理。
+ * 
+ * 两级缓存的底层实现很统一,都是基于hash map的,目前的实现是std::map。
  * Local_multi_map和Shared_multi_map都是派生于Multi_map_base。
 */
 template <typename T>

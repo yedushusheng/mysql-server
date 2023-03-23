@@ -2485,6 +2485,40 @@ bool Dictionary_client::drop(const T *object) {
 }
 
 // Store a new dictionary object.
+/** Note:外部接口
+ * 入参是Object对象
+ * 这里是存储一个数据字典对象,通过调用存储引擎接口完成
+ * 
+ * 调用:
+ * #0  dd::Raw_record::store (this=0x7f4f2c037ce0, field_no=34, v=0, is_null=false) at /sql/dd/impl/raw/raw_record.h:73
+ * #1  0x0000000006bb5e56 in dd::Table_impl::store_attributes (this=0x7f4f2c020930, r=0x7f4f2c037ce0) at /sql/dd/impl/types/table_impl.cc:491
+ * #2  0x0000000006bedb87 in dd::Weak_object_impl_<true>::store (this=0x7f4f2c020930, otx=0x7f4fb04f1710)
+    at /sql/dd/impl/types/weak_object_impl.cc:122
+ * #3  0x0000000006a1086c in dd::cache::Storage_adapter::store<dd::Table> (thd=0x7f4f3c019f10, object=0x7f4f2c020c10)
+    at /sql/dd/impl/cache/storage_adapter.cc:335
+ * #4  0x000000000681de25 in dd::cache::Dictionary_client::store<dd::Table> (this=0x7f4f3c01d9f0, object=0x7f4f2c020c10)
+    at /sql/dd/impl/cache/dictionary_client.cc:2578
+ * #5  0x00000000042bca3c in rea_create_base_table (thd=0x7f4f3c019f10, path=0x7f4fb04f2d50 "./test/tx1", sch_obj=..., db=0x7f4f2c027a28 "test", 
+    table_name=0x7f4f2c026da8 "tx1", create_info=0x7f4fb04f34e0, create_fields=..., keys=1, key_info=0x7f4f2c029898, keys_onoff=Alter_info::ENABLE, fk_keys=0, 
+    fk_key_info=0x7f4f2c029978, check_cons_spec=0x7f4fb04f3400, file=0x7f4f2c027fe8, no_ha_table=false, do_not_store_in_dd=false, part_info=0x0, 
+    binlog_to_trx_cache=0x7f4fb04f316f, table_def_ptr=0x7f4fb04f2f60, post_ddl_ht=0x7f4fb04f3160) at /sql/sql_table.cc:1096
+ * #6  0x00000000042e6075 in create_table_impl (thd=0x7f4f3c019f10, schema=..., db=0x7f4f2c027a28 "test", table_name=0x7f4f2c026da8 "tx1", 
+    error_table_name=0x7f4f2c026da8 "tx1", path=0x7f4fb04f2d50 "./test/tx1", create_info=0x7f4fb04f34e0, alter_info=0x7f4fb04f3340, internal_tmp_table=false, 
+    select_field_count=0, find_parent_keys=true, no_ha_table=false, do_not_store_in_dd=false, is_trans=0x7f4fb04f316f, key_info=0x7f4fb04f2f80, key_count=0x7f4fb04f2f7c, 
+    keys_onoff=Alter_info::ENABLE, fk_key_info=0x7f4fb04f2f70, fk_key_count=0x7f4fb04f2f6c, existing_fk_info=0x0, existing_fk_count=0, existing_fk_table=0x0, 
+    fk_max_generated_name_number=0, table_def=0x7f4fb04f2f60, post_ddl_ht=0x7f4fb04f3160) at /sql/sql_table.cc:8916
+ * #7  0x00000000042e7c1d in mysql_create_table_no_lock (thd=0x7f4f3c019f10, db=0x7f4f2c027a28 "test", table_name=0x7f4f2c026da8 "tx1", create_info=0x7f4fb04f34e0, 
+    alter_info=0x7f4fb04f3340, select_field_count=0, find_parent_keys=true, is_trans=0x7f4fb04f316f, post_ddl_ht=0x7f4fb04f3160)
+    at /sql/sql_table.cc:9175
+ * #8  0x00000000042eee79 in mysql_create_table (thd=0x7f4f3c019f10, create_table=0x7f4f2c0273e8, create_info=0x7f4fb04f34e0, alter_info=0x7f4fb04f3340)
+    at /sql/sql_table.cc:10036
+ * #9  0x000000000400a7e8 in Sql_cmd_create_table::execute (this=0x7f4f2c027ce0, thd=0x7f4f3c019f10) at /sql/sql_cmd_ddl_table.cc:428
+ * #10 0x0000000004148e9a in mysql_execute_command (thd=0x7f4f3c019f10, first_level=true) at /sql/sql_parse.cc:3645
+ * #11 0x0000000004154c8f in dispatch_sql_command (thd=0x7f4f3c019f10, parser_state=0x7f4fb04f4cf0, update_userstat=false)
+    at /sql/sql_parse.cc:5346
+ * #12 0x000000000413dc9b in dispatch_command (thd=0x7f4f3c019f10, com_data=0x7f4fb04f5e90, command=COM_QUERY) at /sql/sql_parse.cc:1958
+ * #13 0x0000000004139c4f in do_command (thd=0x7f4f3c019f10) at /sql/sql_parse.cc:1404
+*/
 template <typename T>
 bool Dictionary_client::store(T *object) {
 #ifndef DBUG_OFF
@@ -2512,9 +2546,11 @@ bool Dictionary_client::store(T *object) {
 
   // Check proper MDL lock.
   DBUG_ASSERT(MDL_checker::is_write_locked(m_thd, object));
+  // Note:调用存储引擎接口实现数据持久化
   if (Storage_adapter::store(m_thd, object)) return true;
 
   DBUG_ASSERT(object->id() != INVALID_OBJECT_ID);
+  // Note:注册对象到缓存中
   register_uncommitted_object(object->clone());
   return false;
 }
@@ -2624,6 +2660,13 @@ bool Dictionary_client::update(T *new_object) {
   return false;
 }
 
+/** Note:外部接口
+ * 存储一个对象的时候,将不在缓存中的新对象加入到Cache_element中,
+ * 加入这个map之后就可以被局部缓存和全局缓存使用了
+ * 
+ * 调用:
+ * Dictionary_client::store
+*/
 template <typename T>
 void Dictionary_client::register_uncommitted_object(T *object) {
   Cache_element<typename T::Cache_partition> *element = nullptr;
@@ -2657,6 +2700,7 @@ void Dictionary_client::register_uncommitted_object(T *object) {
   element = new Cache_element<typename T::Cache_partition>();
   element->set_object(object);
   element->recreate_keys();
+  // Note:没有提交(即还没完成存储引擎层持久化)的缓存对象暂存
   m_registry_uncommitted.put(element);
 }
 

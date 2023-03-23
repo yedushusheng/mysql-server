@@ -64,7 +64,8 @@ enum class enum_table_type {
         inheritance hierarchy; thus, direct subclasses
         must inherit this class virtually.
 */
-
+/** Note:表和视图的抽象基类
+*/
 class Abstract_table : virtual public Entity_object {
  public:
   typedef Abstract_table_impl Impl;

@@ -46,7 +46,9 @@ namespace cache {
   @tparam  E  Element type (a Cache_element wrapping some dictionary
               object type).
 */
-
+/** Note:控制缓存淘汰的算法(LRU算法)
+ * 在该链表中第一个元素是最近使用的,当元素不被使用的时候移除
+*/
 template <typename E>
 class Free_list {
  private:
