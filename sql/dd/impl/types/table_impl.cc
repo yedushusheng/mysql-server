@@ -425,7 +425,7 @@ bool Table_impl::drop_children(Open_dictionary_tables_ctx *otx) const {
 
 /////////////////////////////////////////////////////////////////////////
 
-/** Note:对外接口
+/** Note:外部接口
  * 重新加载table属性 
  */
 bool Table_impl::restore_attributes(const Raw_record &r) {

@@ -8535,7 +8535,9 @@ void innobase_get_multi_value(const TABLE *mysql_table, ulint f_idx,
 /** Stores a row in an InnoDB database, to the table specified in this
  handle.
  @return error code */
-
+/** Note:外部接口
+ * innodb层写记录
+*/
 int ha_innobase::write_row(uchar *record) /*!< in: a row in MySQL format */
 {
   dberr_t error;
@@ -13488,6 +13490,9 @@ template int create_table_info_t::create_table_update_global_dd<dd::Table>(
 template int create_table_info_t::create_table_update_global_dd<dd::Partition>(
     dd::Partition *);
 
+/** Note:内部函数
+ * 在StorageEngine(SE)中创建物理文件,并记录创建日志到DDL_LOG表中
+*/
 template <typename Table>
 int innobase_basic_ddl::create_impl(THD *thd, const char *name, TABLE *form,
                                     HA_CREATE_INFO *create_info, Table *dd_tab,
@@ -13535,10 +13540,12 @@ int innobase_basic_ddl::create_impl(THD *thd, const char *name, TABLE *form,
     goto cleanup;
   }
 
+  // Note:更新数据字典
   if ((error = info.create_table_update_global_dd(dd_tab))) {
     goto cleanup;
   }
-
+  
+  // Note:创建文件目录
   error = info.create_table_update_dict();
 
   if (evictable && !(info.is_temp_table() || info.is_intrinsic_temp_table())) {
@@ -14157,7 +14164,10 @@ static bool dd_is_only_column(const dd::Index *index,
 @param[in,out]	dd_table	data dictionary cache object
 @return error number
 @retval 0 on success */
-/** Note:该函数将会为Innodb存储引擎创建它自己需要的系统列。
+/** Note:外部接口
+ * 数据字典sql/dd/dd_table.cc调用
+ * 
+ * 该函数将会为Innodb存储引擎创建它自己需要的系统列。
  * 实际上就是把原来Innodb自己的系统表统一到DD中。
 */
 int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
@@ -14476,6 +14486,7 @@ at statement commit time.
 @return error number
 @retval 0 on success */
 /** Note:InnoDB创建表
+ * 在StorageEngine(SE)中创建物理文件,并记录创建日志到DDL_LOG表中
  * Sql_cmd_ddl_table.cc/Sql_cmd_create_table::execute
  * ->sql_table.cc/mysql_create_table
  * 		->sql_table.cc/mysql_create_table_no_lock
@@ -14505,6 +14516,7 @@ int ha_innobase::create(const char *name, TABLE *form,
   dict_sys mutex protection, and could be changed while creating the
   table. So we read the current value here and make all further
   decisions based on this. */
+  // Note:create table具体实现
   return (innobase_basic_ddl::create_impl(ha_thd(), name, form, create_info,
                                           table_def, srv_file_per_table, true,
                                           false, 0, 0));

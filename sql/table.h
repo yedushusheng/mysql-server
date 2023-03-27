@@ -177,6 +177,8 @@ enum class Ident_name_check { OK, WRONG, TOO_LONG };
 
 /*************************************************************************/
 
+/** Note:创建对象(database,view,event...)上下文的父类
+*/
 /**
  Object_creation_ctx -- interface for creation context of database objects
  (views, stored routines, events, triggers). Creation context -- is a set
@@ -668,7 +670,9 @@ struct Key_name {
 */
 
 /** NOTE:代表表的元数据,例如字段定义,索引定义等等(TABLE代表一个打开的表实例)
- * TABLE_SHARE用来代表数据库的元数据,frm文件是TABLE_SHARE的永续存储,对象的实例从frm文件构建
+ * TABLE_SHARE用来代表数据库的元数据
+ * frm文件是TABLE_SHARE的永续存储,对象的实例从frm文件构建
+ * 
  * TABLE_SHARE用来在不同表TABLE对象之间共享
  *                  Item
  *                   |
@@ -1551,6 +1555,21 @@ struct TABLE {
     flagged in the read and write sets.
     @c TABLE::mark_columns_per_binlog_row_image for additional details.
    */
+  /** Note:
+   * 设置优化器打算读取的所有列.
+   * 这有两个目的:
+   * 1.告诉存储引擎SE它需要哪些填充列.
+   * (特别是NDB在这里可以节省很多带宽)
+   * 2.函数需要存储和加载的行数据.
+   * 比如hash join或文件排序,需要知道保留哪些列.
+   * 
+   * 解析时设置;每个得到解决的Field,设置自己在read set中的位.
+   * 在某些情况下,我们会在各个阶段切换读取的read set.
+   * 请注意,它是一个指针.
+   * 
+   * 此外,出于二进制日志记录的目的,位图根据@@binlog_row_image配置进行设置.
+   * 因此,出于记录目的,优化器指定的一些附加字段可能是在read set/write set中标记.
+  */
   MY_BITMAP *read_set{nullptr};
 
   MY_BITMAP *write_set{nullptr};

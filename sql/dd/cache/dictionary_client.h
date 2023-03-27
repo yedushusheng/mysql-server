@@ -255,6 +255,10 @@ class Dictionary_client {
 
  private:
   std::vector<Entity_object *> m_uncached_objects;  // Objects to be deleted.
+  /** Note:分别存储提交,未提交,删除的对象
+   * 这里在客户端访问过程中会经常用到,这些对象是会缓存Cache_element对象
+   * 然后这些对象最终是由局部缓存和全局缓存负责管理
+  */
   Object_registry m_registry_committed;    // Registry of committed objects.
   Object_registry m_registry_uncommitted;  // Registry of uncommitted objects.
   Object_registry m_registry_dropped;      // Registry of dropped objects.

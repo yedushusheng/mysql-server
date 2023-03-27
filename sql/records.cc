@@ -177,6 +177,9 @@ AccessPath *create_table_access_path(THD *thd, TABLE *table, QEP_TAB *qep_tab,
   return path;
 }
 
+/** Note:外部接口
+ * 为结果设置迭代器
+*/
 unique_ptr_destroy_only<RowIterator> init_table_iterator(
     THD *thd, TABLE *table, QEP_TAB *qep_tab, bool ignore_not_found_rows,
     bool count_examined_rows) {
@@ -207,6 +210,7 @@ unique_ptr_destroy_only<RowIterator> init_table_iterator(
         ignore_not_found_rows, /*has_null_flags=*/false,
         /*examined_rows=*/nullptr);
   } else {
+    // Note:通过AccessPath获取访问路径的迭代器
     AccessPath *path =
         create_table_access_path(thd, table, qep_tab, count_examined_rows);
     iterator = CreateIteratorFromAccessPath(thd, path,

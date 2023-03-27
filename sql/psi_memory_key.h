@@ -23,6 +23,9 @@
 #ifndef PSI_MEMORY_KEY_INCLUDED
 #define PSI_MEMORY_KEY_INCLUDED
 
+/** Note:存储内存key
+ * 要检测内存,必须使用@c register_memory获取内存密钥.
+*/
 /**
   Instrumented memory key.
   To instrument memory, a memory key must be obtained using @c register_memory.

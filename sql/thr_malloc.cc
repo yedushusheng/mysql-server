@@ -42,6 +42,17 @@ using std::min;
 
 extern "C" void sql_alloc_error_handler(void);
 
+/** Note:MySQL Server层MEM_ROOT内存管理
+ * 调用:
+ * init_sql_alloc
+ * -> init_alloc_root
+ *  -> my_malloc
+ *    -> my_raw_malloc
+ *      -> malloc
+ * Server层内存分配使用MEM_ROOT统一管理,但是每个线程对应一个内存管理结构体
+ * 这里是通过PSI_memory_key区别不同线程的内存
+ * 这个与InnoDB存储引擎中采用一个Innodb_buffer_pool管理不同,Server层更复杂
+*/
 void init_sql_alloc(PSI_memory_key key, MEM_ROOT *mem_root, size_t block_size,
                     size_t pre_alloc) {
   init_alloc_root(key, mem_root, block_size, pre_alloc);

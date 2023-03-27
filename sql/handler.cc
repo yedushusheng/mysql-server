@@ -899,10 +899,14 @@ void ha_end() {
 static bool dropdb_handlerton(THD *, plugin_ref plugin, void *path) {
   handlerton *hton = plugin_data<handlerton *>(plugin);
   if (hton->state == SHOW_OPTION_YES && hton->drop_database)
+    // Note:具体的存储引擎完成删除database
     hton->drop_database(hton, (char *)path);
   return false;
 }
 
+/** Note:外部接口
+ * drop database
+*/
 void ha_drop_database(char *path) {
   plugin_foreach(nullptr, dropdb_handlerton, MYSQL_STORAGE_ENGINE_PLUGIN, path);
 }
@@ -940,6 +944,9 @@ static bool kill_handlerton(THD *thd, plugin_ref plugin, void *) {
   return false;
 }
 
+/** Note:外部接口
+ * 处理server与engine的连接(kill connection)
+*/
 void ha_kill_connection(THD *thd) {
   plugin_foreach(thd, kill_handlerton, MYSQL_STORAGE_ENGINE_PLUGIN, nullptr);
 }
@@ -1362,6 +1369,9 @@ static int prepare_one_ht(THD *thd, handlerton *ht) {
   @retval
     1   error, transaction was rolled back
 */
+/** Note:外部接口
+ * XA事务处理:xa prepare
+*/
 int ha_xa_prepare(THD *thd) {
   int error = 0;
   Transaction_ctx *trn_ctx = thd->get_transaction();
@@ -1585,7 +1595,8 @@ std::pair<int, bool> commit_owned_gtids(THD *thd, bool all) {
     stored functions or triggers. So we simply do nothing now.
     TODO: This should be fixed in later ( >= 5.1) releases.
 */
-
+/** Note:内部函数
+*/
 int ha_commit_trans(THD *thd, bool all, bool ignore_global_read_lock) {
   int error = 0;
   THD_STAGE_INFO(thd, stage_waiting_for_handler_commit);
@@ -1852,7 +1863,9 @@ end:
                    True by default, otherwise, does not execute
                    the after_commit hook in the function.
 */
-
+/** Note:外部接口
+ * 
+*/
 int ha_commit_low(THD *thd, bool all, bool run_after_commit) {
   int error = 0;
   Transaction_ctx *trn_ctx = thd->get_transaction();
@@ -1984,6 +1997,8 @@ err:
   return error;
 }
 
+/** Note:外部接口
+*/
 int ha_rollback_low(THD *thd, bool all) {
   Transaction_ctx *trn_ctx = thd->get_transaction();
   int error = 0;
@@ -2148,6 +2163,8 @@ int ha_rollback_trans(THD *thd, bool all) {
   @retval 0      - Success
   @retval non-0  - Failure
 */
+/** Note:外部接口
+*/
 int ha_commit_attachable(THD *thd) {
   int error = 0;
   Transaction_ctx *trn_ctx = thd->get_transaction();
@@ -2213,6 +2230,8 @@ int ha_commit_attachable(THD *thd) {
   @return true  - It is safe to release MDL locks.
           false - If it is not.
 */
+/** Note:外部接口
+*/
 bool ha_rollback_to_savepoint_can_release_mdl(THD *thd) {
   Ha_trx_info *ha_info;
   Transaction_ctx *trn_ctx = thd->get_transaction();
@@ -2238,6 +2257,8 @@ bool ha_rollback_to_savepoint_can_release_mdl(THD *thd) {
   return true;
 }
 
+/** Note:外部接口
+*/
 int ha_rollback_to_savepoint(THD *thd, SAVEPOINT *sv) {
   int error = 0;
   Transaction_ctx *trn_ctx = thd->get_transaction();
@@ -2301,6 +2322,8 @@ int ha_rollback_to_savepoint(THD *thd, SAVEPOINT *sv) {
   return error;
 }
 
+/** Note:外部接口
+*/
 int ha_prepare_low(THD *thd, bool all) {
   int error = 0;
   Transaction_ctx::enum_trx_scope trx_scope =
@@ -2339,6 +2362,8 @@ int ha_prepare_low(THD *thd, bool all) {
   according to the sql standard (ISO/IEC 9075-2:2003)
   section "4.33.4 SQL-statements and transaction states",
   SAVEPOINT is *not* transaction-initiating SQL-statement
+*/
+/** Note:外部接口
 */
 int ha_savepoint(THD *thd, SAVEPOINT *sv) {
   int error = 0;
@@ -2383,6 +2408,8 @@ int ha_savepoint(THD *thd, SAVEPOINT *sv) {
   return error;
 }
 
+/** Note:外部接口
+*/
 int ha_release_savepoint(THD *thd, SAVEPOINT *sv) {
   int error = 0;
   Ha_trx_info *ha_info = sv->ha_list;
@@ -2424,6 +2451,8 @@ static bool snapshot_handlerton(THD *thd, plugin_ref plugin, void *arg) {
   return false;
 }
 
+/** Note:外部接口
+*/
 int ha_start_consistent_snapshot(THD *thd) {
   bool warn = true;
 
@@ -2525,6 +2554,9 @@ class Ha_delete_table_error_handler : public Internal_error_handler {
   @return  0 - in case of success, non-0 in case of failure, ENOENT
            if the file doesn't exists.
 */
+/** Note:外部接口
+ * 处理drop table
+*/
 int ha_delete_table(THD *thd, handlerton *table_type, const char *path,
                     const char *db, const char *alias,
                     const dd::Table *table_def, bool generate_warning) {
@@ -2548,6 +2580,7 @@ int ha_delete_table(THD *thd, handlerton *table_type, const char *path,
 
   path = get_canonical_filename(file, path, tmp_path);
 
+  // Note:handler接口处理
   if ((error = file->ha_delete_table(path, table_def)) && generate_warning) {
     /*
       Because file->print_error() use my_error() to generate the error message
@@ -2781,7 +2814,8 @@ PSI_table_share *handler::ha_table_share_psi(const TABLE_SHARE *share) const {
   @retval >0    Error.
   @retval  0    Success.
 */
-
+/** Note:外部接口
+*/
 int handler::ha_open(TABLE *table_arg, const char *name, int mode,
                      int test_if_locked, const dd::Table *table_def) {
   int error;
@@ -2851,7 +2885,8 @@ int handler::ha_open(TABLE *table_arg, const char *name, int mode,
     @retval 0     Success
     @retval != 0  Error (error code returned)
 */
-
+/** Note:外部接口
+*/
 int handler::ha_close(void) {
   DBUG_TRACE;
 #ifdef HAVE_PSI_TABLE_INTERFACE
@@ -2925,7 +2960,10 @@ int handler::ha_index_end() {
     @retval 0     Success
     @retval != 0  Error (error code returned)
 */
-
+/** Note:内部函数
+ * rnd=random
+ * 随机扫描表的时候初始化
+*/
 int handler::ha_rnd_init(bool scan) {
   DBUG_EXECUTE_IF("ha_rnd_init_fail", return HA_ERR_TABLE_DEF_CHANGED;);
   int result;
@@ -2944,7 +2982,8 @@ int handler::ha_rnd_init(bool scan) {
     @retval 0     Success
     @retval != 0  Error (error code returned)
 */
-
+/** Note:内部函数
+*/
 int handler::ha_rnd_end() {
   DBUG_TRACE;
   /* SQL HANDLER function can call this without having it locked. */
@@ -3101,6 +3140,9 @@ int handler::sample_next(void *scan_ctx MY_ATTRIBUTE((unused)), uchar *buf) {
   return res;
 }
 
+/** Note:外部接口
+ * 处理每一行record
+*/
 int handler::records(ha_rows *num_rows) {
   if (ha_table_flags() & HA_COUNT_ROWS_INSTANT) {
     *num_rows = stats.records;
@@ -3111,6 +3153,7 @@ int handler::records(ha_rows *num_rows) {
   ha_rows rows = 0;
   start_psi_batch_mode();
 
+  // Note:随机读初始化
   if (!(error = ha_rnd_init(true))) {
     while (!table->in_use->killed) {
       DBUG_EXECUTE_IF("bug28079850", table->in_use->killed = THD::KILL_QUERY;);
@@ -3135,6 +3178,9 @@ int handler::records(ha_rows *num_rows) {
   return (error != HA_ERR_END_OF_FILE) ? error : ha_rnd_end_error;
 }
 
+/** Note:外部接口
+ * 使用index扫描表
+*/
 int handler::records_from_index(ha_rows *num_rows, uint index) {
   if (ha_table_flags() & HA_COUNT_ROWS_INSTANT) {
     *num_rows = stats.records;
@@ -3146,6 +3192,7 @@ int handler::records_from_index(ha_rows *num_rows, uint index) {
   uchar *buf = table->record[0];
   start_psi_batch_mode();
 
+  // Note:索引扫描初始化
   if (!(error = ha_index_init(index, false))) {
     if (!(error = ha_index_first(buf))) {
       rows = 1;
@@ -3228,7 +3275,9 @@ int handler::handle_records_error(int error, ha_rows *num_rows) {
   ha_index_read_map is on the same index as the previous ha_index_scan.
   This is particularly used in conjunction with multi read ranges.
 */
-
+/** Note:内部函数
+ * 通过部分索引读取部分数据
+*/
 int handler::ha_index_read_map(uchar *buf, const uchar *key,
                                key_part_map keypart_map,
                                enum ha_rkey_function find_flag) {
@@ -3252,6 +3301,8 @@ int handler::ha_index_read_map(uchar *buf, const uchar *key,
   return result;
 }
 
+/** Note:外部接口
+*/
 int handler::ha_index_read_last_map(uchar *buf, const uchar *key,
                                     key_part_map keypart_map) {
   int result;
@@ -3278,7 +3329,16 @@ int handler::ha_index_read_last_map(uchar *buf, const uchar *key,
 
   @see handler::ha_index_read_map.
 */
-
+/** Note:外部接口
+ * 初始化一个索引并且读取数据
+ * 可以是单主键和联合主键,二者处理有所不同:
+ * 1.单主键
+ * table->field[PK]->store();
+ * table_->file->ha_index_read_idx_map(table->record[0], 1, table->field[PK]->field_ptr(), HA_WHOLE_KEY, HA_READ_KEY_EXACT);
+ * 2.联合主键
+ * key_copy(user_key, table->record[0], table->key_info, table->key_info->key_length);
+ * table->file->ha_index_read_idx_map(table->record[0], 0, user_key, HA_WHOLE_KEY, HA_READ_KEY_EXACT);
+*/
 int handler::ha_index_read_idx_map(uchar *buf, uint index, const uchar *key,
                                    key_part_map keypart_map,
                                    enum ha_rkey_function find_flag) {
@@ -3472,6 +3532,8 @@ int handler::ha_index_next_same(uchar *buf, const uchar *key, uint keylen) {
   @note Implementation only calls other handler functions, so there is no need
         to update generated columns nor set table status.
 */
+/** Note:外部接口
+*/
 int handler::ha_read_first_row(uchar *buf, uint primary_key) {
   int error;
   DBUG_TRACE;
@@ -3502,6 +3564,8 @@ int handler::ha_read_first_row(uchar *buf, uint primary_key) {
   return error;
 }
 
+/** Note:外部接口
+*/
 int handler::ha_index_read_pushed(uchar *buf, const uchar *key,
                                   key_part_map keypart_map) {
   DBUG_TRACE;
@@ -3518,6 +3582,8 @@ int handler::ha_index_read_pushed(uchar *buf, const uchar *key,
   return result;
 }
 
+/** Note:外部接口
+*/
 int handler::ha_index_next_pushed(uchar *buf) {
   DBUG_TRACE;
 
@@ -3689,6 +3755,9 @@ inline ulonglong prev_insert_id(ulonglong nr,
 #define AUTO_INC_DEFAULT_NB_MAX_BITS 16
 #define AUTO_INC_DEFAULT_NB_MAX ((1 << AUTO_INC_DEFAULT_NB_MAX_BITS) - 1)
 
+/** Note:外部接口
+ * 自增列
+*/
 int handler::update_auto_increment() {
   ulonglong nr, nb_reserved_values = 0;
   bool append = false;
@@ -4557,6 +4626,9 @@ bool handler::get_foreign_dup_key(char *, uint, char *, uint) {
   return (false);
 }
 
+/** Note:内部函数
+ * 删除表
+*/
 int handler::delete_table(const char *name, const dd::Table *) {
   int saved_error = 0;
   int error = 0;
@@ -4607,6 +4679,8 @@ int handler::rename_table(const char *from, const char *to,
   return error;
 }
 
+/** Note:内部函数
+*/
 void handler::drop_table(const char *name) {
   close();
   delete_table(name, nullptr);
@@ -4706,7 +4780,9 @@ int handler::ha_repair(THD *thd, HA_CHECK_OPT *check_opt) {
 
   @param rows  Estimated rows to insert
 */
-
+/** Note:外部接口
+ * 批量插入
+*/
 void handler::ha_start_bulk_insert(ha_rows rows) {
   DBUG_TRACE;
   DBUG_ASSERT(table_share->tmp_table != NO_TMP_TABLE || m_lock_type == F_WRLCK);
@@ -4734,7 +4810,9 @@ int handler::ha_end_bulk_insert() {
 
   @sa handler::bulk_update_row()
 */
-
+/** Note:外部接口
+ * 批量更新
+*/
 int handler::ha_bulk_update_row(const uchar *old_data, uchar *new_data,
                                 uint *dup_key_found) {
   DBUG_ASSERT(table_share->tmp_table != NO_TMP_TABLE || m_lock_type == F_WRLCK);
@@ -4748,7 +4826,9 @@ int handler::ha_bulk_update_row(const uchar *old_data, uchar *new_data,
 
   @sa handler::delete_all_rows()
 */
-
+/** Note:外部接口
+ * 批量删除
+*/
 int handler::ha_delete_all_rows() {
   DBUG_ASSERT(table_share->tmp_table != NO_TMP_TABLE || m_lock_type == F_WRLCK);
   mark_trx_read_write();
@@ -4967,7 +5047,8 @@ int handler::ha_rename_table(const char *from, const char *to,
 
   @sa handler::delete_table()
 */
-
+/** Note:内部函数
+*/
 int handler::ha_delete_table(const char *name, const dd::Table *table_def) {
   DBUG_ASSERT(m_lock_type == F_UNLCK);
   mark_trx_read_write();
@@ -4980,7 +5061,8 @@ int handler::ha_delete_table(const char *name, const dd::Table *table_def) {
 
   @sa handler::drop_table()
 */
-
+/** Note:外部接口
+*/
 void handler::ha_drop_table(const char *name) {
   DBUG_ASSERT(m_lock_type == F_UNLCK);
   mark_trx_read_write();
@@ -4993,7 +5075,9 @@ void handler::ha_drop_table(const char *name) {
 
   @sa handler::create()
 */
-// Note:handler create table
+/** Note:內部函數
+ * handler create table
+*/
 int handler::ha_create(const char *name, TABLE *form, HA_CREATE_INFO *info,
                        dd::Table *table_def) {
   DBUG_ASSERT(m_lock_type == F_UNLCK);
@@ -5038,6 +5122,9 @@ bool handler::ha_get_se_private_data(dd::Table *dd_table, bool reset) {
   A storage engine may treat this hint any way it likes. NDB for example
   starts to commit every now and then automatically.
   This hint can be safely ignored.
+*/
+/** Note:外部接口
+ * 开启事务
 */
 int ha_enable_transaction(THD *thd, bool on) {
   int error = 0;
@@ -5135,7 +5222,7 @@ int handler::index_next_same(uchar *buf, const uchar *key, uint keylen) {
  * 		->sql_table.cc/mysql_create_table_no_lock
  * 			->sql_table.cc/create_table_impl
  * 				-> sql_table.cc/rea_create_base_table
- * 					->sql/dd/dd_table.cc/ create_table：数据字典创建表
+ * 					->sql/dd/dd_table.cc/create_table:数据字典创建表
  * 					->sql/handler.cc/ha_create_table
 */
 int ha_create_table(THD *thd, const char *path, const char *db,
@@ -5221,6 +5308,8 @@ err:
   @retval
    > 0  Error, table existed but could not be created
 */
+/** Note:外部接口
+*/
 int ha_create_table_from_engine(THD *thd, const char *db, const char *name) {
   int error;
   uchar *sdi_blob;
@@ -5300,7 +5389,8 @@ int ha_create_table_from_engine(THD *thd, const char *db, const char *name) {
   @retval true   An error is found
   @retval false  Success, check *exists
 */
-
+/** Note:外部接口
+*/
 bool ha_check_if_table_exists(THD *thd, const char *db, const char *name,
                               bool *exists) {
   uchar *frmblob = nullptr;
@@ -5363,7 +5453,8 @@ static bool check_if_system_table(const char *db, const char *table_name,
                                  and does not belong to engine specified
                                  in the command.
 */
-
+/** Note:外部接口
+*/
 bool ha_check_if_supported_system_table(handlerton *hton, const char *db,
                                         const char *table_name) {
   DBUG_TRACE;
@@ -5483,7 +5574,8 @@ static bool rm_tmp_tables_handlerton(THD *thd, plugin_ref plugin, void *files) {
                          the file it is also supposed to remove file from
                          this list.
 */
-
+/** Note:外部接口
+*/
 bool ha_rm_tmp_tables(THD *thd, List<LEX_STRING> *files) {
   return plugin_foreach(thd, rm_tmp_tables_handlerton,
                         MYSQL_STORAGE_ENGINE_PLUGIN, files);
@@ -5495,7 +5587,8 @@ bool ha_rm_tmp_tables(THD *thd, List<LEX_STRING> *files) {
   extensions. This implementation corresponds to default implementation
   of handler::delete_table() method.
 */
-
+/** Note:外部接口
+*/
 bool default_rm_tmp_tables(handlerton *hton, THD *, List<LEX_STRING> *files) {
   List_iterator<LEX_STRING> files_it(*files);
   LEX_STRING *file_path;
@@ -5540,6 +5633,8 @@ bool default_rm_tmp_tables(handlerton *hton, THD *, List<LEX_STRING> *files) {
 
 /**
   Init a key cache if it has not been initied before.
+*/
+/** Note:外部接口
 */
 int ha_init_key_cache(const char *, KEY_CACHE *key_cache) {
   DBUG_TRACE;
@@ -6242,7 +6337,9 @@ ha_rows handler::multi_range_read_info_const(
   @retval
     other Error or can't perform the requested scan
 */
-
+/** Note:内部函数
+ * MRR=multi range read
+*/
 ha_rows handler::multi_range_read_info(uint keyno, uint n_ranges, uint n_rows,
                                        uint *bufsz, uint *flags,
                                        Cost_estimate *cost) {
@@ -7243,6 +7340,8 @@ int handler::read_range_first(const key_range *start_key,
   return result;
 }
 
+/** Note:外部接口
+*/
 int handler::ha_read_range_first(const key_range *start_key,
                                  const key_range *end_key, bool eq_range,
                                  bool sorted) {
@@ -7262,6 +7361,8 @@ int handler::ha_read_range_first(const key_range *start_key,
   return result;
 }
 
+/** Note:外部接口
+*/
 int handler::ha_read_range_next() {
   int result;
   DBUG_TRACE;
@@ -7434,6 +7535,8 @@ static inline void move_key_field_offsets(const key_range *range,
              key_compare_result_on_equal is 0
   @retval  1 if the key is outside the range
 */
+/** Note:外部接口
+*/
 int handler::compare_key_in_buffer(const uchar *buf) const {
   DBUG_ASSERT(end_range != nullptr && (m_record_buffer == nullptr ||
                                        !m_record_buffer->is_out_of_range()));
@@ -7458,6 +7561,8 @@ int handler::compare_key_in_buffer(const uchar *buf) const {
   return cmp;
 }
 
+/** Note:内部函数
+*/
 int handler::index_read_idx_map(uchar *buf, uint index, const uchar *key,
                                 key_part_map keypart_map,
                                 enum ha_rkey_function find_flag) {
@@ -7751,6 +7856,8 @@ int binlog_log_row(TABLE *table, const uchar *before_record,
   return error ? HA_ERR_RBR_LOGGING_FAILED : 0;
 }
 
+/** Note:内部函数
+*/
 int handler::ha_external_lock(THD *thd, int lock_type) {
   int error;
   DBUG_TRACE;
@@ -7823,8 +7930,9 @@ int handler::ha_reset() {
   return retval;
 }
 
-/** Note:对外接口
+/** Note:外部接口
  * 写行数据
+ * 这里是使用table->record[0]更新,如果是update操作是使用table->record[1]更新table->record[0]
 */
 int handler::ha_write_row(uchar *buf) {
   int error;
@@ -7842,11 +7950,13 @@ int handler::ha_write_row(uchar *buf) {
       my_error(HA_ERR_CRASHED, MYF(ME_ERRORLOG), table_share->table_name.str);
       set_my_errno(HA_ERR_CRASHED); return HA_ERR_CRASHED;);
 
+  // Note:SE层写记录
   MYSQL_TABLE_IO_WAIT(PSI_TABLE_WRITE_ROW, MAX_KEY, error,
                       { error = write_row(buf); })
 
   if (unlikely(error)) return error;
 
+  // Note:写binlog
   if (unlikely((error = binlog_log_row(table, nullptr, buf, log_func))))
     return error; /* purecov: inspected */
 
@@ -7854,7 +7964,7 @@ int handler::ha_write_row(uchar *buf) {
   return 0;
 }
 
-/** Note:对外接口
+/** Note:外部接口
  * 更新行数据
 */
 int handler::ha_update_row(const uchar *old_data, uchar *new_data) {
@@ -7885,7 +7995,7 @@ int handler::ha_update_row(const uchar *old_data, uchar *new_data) {
   return 0;
 }
 
-/** Note:对外接口
+/** Note:外部接口
  * 删除行数据
 */
 int handler::ha_delete_row(const uchar *buf) {
@@ -7919,6 +8029,8 @@ int handler::ha_delete_row(const uchar *buf) {
   (table_flags() and HA_PRIMARY_KEY_REQUIRED_FOR_DELETE) is defined
   but we don't have a primary key
 */
+/** Note:外部接口
+*/
 void handler::use_hidden_primary_key() {
   /* fallback to use all columns in the table to identify row */
   table->use_all_columns();
@@ -7934,7 +8046,8 @@ void handler::use_hidden_primary_key() {
   @note
   If not a temp table, then LOCK_ha_data must be held.
 */
-
+/** Note:外部接口
+*/
 Handler_share *handler::get_ha_share_ptr() {
   DBUG_TRACE;
   DBUG_ASSERT(ha_share && table_share);
@@ -7955,7 +8068,8 @@ Handler_share *handler::get_ha_share_ptr() {
   @note
   If not a temp table, then LOCK_ha_data must be held.
 */
-
+/** Note:外部接口
+*/
 void handler::set_ha_share_ptr(Handler_share *arg_ha_share) {
   DBUG_TRACE;
   DBUG_ASSERT(ha_share);
@@ -7970,7 +8084,8 @@ void handler::set_ha_share_ptr(Handler_share *arg_ha_share) {
 /**
   Take a lock for protecting shared handler data.
 */
-
+/** Note:外部接口
+*/
 void handler::lock_shared_ha_data() {
   DBUG_ASSERT(table_share);
   if (table_share->tmp_table == NO_TMP_TABLE)
@@ -7980,7 +8095,8 @@ void handler::lock_shared_ha_data() {
 /**
   Release lock for protecting ha_share.
 */
-
+/** Note:外部接口
+*/
 void handler::unlock_shared_ha_data() {
   DBUG_ASSERT(table_share);
   if (table_share->tmp_table == NO_TMP_TABLE)
@@ -8220,6 +8336,8 @@ static bool my_eval_gcolumn_expr_helper(THD *thd, TABLE *table,
 }
 
 // Set se_private_id and se_private_data during upgrade
+/** Note:外部接口
+*/
 bool handler::ha_upgrade_table(THD *thd, const char *dbname,
                                const char *table_name, dd::Table *dd_table,
                                TABLE *table_arg) {
@@ -8241,7 +8359,8 @@ bool handler::ha_upgrade_table(THD *thd, const char *dbname,
 
    @return true in case of error, false otherwise.
 */
-
+/** Note:外部接口
+*/
 bool handler::my_prepare_gcolumn_template(THD *thd, const char *db_name,
                                           const char *table_name,
                                           my_gcolumn_template_callback_t myc,
@@ -8305,7 +8424,8 @@ bool handler::my_prepare_gcolumn_template(THD *thd, const char *db_name,
 
   @return true in case of error, false otherwise.
 */
-
+/** Note:外部接口
+*/
 bool handler::my_eval_gcolumn_expr_with_open(THD *thd, const char *db_name,
                                              const char *table_name,
                                              const MY_BITMAP *const fields,
@@ -8347,6 +8467,8 @@ bool handler::my_eval_gcolumn_expr_with_open(THD *thd, const char *db_name,
   return retval;
 }
 
+/** Note:外部接口
+*/
 bool handler::my_eval_gcolumn_expr(THD *thd, TABLE *table,
                                    const MY_BITMAP *const fields, uchar *record,
                                    const char **mv_data_ptr, ulong *mv_length) {
@@ -8357,12 +8479,16 @@ bool handler::my_eval_gcolumn_expr(THD *thd, TABLE *table,
   return res;
 }
 
+/** Note:内部函数
+*/
 bool handler::filter_dup_records() {
   DBUG_ASSERT(inited == INDEX && m_unique);
   position(table->record[0]);
   return m_unique->unique_add(ref);
 }
 
+/** Note:内部函数
+*/
 int handler::ha_extra(enum ha_extra_function operation) {
   if (operation == HA_EXTRA_ENABLE_UNIQUE_RECORD_FILTER) {
     // This operation should be called only for active multi-valued index
@@ -8443,7 +8569,9 @@ static bool notify_exclusive_mdl_helper(THD *thd, plugin_ref plugin,
   @return False - if notification was successful/lock can be acquired,
           True - if it has failed/lock should not be acquired.
 */
-
+/** Note:外部接口
+ * MDL锁
+*/
 bool ha_notify_exclusive_mdl(THD *thd, const MDL_key *mdl_key,
                              ha_notification_type notification_type,
                              bool *victimized) {
@@ -8469,6 +8597,9 @@ bool ha_notify_exclusive_mdl(THD *thd, const MDL_key *mdl_key,
   return false;
 }
 
+/** Note内部函数
+ * 具体存储引擎实现alter table的处理
+*/
 static bool notify_alter_table_helper(THD *thd, plugin_ref plugin, void *arg) {
   handlerton *hton = plugin_data<handlerton *>(plugin);
   if (hton->state == SHOW_OPTION_YES && hton->notify_alter_table) {
@@ -8499,7 +8630,8 @@ static bool notify_alter_table_helper(THD *thd, plugin_ref plugin, void *arg) {
                   proceed.
           True -  if it has failed/ALTER TABLE should fail.
 */
-
+/** Note:外部接口
+*/
 bool ha_notify_alter_table(THD *thd, const MDL_key *mdl_key,
                            ha_notification_type notification_type) {
   HTON_NOTIFY_PARAMS params(mdl_key, notification_type);
@@ -8531,6 +8663,8 @@ bool ha_notify_alter_table(THD *thd, const MDL_key *mdl_key,
   @param tx_isolation  The isolation level to be set.
   @param one_shot      True if the isolation level should be restored to
                        session default after finishing the transaction.
+*/
+/** Note:外部接口
 */
 bool set_tx_isolation(THD *thd, enum_tx_isolation tx_isolation, bool one_shot) {
   TX_TRACKER_GET(tst);
@@ -8568,6 +8702,9 @@ bool set_tx_isolation(THD *thd, enum_tx_isolation tx_isolation, bool one_shot) {
   return false;
 }
 
+/** Note:内部函数
+ * 恢复
+*/
 static bool post_recover_handlerton(THD *, plugin_ref plugin, void *) {
   handlerton *hton = plugin_data<handlerton *>(plugin);
 
@@ -8577,11 +8714,15 @@ static bool post_recover_handlerton(THD *, plugin_ref plugin, void *) {
   return false;
 }
 
+/** Note:外部接口
+*/
 void ha_post_recover(void) {
   (void)plugin_foreach(nullptr, post_recover_handlerton,
                        MYSQL_STORAGE_ENGINE_PLUGIN, nullptr);
 }
 
+/** Note:外部接口
+*/
 void handler::ha_set_primary_handler(handler *primary_handler) {
   DBUG_ASSERT((ht->flags & HTON_IS_SECONDARY_ENGINE) != 0);
   DBUG_ASSERT(primary_handler->table->s->has_secondary_engine());
@@ -8598,10 +8739,14 @@ void handler::ha_set_primary_handler(handler *primary_handler) {
   @retval true          If the name is reserved word.
   @retval false         If the name is not reserved word.
 */
+/** Note内部函数
+ * 判断database名称是否为关键字
+*/
 static bool is_reserved_db_name_handlerton(THD *, plugin_ref plugin,
                                            void *name) {
   handlerton *hton = plugin_data<handlerton *>(plugin);
   if (hton->state == SHOW_OPTION_YES && hton->is_reserved_db_name)
+    // Note:具体存储引擎判断
     return (hton->is_reserved_db_name(hton, (const char *)name));
   return false;
 }
@@ -8613,6 +8758,9 @@ static bool is_reserved_db_name_handlerton(THD *, plugin_ref plugin,
 
    @retval true    If the name is a reserved word.
    @retval false   If the name is not a reserved word.
+*/
+/** Note:外部接口
+ * 检查库名是否为StorageEngine的保留字
 */
 bool ha_check_reserved_db_name(const char *name) {
   return (plugin_foreach(nullptr, is_reserved_db_name_handlerton,

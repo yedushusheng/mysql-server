@@ -2609,6 +2609,7 @@ static bool mysql_uninstall_plugin(THD *thd, LEX_CSTRING name) {
   reap_plugins();
   mysql_mutex_unlock(&LOCK_plugin);
 
+  // Note:判断联合主键是否存在
   uchar user_key[MAX_KEY_LENGTH];
   table->use_all_columns();
   table->field[0]->store(name.str, name.length, system_charset_info);

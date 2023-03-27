@@ -116,7 +116,7 @@ static bool populate_table(THD *thd, LEX *lex) {
   return false;
 }
 
-/** Note:对外接口
+/** Note:外部接口
  * 执行各种SQL的入口
 */
 bool Sql_cmd_create_table::execute(THD *thd) {

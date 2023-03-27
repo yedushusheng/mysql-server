@@ -7160,6 +7160,11 @@ static bool update_generated_columns(TABLE *table, const MY_BITMAP *columns,
 
   @todo see below for potential conflict with Bug#21815348 .
  */
+/** Note:外部接口
+ * 评估必要的虚拟生成列.
+ * 这在从存储引擎读取一行后立即使用.
+ * @note 这对于存储生成的列不是必需的,因为它们是由存储引擎提供.
+*/
 bool update_generated_read_fields(uchar *buf, TABLE *table, uint active_index) {
   DBUG_TRACE;
   assert(table != nullptr && table->has_gcol());
@@ -7272,6 +7277,9 @@ void TABLE::mark_gcol_in_maps(const Field *field) {
   }
 }
 
+/** Note:内部函数
+ * 设置表中每个列的标志位
+*/
 void TABLE::column_bitmaps_set(MY_BITMAP *read_set_arg,
                                MY_BITMAP *write_set_arg) {
   read_set = read_set_arg;

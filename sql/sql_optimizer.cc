@@ -299,7 +299,7 @@ bool JOIN::alloc_indirection_slices() {
  *                -> make_join_readinfo
  *                -> make_tmp_tables_info
 */
-//NOTE:对外接口
+//NOTE:外部接口
 bool JOIN::optimize() {
   DBUG_TRACE;
 

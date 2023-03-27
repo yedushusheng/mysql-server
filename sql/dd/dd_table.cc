@@ -2220,6 +2220,7 @@ static bool fill_dd_table_from_create_info(
     since we want to create proper dd::Index_partition objects for such
     indexes.
   */
+  // Note:innodb存储引擎实现,
   if (file->get_extra_columns_and_keys(create_info, &create_fields, keyinfo,
                                        keys, tab_obj))
     return true;
