@@ -42,7 +42,16 @@ class Se_private_id_key;
 namespace tables {
 
 ///////////////////////////////////////////////////////////////////////////
-
+/** Note:对应的mysql系统表mysql.tables
+ * 这里是设置该系统表的字段信息,如果需要新增表的系统信息需要修改该类
+ * 
+ * sql/dd/dd_table.h:数据字典中表操作接口
+ * sql/dd/types/table.h:主要是表定义
+ * sql/dd/impl/types/table_impl.c:表实现
+ * sql/dd/impl/tables/tables.h:定义系统表mysql.tables
+ * 关联:
+ * tables的字段值是在table_impl.cc中加载属性信息的时候设置的
+*/
 class Tables : public Entity_object_table_impl {
  public:
   static const Tables &instance();

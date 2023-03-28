@@ -96,12 +96,14 @@ bool Weak_object_impl::store(Open_dictionary_tables_ctx *otx) {
     }
 
     std::unique_ptr<Raw_record> r;
+    // Note:设置对应的obj_key对应的record
     if (t->prepare_record_for_update(*obj_key, r)) return true;
 
     if (!r.get()) break;
 
     // Existing record found -- do an UPDATE.
 
+    // Note:加载属性信息,调用具体子类的
     if (this->store_attributes(r.get())) {
       my_error(ER_UPDATING_DD_TABLE, MYF(0), obj_table.name().c_str());
       return true;
@@ -114,10 +116,11 @@ bool Weak_object_impl::store(Open_dictionary_tables_ctx *otx) {
 
   // No existing record exists -- do an INSERT.
 
+  // Note:new record
   std::unique_ptr<Raw_new_record> r(t->prepare_record_for_insert());
 
   // Store attributes.
-
+  // Note:将属性信息存储到record
   if (this->store_attributes(r.get())) {
     my_error(ER_UPDATING_DD_TABLE, MYF(0), obj_table.name().c_str());
     return true;
@@ -125,6 +128,7 @@ bool Weak_object_impl::store(Open_dictionary_tables_ctx *otx) {
 
   DEBUG_SYNC(current_thd, "before_insert_into_dd");
 
+  // Note:存储引擎中插入数据(ha_write_row实现)
   if (r->insert()) return true;
 
   DBUG_EXECUTE_IF("weak_object_impl_store_fail_before_store_children", {

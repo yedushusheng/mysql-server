@@ -47,6 +47,10 @@ struct LEX;
 struct PS_PARAM;
 struct TABLE_LIST;
 union COM_DATA;
+/** Note:这个文件中的函数主要是两个作用:
+ * 1.封装了直接使用Server执行SQL的接口函数(调用sql_parse.cc)
+ * 2.预处理prepare的封装
+*/
 
 /**
   An interface that is used to take an action when
@@ -120,6 +124,7 @@ bool select_like_stmt_cmd_test(THD *thd, class Sql_cmd_dml *cmd,
 
 class Server_runnable {
  public:
+  // Note:Server执行SQL
   virtual bool execute_server_code(THD *thd) = 0;
   virtual ~Server_runnable();
 };
@@ -316,7 +321,7 @@ class Server_side_cursor;
 /**
   Prepared_statement: a statement that can contain placeholders.
 */
-
+// Note:预处理perpare
 class Prepared_statement final {
   enum flag_values { IS_IN_USE = 1, IS_SQL_PREPARE = 2 };
 

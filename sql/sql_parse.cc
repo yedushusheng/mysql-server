@@ -2729,7 +2729,11 @@ static inline void binlog_gtid_end_transaction(THD *thd) {
   @retval false       OK
   @retval true        Error
 */
-
+/** Note:外部接口
+ * 执行SQL
+ * 调用:
+ * sql_prepare.cc/Execute_sql_statement::execute_server_code
+*/
 int mysql_execute_command(THD *thd, bool first_level) {
   int res = false;
   LEX *const lex = thd->lex;

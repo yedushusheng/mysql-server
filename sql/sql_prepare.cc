@@ -2211,7 +2211,11 @@ Execute_sql_statement::Execute_sql_statement(LEX_STRING sql_text)
   affect the environment -- i.e. you  can run many
   executions without having to cleanup/reset THD in between.
 */
-
+/** Note:内部函数
+ * 调用解析器,执行器的接口执行一个sql
+ * 调用:
+ * Prepared_statement::execute_server_runnable
+*/
 bool Execute_sql_statement::execute_server_code(THD *thd) {
   sql_digest_state *parent_digest;
   PSI_statement_locker *parent_locker;
@@ -2230,6 +2234,7 @@ bool Execute_sql_statement::execute_server_code(THD *thd) {
   parent_locker = thd->m_statement_psi;
   thd->m_digest = nullptr;
   thd->m_statement_psi = nullptr;
+  // Note:解析sql
   error = parse_sql(thd, &parser_state, nullptr) || thd->is_error();
   thd->m_digest = parent_digest;
   thd->m_statement_psi = parent_locker;
@@ -2248,7 +2253,8 @@ bool Execute_sql_statement::execute_server_code(THD *thd) {
   */
   rewrite_query_if_needed(thd);
   log_execute_line(thd);
-
+  
+  // Note:执行sql
   error = mysql_execute_command(thd);
   thd->m_statement_psi = parent_locker;
 
@@ -3075,6 +3081,10 @@ reexecute:
   return error;
 }
 
+/** Note:内部函数
+ * 调用:
+ * Ed_connection::execute_direct
+*/
 bool Prepared_statement::execute_server_runnable(
     Server_runnable *server_runnable) {
   Query_arena arena_backup;
@@ -3093,6 +3103,7 @@ bool Prepared_statement::execute_server_runnable(
   thd->swap_query_arena(m_arena, &arena_backup);
   thd->stmt_arena = &m_arena;
 
+  // Note:执行sql
   error = server_runnable->execute_server_code(thd);
 
   thd->cleanup_after_query();
@@ -3604,7 +3615,9 @@ void Ed_connection::free_old_result() {
 /**
   A simple wrapper that uses a helper class to execute SQL statements.
 */
-
+/** Note:外部接口
+ * 直接执行sql
+*/
 bool Ed_connection::execute_direct(LEX_STRING sql_text) {
   Execute_sql_statement execute_sql_statement(sql_text);
   DBUG_PRINT("ed_query", ("%s", sql_text.str));
@@ -3624,7 +3637,9 @@ bool Ed_connection::execute_direct(LEX_STRING sql_text) {
 
   @param server_runnable A code fragment to execute.
 */
-
+/** Note:内部函数
+ * 直接执行sql
+*/
 bool Ed_connection::execute_direct(Server_runnable *server_runnable) {
   DBUG_TRACE;
 
@@ -3635,6 +3650,7 @@ bool Ed_connection::execute_direct(Server_runnable *server_runnable) {
   m_thd->push_diagnostics_area(&m_diagnostics_area);
 
   Prepared_statement stmt(m_thd);
+  // Note:调用Server接口执行
   bool rc = stmt.execute_server_runnable(server_runnable);
   m_thd->send_statement_status();
 

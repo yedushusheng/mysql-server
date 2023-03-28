@@ -406,12 +406,19 @@ bool Storage_adapter::store(THD *thd, T *object) {
   /** Note:切换上下文,包括更新系统表的时候关闭binlog、修改auto_increament_increament增量、设置一些相关变量等与修改DD相关的上下文。
   */
   Update_dictionary_tables_ctx ctx(thd);
-  ctx.otx.register_tables<T>();
+  ctx.otx.register_tables<T>();  
+  /** Note:注册入参类型
+   * 比如这里如果是需要持久化元数据到mysql.tables系统表
+   * 则这里的T就是tables,然后前面只需要初始化这个object即可
+  */
   DEBUG_SYNC(thd, "before_storing_dd_object");
 
   Open_dictionary_tables_error_handler error_handler;
   thd->push_internal_handler(&error_handler);
-  // Note:object->impl()->store 这里会将DD对象存入相关的系统表。具体比如表,列, 表空间是如何持久化到系统表中的。
+  /** Note:object->impl()->store 这里会将DD对象存入相关的系统表
+   * 具体比如表,列, 表空间是如何持久化到系统表中的
+   * 具体调用Table_impl::store_attributes,加载系统表的信息
+  */
   if (ctx.otx.open_tables() || object->impl()->store(&ctx.otx)) {
     DBUG_ASSERT(thd->is_system_thread() || thd->killed || thd->is_error());
     thd->pop_internal_handler();

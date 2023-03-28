@@ -1240,7 +1240,9 @@ static bool fill_dd_foreign_keys_from_create_fields(
   @return true  - On failure.
   @return false - On success.
 */
-
+/** Note:内部函数
+ * 设置表空间tablespace
+*/
 template <typename T>
 static bool fill_dd_tablespace_id_or_name(THD *thd, T *obj, handlerton *hton,
                                           const char *tablespace_name,
@@ -1431,7 +1433,9 @@ static void collect_partition_expr(const THD *thd, List<char> &field_list,
 
   @return false on success, else true.
 */
-
+/** Note:内部函数
+ * 根据create table的信息填充数据字典分区信息
+*/
 static bool fill_dd_partition_from_create_info(
     THD *thd, dd::Table *tab_obj, const HA_CREATE_INFO *create_info,
     const List<Create_field> &create_fields, partition_info *part_info) {
@@ -1987,6 +1991,9 @@ bool invalid_tablespace_usage(THD *thd, const dd::String_type &schema_name,
 }
 
 /** Fill dd::Table object from mysql_prepare_create_table() output. */
+/** Note:内部函数
+ * 从create table中的信息填充数据字典
+*/
 static bool fill_dd_table_from_create_info(
     THD *thd, dd::Table *tab_obj, const dd::String_type &table_name,
     const dd::String_type &schema_name, const HA_CREATE_INFO *create_info,
@@ -2206,6 +2213,7 @@ static bool fill_dd_table_from_create_info(
   }
 
   // Add tablespace definition.
+  // Note:设置表空间定义
   if (fill_dd_tablespace_id_or_name<dd::Table>(
           thd, tab_obj, create_info->db_type, create_info->tablespace,
           create_info->options & HA_LEX_CREATE_TMP_TABLE))
@@ -2220,12 +2228,15 @@ static bool fill_dd_table_from_create_info(
     since we want to create proper dd::Index_partition objects for such
     indexes.
   */
-  // Note:innodb存储引擎实现,
+  /** Note:innodb存储引擎实现
+   * 通过添加隐式列调整要创建的表的定义和存储引擎所需的索引
+  */
   if (file->get_extra_columns_and_keys(create_info, &create_fields, keyinfo,
                                        keys, tab_obj))
     return true;
 
   // Add partition definitions
+  // Note:填充数据字典分区信息
   if (fill_dd_partition_from_create_info(thd, tab_obj, create_info,
                                          create_fields, thd->work_part_info))
     return true;
@@ -2397,6 +2408,7 @@ std::unique_ptr<dd::Table> create_dd_user_table(
 }
 
 /** Note:外部接口
+ * 数据字典创建表的入口
  * 调用:
  * Sql_cmd_ddl_table.cc/Sql_cmd_create_table::execute
  * ->sql_table.cc/mysql_create_table

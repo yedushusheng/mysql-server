@@ -78,6 +78,7 @@ namespace dd {
  * #14 0x0000000004139c4f in do_command (thd=0x7f4f3c019f10) at /sql/sql_parse.cc:1404
 */
 Raw_record::Raw_record(TABLE *table) : m_table(table) {
+  // Note:使用bitmap优化
   bitmap_set_all(m_table->read_set);
 }
 

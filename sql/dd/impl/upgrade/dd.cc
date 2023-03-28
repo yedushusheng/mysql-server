@@ -899,6 +899,7 @@ bool update_object_ids(THD *thd, const std::set<String_type> &create_set,
     If mysql.tables has been modified, do the change on the copy, otherwise
     do the change on mysql.tables
   */
+  // Note:构造系统表mysql.tables
   String_type tables_table = tables::Tables::instance().name();
   if (create_set.find(tables_table) != create_set.end()) {
     tables_table = target_table_schema_name + String_type(".") + tables_table;
@@ -918,7 +919,7 @@ bool update_object_ids(THD *thd, const std::set<String_type> &create_set,
        << " SET schema_id= " << actual_table_schema_id
        << " WHERE schema_id= " << mysql_schema_id << " AND name LIKE '" << (*it)
        << "'";
-
+    // Note:更新系统表信息
     if (dd::execute_query(thd, ss.str().c_str()))
       return dd::end_transaction(thd, true);
   }

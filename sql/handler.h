@@ -6465,6 +6465,9 @@ class handler {
     @retval  0      Success.
     @retval  non-0  Error.
   */
+  /** Note:外部接口
+   * 通过添加隐式列调整要创建的表的定义和存储引擎所需的索引
+  */
   virtual int get_extra_columns_and_keys(
       const HA_CREATE_INFO *create_info MY_ATTRIBUTE((unused)),
       const List<Create_field> *create_list MY_ATTRIBUTE((unused)),

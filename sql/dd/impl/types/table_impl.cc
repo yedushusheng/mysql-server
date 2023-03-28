@@ -426,7 +426,9 @@ bool Table_impl::drop_children(Open_dictionary_tables_ctx *otx) const {
 /////////////////////////////////////////////////////////////////////////
 
 /** Note:外部接口
- * 重新加载table属性 
+ * 重新加载table属性
+ * 这里就把具体Table的实现类Table_impl与系统表mysql.tables建立关联
+ * 这里的Tables::XXX读取具体系统表字段并设置值
  */
 bool Table_impl::restore_attributes(const Raw_record &r) {
   {
@@ -497,6 +499,17 @@ bool Table_impl::restore_attributes(const Raw_record &r) {
 
 /** Note:外部接口
  * 加载table的属性
+ * 这个是数据字典客户端store调用的,这里是加载表属性信息到Raw_record
+ * 然后调用存储引擎的接口插入数据
+ * 调用:
+ * 客户端Dictionary_client::store
+ * ->存储引擎Storage_adapter::store
+ *  ->Table_impl::store_attributes
+ *    ->Raw_record::store
+ * 
+ * 说明:
+ * 这里将记录Raw_record与表Table_impl以及系统表mysql.tables联系起来
+ * 
 */
 bool Table_impl::store_attributes(Raw_record *r) {
   //

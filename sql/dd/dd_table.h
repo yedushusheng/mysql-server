@@ -63,6 +63,13 @@ class Dictionary_client;
 static const char FIELD_NAME_SEPARATOR_CHAR = ';';
 static const char CHECK_CONSTRAINT_NAME_SUBSTR[] = "_chk_";
 
+/** Note:该文件中主要是封装了数据字典中表相关操作接口
+ * 在sql/sql_table.h中是表操作的入口,会调用这里的数据字典操作接口
+ * sql/dd/dd_table.h:数据字典中表操作接口
+ * sql/dd/types/table.h:主要是表定义
+ * sql/dd/impl/types/table_impl.c:表实现
+ * sql/dd/impl/tables/tables.h:定义系统表mysql.tables
+*/
 /**
   Prepares a dd::Table object from mysql_prepare_create_table() output
   and return it to the caller. This function creates a user table, as

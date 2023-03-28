@@ -43,6 +43,12 @@ class Trigger;
 
 ///////////////////////////////////////////////////////////////////////////
 
+/** Note:定义一个表
+ * sql/dd/dd_table.h:数据字典中表操作接口
+ * sql/dd/types/table.h:主要是表定义
+ * sql/dd/impl/types/table_impl.c:表实现
+ * sql/dd/impl/tables/tables.h:定义系统表mysql.tables
+*/
 class Table : virtual public Abstract_table {
  public:
   typedef Table_impl Impl;
@@ -76,6 +82,7 @@ class Table : virtual public Abstract_table {
   ~Table() override {}
 
  public:
+  // Note:行数据格式
   enum enum_row_format {
     RF_FIXED = 1,
     RF_DYNAMIC,
@@ -86,6 +93,7 @@ class Table : virtual public Abstract_table {
   };
 
   /* Keep in sync with subpartition type for forward compatibility.*/
+  // Note:分区类型
   enum enum_partition_type {
     PT_NONE = 0,
     PT_HASH,
@@ -102,6 +110,7 @@ class Table : virtual public Abstract_table {
     PT_AUTO_LINEAR,
   };
 
+  // Note:子分区类型
   enum enum_subpartition_type {
     ST_NONE = 0,
     ST_HASH,

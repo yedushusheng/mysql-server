@@ -1081,7 +1081,9 @@ static bool rea_create_base_table(
     handlerton **post_ddl_ht) {
   DBUG_TRACE;
 
-  // Note:数据字典层面创建表
+  /** Note:数据字典层面创建表
+   * 这里从create info中获取表的信息,然后将这个通过数据子带你的store()接口实现持久化
+  */
   std::unique_ptr<dd::Table> table_def_res = dd::create_table(
       thd, sch_obj, table_name, create_info, create_fields, key_info, keys,
       keys_onoff, fk_key_info, fk_keys, check_cons_spec, file);
@@ -1110,6 +1112,7 @@ static bool rea_create_base_table(
 
     table_def = table_def_ptr->get();
   } else {
+    // Note:数据字典持久化
     bool result = thd->dd_client()->store(table_def_res.get());
 
     if (!(create_info->db_type->flags & HTON_SUPPORTS_ATOMIC_DDL) &&

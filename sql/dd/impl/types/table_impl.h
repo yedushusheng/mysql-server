@@ -64,17 +64,26 @@ class Trigger_impl;
 class Weak_object;
 class Object_table;
 
-/** Note:Data Dictionary(简称DD)中的数据结构(type)是完全按照多态、接口/实现的形式来组织的，
- * 接口通过纯虚类来实现(比如标识一个表的Table)，其实现类(Table_impl)为接口类的名字加_impl后缀。
- * 表的元数据对象为Table_impl类,该类中包含一个表相关的元数据属性定义，
- * 比如下列最基本引擎类型、comment、分区类型、分区表达式等。
+/** Note:Data Dictionary(简称DD)中的数据结构(type)是完全按照多态,接口/实现的形式来组织的,
+ * 接口通过纯虚类来实现(比如标识一个表的Table),其实现类(Table_impl)为接口类的名字加_impl后缀。
+ * 表的元数据对象为Table_impl类,该类中包含一个表相关的元数据属性定义,
+ * 比如下列最基本引擎类型,comment,分区类型,分区表达式等。
  * 
- * Table_impl也是代码实现中client最常访问的内存结构,开发者想要增加新的属性，直接在这个类中添加和初始化即可，但是仅仅如此不会自动将该属性持久化到存储引擎中。
- * 除了上述简单属性之外,还包括与一个表相关的复杂属性,比如列信息、索引信息、分区信息等，这些复杂属性都是存在其他的DD表中，在内存cache中也都会集成到Table_impl对象里。
+ * Table_impl也是代码实现中client最常访问的内存结构,开发者想要增加新的属性,直接在这个类中添加和初始化即可,但是仅仅如此不会自动将该属性持久化到存储引擎中。
+ * 除了上述简单属性之外,还包括与一个表相关的复杂属性,比如列信息,索引信息,分区信息等,这些复杂属性都是存在其他的DD表中,在内存cache中也都会集成到Table_impl对象里。
  * 
- * 从Abstract_table_impl继承来的Collection<Column *> m_columns就表示表的所有列集合，
- * Table_impl中也包含所有分区的元信息集合Collection<Partition *> m_partitions，存放每个分区的id、引擎、选项、范围值、父子分区等，
- * 因此获取到一个表的Table_impl，我们就可以获取到与这个表相关联的所有元信息。
+ * 从Abstract_table_impl继承来的Collection<Column *> m_columns就表示表的所有列集合,
+ * Table_impl中也包含所有分区的元信息集合Collection<Partition *> m_partitions,存放每个分区的id,引擎,选项,范围值,父子分区等,
+ * 因此获取到一个表的Table_impl,我们就可以获取到与这个表相关联的所有元信息。
+ * 
+ * sql/dd/dd_table.h:数据字典中表操作接口
+ * sql/dd/types/table.h:主要是表定义
+ * sql/dd/impl/types/table_impl.c:表实现
+ * sql/dd/impl/tables/tables.h:定义系统表mysql.tables
+ * 关联:
+ * 表的最上层接口在sql/sql_table.h中,调用sql/dd/dd_table.h数据字典操作
+ * 表的具体实现在sql/dd/impl/types/table_impl.cc
+ * 在table_impl.cc中会调用sql/dd/impl/tables/tables.h中的字段等信息设置值
  * */
 class Table_impl : public Abstract_table_impl, virtual public Table {
  public:
