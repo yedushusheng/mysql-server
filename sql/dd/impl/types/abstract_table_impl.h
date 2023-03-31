@@ -174,6 +174,7 @@ class Abstract_table_impl : public Entity_object_impl,
   const Entity_object_impl *impl() const override {
     return Entity_object_impl::impl();
   }
+  // Note:从父类中获取表的主键ID
   Object_id id() const override { return Entity_object_impl::id(); }
   bool is_persistent() const override {
     return Entity_object_impl::is_persistent();

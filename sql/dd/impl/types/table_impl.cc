@@ -427,6 +427,9 @@ bool Table_impl::drop_children(Open_dictionary_tables_ctx *otx) const {
 
 /** Note:外部接口
  * 重新加载table属性
+ * 这里是读取mysql.tables表中数据到Raw_record中,然后按照field_name读取值
+ * 将这些值加载到Table_impl中,用于在缓存中加载对应的表数据信息
+ * 说明:
  * 这里就把具体Table的实现类Table_impl与系统表mysql.tables建立关联
  * 这里的Tables::XXX读取具体系统表字段并设置值
  */

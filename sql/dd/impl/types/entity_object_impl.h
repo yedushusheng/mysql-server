@@ -45,6 +45,7 @@ class Entity_object_impl : virtual public Entity_object,
   Entity_object_impl() : m_id(INVALID_OBJECT_ID), m_has_new_primary_key(true) {}
 
  public:
+  // Note:定义每个表(mysql.tables)的主键id(递增)
   Object_id id() const override { return m_id; }
 
   /* non-virtual */ void set_id(Object_id id) {
@@ -57,7 +58,7 @@ class Entity_object_impl : virtual public Entity_object,
   /* purecov: end */
 
   const String_type &name() const override { return m_name; }
-
+  // Note:table_name
   void set_name(const String_type &name) override { m_name = name; }
 
   Object_key *create_primary_key() const override;
@@ -80,7 +81,8 @@ class Entity_object_impl : virtual public Entity_object,
   bool store_id(Raw_record *r, int field_idx);
   bool store_name(Raw_record *r, int field_idx);
   bool store_name(Raw_record *r, int field_idx, bool is_null);
-
+  
+  // Note:串行化与解串行化
   void serialize(Sdi_wcontext *wctx, Sdi_writer *w) const;
   bool deserialize(Sdi_rcontext *rctx, const RJ_Value &val);
 
