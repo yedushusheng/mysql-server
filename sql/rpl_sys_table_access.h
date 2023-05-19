@@ -39,6 +39,8 @@ struct TABLE;
   context (THD) and open table on class object creation, and destroys thread and
   closes all open thread tables on class object destruction.
 */
+/** Note:用于简化数据访问
+*/
 class Rpl_sys_table_access : public System_table_access {
  public:
   /**
