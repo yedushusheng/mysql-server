@@ -71,6 +71,9 @@
 #include "sql/system_variables.h"
 #include "sql/table.h"
 
+/** Note:RLI=Relay log info
+ * Relay日志的相关接口
+*/
 class Commit_order_manager;
 class Master_info;
 class Rpl_filter;
