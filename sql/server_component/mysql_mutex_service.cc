@@ -26,6 +26,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include <mysql/components/services/mysql_mutex_service.h>
 #include <mysql/psi/mysql_mutex.h>
 
+/** Note:MySQL Server互斥锁
+*/
 void impl_mysql_mutex_register(const char *category, PSI_mutex_info *info,
                                int count) {
   mysql_mutex_register(category, info, count);
