@@ -30,7 +30,9 @@ class SELECT_LEX;
 class Table_ident;
 struct YYLTYPE;
 typedef YYLTYPE POS;
-
+/** Note:SHOW命令
+ * 借助information_schema下面的视图实现SHOW CHARACTER等操作
+*/
 namespace dd {
 namespace info_schema {
 

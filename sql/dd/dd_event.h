@@ -34,7 +34,8 @@ class THD;
 struct LEX_USER;
 
 using sql_mode_t = ulonglong;
-
+/** Note:数据字典中事件Event操作接口
+*/
 namespace dd {
 class Schema;
 

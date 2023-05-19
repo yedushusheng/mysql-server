@@ -207,9 +207,15 @@ inline bool deserialize(THD *thd, const Sdi_type &sdi, Tablespace *tablespace) {
 
 /** @} End of group serialize_api */
 
-/** Note:SDI= Storing and Dropping
- * 在缓存的Storage_adpter中操作持久层(磁盘)的时候使用
- * SDI中封装了一系列磁盘持久化操作接口
+/** Note:SDI= Statistical Data of Indexes (SDI)
+ * 在MySQL中,当你在表上创建索引时,MySQL会自动收集有关索引的统计信息,例如索引列的基数（不同值的数量）、表中的行数以及索引的分布情况.索引值.
+ * 这些统计信息存储在MySQL系统表中,具体是在mysql.innodb_index_stats和mysql.innodb_table_stats表中.
+ * MySQL查询优化器使用索引的SDI来估计不同查询执行计划的成本,并为给定查询选择最有效的计划.
+ * SDI信息越准确,查询优化器选择最优查询执行计划的效率就越高.
+ * 
+ * SHOW INDEX您可以使用带有关键字的命令查看MySQL中索引的SDI信息STATISTICS,如下所示：
+ * SHOW INDEX FROM table_name WITH STATISTICS;
+ * 这将显示有关索引的信息,包括基数和MySQL收集的其他统计信息.
 */
 namespace sdi {
 

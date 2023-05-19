@@ -32,7 +32,8 @@ class sp_head;
 struct st_sp_chistics;
 
 struct LEX_USER;
-
+/** Note:数据字典中存储过程操作接口
+*/
 namespace dd {
 class Routine;
 class Schema;

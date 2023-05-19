@@ -164,6 +164,14 @@ class Global_name_key : public Object_key {
 
 ///////////////////////////////////////////////////////////////////////////
 
+/** Note:定义Item相关的key信息
+ * 比如这里如果想要构造一个where条件相关的condition,可以定义一个函数:
+ * Item_name_key::create_sql_where_key(String_type &table_name) {
+ *   String_type where_condition;
+ *   where_condition = "SCHEMA_NAME='" + "m_object_name + "'";
+ *   return where_condition;
+ * }
+*/
 // Entity_object-name key for objects which are identified within a container.
 class Item_name_key : public Object_key {
  public:

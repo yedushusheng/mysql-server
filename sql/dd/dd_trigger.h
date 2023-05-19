@@ -32,7 +32,8 @@ class Trigger;
 
 template <class T>
 class List;
-
+/** Note:数据字典中触发器操作接口
+*/
 namespace dd {
 class Table;
 

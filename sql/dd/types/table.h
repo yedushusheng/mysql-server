@@ -44,9 +44,9 @@ class Trigger;
 ///////////////////////////////////////////////////////////////////////////
 
 /** Note:定义一个表
- * sql/dd/dd_table.h:数据字典中表操作接口
- * sql/dd/types/table.h:主要是表定义
- * sql/dd/impl/types/table_impl.c:表实现
+ * sql/dd/dd_table.h:数据字典中表操作接口(对外接口)
+ * sql/dd/types/table.h:主要是表定义(在table_ompl.cc中实现)
+ * sql/dd/impl/types/table_impl.c:表实现(在table.h中定义)
  * sql/dd/impl/tables/tables.h:定义系统表mysql.tables
 */
 class Table : virtual public Abstract_table {

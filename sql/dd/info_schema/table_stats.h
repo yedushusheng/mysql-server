@@ -34,6 +34,8 @@
 class THD;
 struct TABLE_LIST;
 
+/** Note:获取动态的表统计信息并且存储到mysql.table_stats中
+*/
 namespace dd {
 namespace info_schema {
 

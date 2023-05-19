@@ -26,7 +26,8 @@
 struct MEM_ROOT;
 class THD;
 struct TABLE_LIST;
-
+/** Note:数据字典中视图相关操作接口
+*/
 namespace dd {
 class Schema;
 class View;

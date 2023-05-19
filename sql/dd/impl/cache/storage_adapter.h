@@ -40,12 +40,19 @@ class CacheStorageTest;
 }
 
 /**
- * Note:数据字典表本身的元数据也会保存到数据字典表里,但是某个数据字典表创建的时候,有一些数据字典表还没有创建,这就有问题了。
+ * Note:数据字典存储适配器
+ * Storage_adapter是MySQL内部实现的一种存储适配器,用于在MySQL中管理存储引擎之间的数据转换和交互.
+ * 在MySQL中,每个存储引擎都有自己的存储格式和数据访问方式,Storage_adapter的作用就是将不同存储引擎之间的数据转换为统一的格式,以实现数据的共享和交互.
+ * Storage_adapter在MySQL中是由ha_storage_adapter类实现的.它通过提供一组接口来访问和管理存储引擎中的数据,包括读取和写入数据、锁定和释放数据、事务管理、索引管理等等.
+ * Storage_adapter还提供了一组标准的API,以便存储引擎可以实现与MySQL内部的交互.当一个存储引擎被加载到MySQL中时,它会注册自己的API,以便MySQL可以使用Storage_adapter来访问和管理它的数据.
+ * 总的来说,Storage_adapter是MySQL内部实现的一种存储适配器,它通过提供一组接口和标准的API,将不同存储引擎之间的数据转换为统一的格式,以实现数据的共享和交互.它是MySQL数据字典的核心组成部分之一.
+ * 
+ * 数据字典表本身的元数据也会保存到数据字典表里,但是某个数据字典表创建的时候,有一些数据字典表还没有创建,这就有问题了.
  * 我们以columns、indexes这2个数据字典表为例来说明：
- * columns表先于indexes表创建,columns表创建成功之后,需要把索引元数据保存到 indexes 表中,而此时 indexes表还没有创建,columns表的索引元数据自然也就没办法保存到indexes表中了。
- * MySQL解决这个问题的方案是引入一个中间层,用于临时存放所有数据字典表的各种元数据,等到所有数据字典表都创建完成之后,再把临时存放在中间层的所有数据字典表的元数据保存到相应的数据字典表中。
- * 这里所谓的中间层实际上是一个存储适配器,源码中对应的类名为 Storage_adapter,这是一个实现了单例模式的类。
- * MySQL在初始化数据目录的过程中,Storage_adapter类的实例属性m_core_registry就是所有数据字典表元数据的临时存放场所。
+ * columns表先于indexes表创建,columns表创建成功之后,需要把索引元数据保存到indexes表中,而此时 indexes表还没有创建,columns表的索引元数据自然也就没办法保存到indexes表中了.
+ * MySQL解决这个问题的方案是引入一个中间层,用于临时存放所有数据字典表的各种元数据,等到所有数据字典表都创建完成之后,再把临时存放在中间层的所有数据字典表的元数据保存到相应的数据字典表中.
+ * 这里所谓的中间层实际上是一个存储适配器,源码中对应的类名为 Storage_adapter,这是一个实现了单例模式的类.
+ * MySQL在初始化数据目录的过程中,Storage_adapter类的实例属性m_core_registry就是所有数据字典表元数据的临时存放场所.
  */
 namespace dd {
 
@@ -64,10 +71,10 @@ namespace cache {
   object will be returned, and this is therefore owned by the caller.
 */
 /** Note:存储core属性的数据字典对象
- * 这个类抽象了对DD对象的metadata进行存储的方法。
- * 它是一个静态类。对于新创建的对象（表,索引,表空间等）都会通过该类进行一个clone, clone之后该类会将该对象的metadata存储到对应的系统表中。
- * 另外,它也提供接口用来从系统表中获取metadata并生成调用需要的DD对象。
- * 该类同时也提供了一个缓存,每次调用存储新对象的时候,它会自动将一个对象clone缓存起来。
+ * 这个类抽象了对DD对象的metadata进行存储的方法.
+ * 它是一个静态类.对于新创建的对象（表,索引,表空间等）都会通过该类进行一个clone, clone之后该类会将该对象的metadata存储到对应的系统表中.
+ * 另外,它也提供接口用来从系统表中获取metadata并生成调用需要的DD对象.
+ * 该类同时也提供了一个缓存,每次调用存储新对象的时候,它会自动将一个对象clone缓存起来.
  * 
  * 说明:
  * 这里是负责操作存储引擎层的,因此会调用raw/raw_record.h相关接口,进而调用存储引擎handler接口
@@ -96,7 +103,7 @@ class Storage_adapter {
 
     @return Next object id to be used.
   */
-  /** Note:为新的对象产生一个ID标识。
+  /** Note:为新的对象产生一个ID标识.
   */
   template <typename T>
   Object_id next_oid();
@@ -194,9 +201,9 @@ class Storage_adapter {
     @retval      false   No error.
     @retval      true    Error.
   */
-  /** Note:该函数可以根据对象类型及名称获取对象。
-   * 如果该对象已经被缓存,那么调用core_get获取clone对象。
-   * 否则会根据对象类型到对应的metadata数据表中查找并构造一个对象。
+  /** Note:该函数可以根据对象类型及名称获取对象.
+   * 如果该对象已经被缓存,那么调用core_get获取clone对象.
+   * 否则会根据对象类型到对应的metadata数据表中查找并构造一个对象.
   */
   template <typename K, typename T>
   static bool get(THD *thd, const K &key, enum_tx_isolation isolation,
@@ -252,7 +259,7 @@ class Storage_adapter {
     @retval  false   No error.
     @retval  true    Error.
   */
-  /** Note:该函数会根据DD对象类型,将metadata存入相关的系统表中。
+  /** Note:该函数会根据DD对象类型,将metadata存入相关的系统表中.
   */
   template <typename T>
   static bool store(THD *thd, T *object);

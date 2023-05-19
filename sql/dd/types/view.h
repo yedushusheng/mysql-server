@@ -34,7 +34,8 @@ class View_table;
 class View_routine;
 
 ///////////////////////////////////////////////////////////////////////////
-
+/** Note:视图的定义
+*/
 class View : virtual public Abstract_table {
  public:
   typedef Collection<View_table *> View_tables;

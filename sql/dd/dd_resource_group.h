@@ -28,6 +28,8 @@ class THD;
 namespace resourcegroups {
 class Resource_group;
 }
+/** Note:数据字典中资源组Resource Group操作接口
+*/
 namespace dd {
 namespace cache {
 class Dictionary_client;

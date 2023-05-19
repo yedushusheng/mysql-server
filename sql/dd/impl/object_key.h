@@ -36,7 +36,10 @@ class Raw_table;
 
 /** Note:设置访问Object的Object_key
  * map中存放的对象包括Object_key和Element_cache 
- * Element_cache是对数据字典对象的一层封装,目的在于可以统一管理所有类型的数据字典对象。
+ * Element_cache是对数据字典对象的一层封装,目的在于可以统一管理所有类型的数据字典对象.
+ * 
+ * 作用:
+ * 这里是作为一个基类定义使用的,主键,Item_name_key等继承
 */
 class Object_key {
  public:

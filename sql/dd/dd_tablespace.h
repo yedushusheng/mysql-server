@@ -30,7 +30,8 @@ struct MEM_ROOT;
 class THD;
 class st_alter_tablespace;
 struct handlerton;
-
+/** Note:数据字典中表空间table space操作接口
+*/
 namespace dd {
 
 /**
