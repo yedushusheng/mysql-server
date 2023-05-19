@@ -57,6 +57,18 @@ namespace cache {
   to avoid excessive performance overhead during object instantiation.
 */
 /** Note:存储不同类型的对象和对应的cache元素,以及对应的操作
+ * 
+ * Object_registry是MySQL内部实现的用于管理数据库对象的注册表[本质上是注册对象使用].
+ * 它用来存储和管理MySQL中的所有对象,包括表,列,索引,约束,视图,存储过程,函数,触发器等等.
+ * 它是MySQL数据字典的核心组成部分之一.
+ * 在MySQL中,Object_registry是由dd::Object_registry_impl类实现的.
+ * 它可以通过一组接口来访问和管理数据字典中的对象,例如获取一个对象的定义,创建或删除一个对象等等.
+ * Object_registry使用一个哈希表来存储所有的对象.
+ * 每个对象都有一个唯一的标识符,可以用来在哈希表中查找对象.
+ * 在MySQL启动时,Object_registry会从数据字典中读取所有对象的定义,并将它们存储在哈希表中.
+ * 在运行时,当MySQL需要访问某个对象时,它会通过对象的标识符在哈希表中查找对象,并返回其定义信息.如果需要创建或删除一个对象,MySQL也会通过Object_registry来实现.
+ * 总的来说,Object_registry是MySQL内部实现的用于管理数据库对象的注册表.它可以访问和管理MySQL中的所有对象,通过一个哈希表来存储所有对象的定义,并提供了一组接口来访问和管理数据字典中的对象.
+
  * 主要作用:
  * 1.定义了缓存对象变量,通过这个可以创建局部local_multi_map和全局shared_multi_map的缓存
  * 2.在使用的时候需要将对象Object注册,不使用的时候需要清理

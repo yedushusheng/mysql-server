@@ -149,6 +149,12 @@ class Cache_element;
  * 如果需要操作DD,直接调用相关接口函数即可
  * 这个类成员函数的主要方法是去访问一个多session共享的cache来操作DD存储的各种对象
  * 和其他cache一样,如果在访问过程中,在这个cache里没有找到对应的对象,那么后台会自动读取DD中的相关metadata,进而构建相应的数据表
+ * 
+ * dd::cache::Dictionary_client是MySQL内部实现的用于访问数据字典的客户端库.它提供了一组接口,可以让MySQL的其他组件和插件来查询和修改数据字典中的元数据信息.
+ * 在MySQL中,数据字典的信息存储在系统表中,这些表包括information_schema.tables、information_schema.columns、information_schema.indexes等等.
+ * 如果MySQL需要查询或者修改元数据信息,它会使用dd::cache::Dictionary_client客户端库来访问这些系统表,并将结果返回给调用方.
+ * dd::cache::Dictionary_client实现了缓存机制,它可以将数据字典中的元数据信息缓存起来,避免频繁地从系统表中读取信息,从而提高了性能.此外,dd::cache::Dictionary_client还提供了一些高级接口,如支持事务、锁定表、获取DDL语句等等.
+ * 总的来说,dd::cache::Dictionary_client是MySQL内部用来访问数据字典的客户端库,它提供了一组接口,让其他组件和插件能够轻松地查询和修改数据字典中的元数据信息,并通过缓存机制和高级接口来提高性能和功能.
 */
 class Dictionary_client {
  public:
@@ -177,10 +183,10 @@ class Dictionary_client {
     by acquire_uncached(). These objects are owned by the Auto_releaser
     and are deleted when the auto releaser goes out of scope.
   */
-  /** Note:这个类是用来辅助Dictionary_client自动释放获取的DD对象。
-   * 该类会自动跟踪当前Dictionary_client获取的每个DD对象。
-   * 当Dictionary_client对象生命期结束的时候,该对象会自动释放当前session获取的DD对象。
-   * 这个类对象可以进行嵌套,Dictionary_client中的m_current_releaser成员变量始终会指向嵌套堆栈最顶层的一个Auto_releaser对象。如果当前的Auto_releaser对象结束了生命期,它会释放掉自己记录的位于共享cache中的DD对象,同时把m_current_releaser指向上一个老的Auto_releaser对象。
+  /** Note:这个类是用来辅助Dictionary_client自动释放获取的DD对象.
+   * 该类会自动跟踪当前Dictionary_client获取的每个DD对象.
+   * 当Dictionary_client对象生命期结束的时候,该对象会自动释放当前session获取的DD对象.
+   * 这个类对象可以进行嵌套,Dictionary_client中的m_current_releaser成员变量始终会指向嵌套堆栈最顶层的一个Auto_releaser对象.如果当前的Auto_releaser对象结束了生命期,它会释放掉自己记录的位于共享cache中的DD对象,同时把m_current_releaser指向上一个老的Auto_releaser对象.
   */
   class Auto_releaser {
     friend class Dictionary_client;
@@ -188,7 +194,7 @@ class Dictionary_client {
    private:
     Dictionary_client *m_client;  // Note:用来指向当前的Dictionary_client对象
     Object_registry m_release_registry; // Note:用来记录从共享cache中获取的DD对象,以便自动释放
-    Auto_releaser *m_prev;  // Note:用来形成列表,以方便当前实例生命期结束的时候,将Dictionary_client对象中的Auto_releaser重新指向之前创建的实例。
+    Auto_releaser *m_prev;  // Note:用来形成列表,以方便当前实例生命期结束的时候,将Dictionary_client对象中的Auto_releaser重新指向之前创建的实例.
 
     /**
       Register an object to be auto released.
@@ -210,7 +216,7 @@ class Dictionary_client {
       @tparam T        Dictionary object type.
       @param  object   Dictionary object to transfer.
     */
-    /** Note:当一个Auto_releaser对象结束生命期的时候,有的DD对象并不能结束生命期,该函数用来把一个DD对象转移给上一个Auto_releaser对象。
+    /** Note:当一个Auto_releaser对象结束生命期的时候,有的DD对象并不能结束生命期,该函数用来把一个DD对象转移给上一个Auto_releaser对象.
     */
     template <typename T>
     void transfer_release(const T *object);
@@ -314,7 +320,7 @@ class Dictionary_client {
    * 功能：获取一个数据字典对象
    * Data Dictionary提供了统一的client API供Server层和引擎层使用,
    * 包含对元数据访问的acquire()/drop()/store()/update()基本操作
-   * 底层实现了对InnoDB存储存放的数据字典表的读写操作,包含开表(open table)、构造主键、主键查找等过程。
+   * 底层实现了对InnoDB存储存放的数据字典表的读写操作,包含开表(open table)、构造主键、主键查找等过程.
   */
   template <typename K, typename T>
   bool acquire(const K &key, const T **object, bool *local_committed,
