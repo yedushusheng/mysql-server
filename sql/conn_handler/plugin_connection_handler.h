@@ -39,7 +39,8 @@ class THD;
 
    @see Connection_handler_functions struct.
 */
-
+/** Note:这是一个包装类,是有关于通过连接处理程序插件全局自由函数(例如线程池).
+*/
 class Plugin_connection_handler : public Connection_handler {
   Connection_handler_functions *m_functions;
 

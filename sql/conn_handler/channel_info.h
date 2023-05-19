@@ -43,6 +43,11 @@ typedef Vio Vio;
   Currently we support local and TCP/IP sockets (all platforms),
   named pipes and shared memory (Windows only).
 */
+/** Note:Channel_info抽象基类表示有关新连接的连接通道信息.
+ * 子类封装了不同连接通道类型之间的差异.
+ * 所谓的不同连接类型比如,本地套接字,tcp/ip链接,命名管道,共享内存等.
+ * (后两者只存在windows平台)
+ */
 class Channel_info {
   ulonglong prior_thr_create_utime;
 
