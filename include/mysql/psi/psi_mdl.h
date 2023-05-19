@@ -31,7 +31,9 @@
   @ingroup psi_abi
   @{
 */
-
+/** Note:ABI = Metadata Lock Instrumentation
+ * 元数据锁指令
+*/
 #include "my_inttypes.h"
 #include "my_macros.h"
 

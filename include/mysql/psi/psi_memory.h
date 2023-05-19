@@ -58,6 +58,23 @@
 /** Note:PIS(performance schema instrumentation system)
  * 信息模式存储引擎引擎
  * 编译时通过WITH_PERFSCHEMA_STORAGE_ENGINE选项控制
+ * 
+ * 在MySQL中,Performance Schema是一个指令接口(Interface),它提供了一种在运行时检查服务器内部执行的方法.
+ * 它收集有关服务器活动的数据,可用于诊断性能问题,分析资源使用情况和解决其他问题.
+ * 
+ * Performance Schema使用的关键数据结构之一是PSI_memory_key,此结构用于表示标识服务器内特定内存使用类别或组件的键.
+ * 每个PSI_memory_key对象对应于服务器内的特定内存使用上下文,例如特定线程,插件或子系统.
+ * 
+ * PSI_memory_key结构在MySQL源码中定义如下：
+ * struct PSI_memory_key
+ * {
+ *   uint32 category;
+ *   const char *name;
+ * };
+ * category字段是内存使用类别或组件的标识符
+ * name字段是更详细地描述该category类别的字符串
+ * 
+ * 总体而言,PSI_memory_key数据结构用于帮助Performance Schema跟踪MySQL Server的不同部分如何使用内存,这对于监控和优化性能很有用
 */
 typedef unsigned int PSI_memory_key;
 

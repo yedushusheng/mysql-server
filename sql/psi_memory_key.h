@@ -25,6 +25,7 @@
 
 /** Note:存储内存key
  * 要检测内存,必须使用@c register_memory获取内存密钥.
+ * PSI_memory_key用于区分不同线程的内存
 */
 /**
   Instrumented memory key.
