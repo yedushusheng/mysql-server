@@ -74,6 +74,16 @@ typedef Vio Vio;
 #define MYSQL_VIO Vio *
 #endif
 
+/** Note:VIO包含了多种网络连接类型,例如:
+ * NO_VIO_TYPE:未知的网络类型
+ * VIO_TYPE_TCPIP:TCP/IP连接
+ * VIO_TYPE_SOCKET:Unix系统的Socket连接
+ * VIO_TYPE_NAMEPIPE:Windows系统的命名管道
+ * VIO_TYPE_SSL:SSL连接
+ * VIO_TYPE_SHARED_MEMORY:Windows下的共享内存
+ * VIO_TYPE_PLUGIN:通过插件实现的网络类型,不属于上述任何一种
+ * 针对以上的不同类型的网络连接,MySQL提供了针对于不同平台,不同连接类型的网络操作方法.
+*/
 enum enum_vio_type : int {
   /**
     Type of the connection is unknown.
@@ -126,6 +136,8 @@ void get_vio_type_name(enum enum_vio_type vio_type, const char **str, int *len);
 
 /**
   VIO I/O events.
+*/
+/** Note:IO事件类型
 */
 enum enum_vio_io_event {
   VIO_IO_EVENT_READ,
@@ -318,6 +330,16 @@ enum SSL_type {
  Note that it has a non-default move assignment operator, so if adding more
  members, you'll need to update operator=.
 */
+/** Note:vio结构体定义,封装socket
+ * 针对以上的不同类型的网络连接,MySQL提供了针对于不同平台,不同连接类型的网络操作方法.
+ * VIO对着这些方法进行了封装,向上提供统一的接口.
+ * 
+ * VIO只是一个通用类,具体的网络方法实现在以下几个文件中:
+ * viosocket.c:提供了SOCKET相关的操作方法.
+ * viossl.c:提供了SSL相关的操作方法.
+ * viopipe.c:提供了Windows平台下命名管道的操作方法.
+ * vioshm.c:提供了Windows平台下共享内存的操作方法.
+ */
 struct Vio {
   MYSQL_SOCKET mysql_socket;          /* Instrumented socket */
   bool localhost = {false};           /* Are we from localhost? */
