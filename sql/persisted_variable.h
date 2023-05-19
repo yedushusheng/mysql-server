@@ -42,6 +42,9 @@ class set_var;
 class sys_var;
 struct MYSQL_FILE;
 
+/** Note:MySQL8.0新特性
+ * 变量持久化
+*/
 /**
   STRUCT st_persist_var
 
