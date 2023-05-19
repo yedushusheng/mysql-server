@@ -41,6 +41,8 @@
 
 #include "my_compiler.h"
 
+/** Note:MySQL8.0采用超图算法优化
+*/
 namespace hypergraph {
 
 // Since our graphs can never have more than 61 tables, node sets and edge lists
