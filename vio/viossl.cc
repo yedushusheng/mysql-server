@@ -120,6 +120,10 @@
 
 #ifndef DBUG_OFF
 
+/** Note:SSL连接接口
+ * vio封装了所有对socket的操作
+ * 根据不同的连接类型(TCP/IP,Socket,Name Pipes,SSL,Shared Memory),使用vio_init进行初始化
+*/
 static void report_errors(SSL *ssl) {
   unsigned long l;
   const char *file;

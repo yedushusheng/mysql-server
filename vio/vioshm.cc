@@ -25,7 +25,10 @@
 #include "my_byteorder.h"
 #include "my_dbug.h"
 #include "my_shm_defaults.h"
-
+/** Note:共享内存连接接口
+ * vio封装了所有对socket的操作
+ * 根据不同的连接类型(TCP/IP,Socket,Name Pipes,SSL,Shared Memory),使用vio_init进行初始化
+*/
 size_t vio_read_shared_memory(Vio *vio, uchar *buf, size_t size) {
   size_t length;
   size_t remain_local;

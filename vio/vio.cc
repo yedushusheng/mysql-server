@@ -47,6 +47,7 @@
 #include "template_utils.h"
 #include "vio/vio_priv.h"
 
+// Note:内存key
 PSI_memory_key key_memory_vio_ssl_fd;
 PSI_memory_key key_memory_vio;
 PSI_memory_key key_memory_vio_read_buffer;
@@ -97,6 +98,13 @@ extern "C" {
 static bool has_no_data(Vio *vio MY_ATTRIBUTE((unused))) { return false; }
 }  // extern "C"
 
+/* Note:
+ * VIO只是一个通用类,具体的网络方法实现在以下几个文件中:
+ * viosocket.c:提供了SOCKET相关的操作方法.
+ * viossl.c:提供了SSL相关的操作方法.
+ * viopipe.c:提供了Windows平台下命名管道的操作方法.
+ * vioshm.c:提供了Windows平台下共享内存的操作方法.
+*/
 Vio::Vio(uint flags) {
   mysql_socket = MYSQL_INVALID_SOCKET;
   local = sockaddr_storage();
@@ -206,7 +214,7 @@ Vio &Vio::operator=(Vio &&vio) {
 /*
  * Helper to fill most of the Vio* with defaults.
  */
-
+/* Note:初始化vio */
 static bool vio_init(Vio *vio, enum enum_vio_type type, my_socket sd,
                      uint flags) {
   DBUG_PRINT("enter vio_init", ("type: %d sd: %d  flags: %d", type, sd, flags));

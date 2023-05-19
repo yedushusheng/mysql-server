@@ -69,7 +69,10 @@
 #endif
 
 #include "mysql/psi/mysql_socket.h"
-
+/** Note:socket连接接口
+ * vio封装了所有对socket的操作
+ * 根据不同的连接类型(TCP/IP,Socket,Name Pipes,SSL,Shared Memory),使用vio_init进行初始化
+*/
 int vio_errno(Vio *vio MY_ATTRIBUTE((unused))) {
 /* These transport types are not Winsock based. */
 #ifdef _WIN32

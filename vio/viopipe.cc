@@ -23,7 +23,10 @@
 #include "vio_priv.h"
 
 #include "my_dbug.h"
-
+/** Note:管道连接接口
+ * vio封装了所有对socket的操作
+ * 根据不同的连接类型(TCP/IP,Socket,Name Pipes,SSL,Shared Memory),使用vio_init进行初始化
+*/
 static size_t wait_overlapped_result(Vio *vio, int timeout) {
   size_t ret = (size_t)-1;
   DWORD transferred, wait_status, timeout_ms;
