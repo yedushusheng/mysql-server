@@ -41,6 +41,8 @@
 #include "sql/rpl_io_monitor.h"
 #include "sql/rpl_mi.h"
 
+/** NOte:MSI = Master Info
+*/
 class Master_info;
 
 /**
