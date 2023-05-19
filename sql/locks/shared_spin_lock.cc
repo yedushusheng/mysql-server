@@ -28,7 +28,16 @@
 #include <type_traits>
 
 #include "sql/locks/shared_spin_lock.h"
-
+/** Note:自旋锁
+ * InnoDB互斥锁和rw锁通常保留较短的时间间隔.
+ * 在多核系统上,线程在睡眠之前的一段时间内连续检查它是否可以获取互斥或rw锁可能会更有效率.
+ * 如果在此期间互斥锁或rw-lock可用,则线程可以在同一时间片中立即继续.
+ * 但是,通过多个线程对共享对象(例如互斥锁或rw-lock)进行太频繁的轮询会导致“高速缓存乒乓cache ping pong”,这导致处理器使彼此的高速缓存部分无效.
+ * InnoDB通过强制轮询之间的随机延迟使轮询活动不同步,可以最大程度地减少此问题.
+ * 随机延迟被实现为旋转等待循环.
+ * 旋转等待循环的持续时间取决于循环中发生的PAUSE指令的数量.
+ * 通过随机选择一个从0到不包括该innodb_spin_wait_delay值的整数,然后将该值乘以50来生成该数字.
+*/
 lock::Shared_spin_lock::Guard::Guard(
     lock::Shared_spin_lock &target,
     lock::Shared_spin_lock::enum_lock_acquisition acquisition,
