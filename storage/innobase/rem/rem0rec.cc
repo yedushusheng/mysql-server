@@ -931,6 +931,7 @@ static rec_t *rec_convert_dtuple_to_rec_new(
   bool instant;
 
   status = dtuple_get_info_bits(dtuple) & REC_NEW_STATUS_MASK;
+  // Note:
   rec_get_converted_size_comp(index, status, dtuple->fields, dtuple->n_fields,
                               &extra_size);
   rec = buf + extra_size;
@@ -969,6 +970,7 @@ rec_t *rec_convert_dtuple_to_rec(
   ut_ad(dtuple_check_typed(dtuple));
 
   if (dict_table_is_comp(index->table)) {
+    // Note:
     rec = rec_convert_dtuple_to_rec_new(buf, index, dtuple);
   } else {
     rec = rec_convert_dtuple_to_rec_old(buf, dtuple);

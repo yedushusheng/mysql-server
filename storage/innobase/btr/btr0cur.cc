@@ -2544,6 +2544,9 @@ static MY_ATTRIBUTE((warn_unused_result)) rec_t *btr_cur_insert_if_possible(
 
 /** For an insert, checks the locks and does the undo logging if desired.
  @return DB_SUCCESS, DB_WAIT_LOCK, DB_FAIL, or error number */
+ /** Note:内部函数
+  * 完成与lock和undo有关的操作,并且赋值roll_ptr给field
+ */
 UNIV_INLINE MY_ATTRIBUTE((warn_unused_result)) dberr_t
     btr_cur_ins_lock_and_undo(
         ulint flags,       /*!< in: undo logging and locking flags: if
@@ -2653,6 +2656,9 @@ static void btr_cur_prefetch_siblings(buf_block_t *block) {
  one record on the page, the insert will always succeed; this is to
  prevent trying to split a page with just one record.
  @return DB_SUCCESS, DB_WAIT_LOCK, DB_FAIL, or error number */
+ /** Note:外部接口
+  * 完成与lock和undo有关的操作,并且赋值roll_ptr给field
+ */
 dberr_t btr_cur_optimistic_insert(
     ulint flags,         /*!< in: undo logging and locking flags: if not
                          zero, the parameters index and thr should be
@@ -2808,6 +2814,7 @@ dberr_t btr_cur_optimistic_insert(
     } else {
       /* Check locks and write to the undo log,
       if specified */
+      // Note:完成与lock和undo有关的操作,并且赋值roll_ptr给field
       err = btr_cur_ins_lock_and_undo(flags, cursor, entry, thr, mtr, &inherit);
 
       if (err != DB_SUCCESS) {
@@ -2829,7 +2836,7 @@ dberr_t btr_cur_optimistic_insert(
                                            "SIGNAL btr_ins_paused "
                                            "WAIT_FOR btr_ins_resume "
                                            "NO_CLEAR_EVENT"))););
-
+      // Note:执行INSERT操作
       *rec =
           page_cur_tuple_insert(page_cursor, entry, index, offsets, heap, mtr);
     }

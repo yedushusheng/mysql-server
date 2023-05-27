@@ -403,7 +403,7 @@ static TYPELIB innodb_checksum_algorithm_typelib = {
 static const char *innodb_flush_method_names[] = {
 #ifndef _WIN32 /* See srv_unix_flush_t */
     "fsync", "O_DSYNC", "littlesync", "nosync", "O_DIRECT", "O_DIRECT_NO_FSYNC",
-#else /* _WIN32; see srv_win_flush_t */
+#else          /* _WIN32; see srv_win_flush_t */
     "unbuffered", "normal",
 #endif
     NullS};
@@ -7902,6 +7902,14 @@ static mysql_row_templ_t *build_template_field(
 retrieval of just those column values MySQL needs in its processing.
 @param[in] whole_row true if access is needed to a whole row, false if accessing
 individual fields is enough */
+/** Note:内部函数
+ * build_template(true)函数主要是构造:
+ * row_prebuilt_t::mysql_row_templ_t* mysql_template
+ * row_prebuilt_t:: unsigned n_template.
+ * n_template = table->s->fields也就是server record的列数,mysql_row_templ_t结构的成员就不列举了,它记录了server record每个field的信息,
+ * 比如:列的类型,列的长度,列在表中的偏移,列在索引中的偏移等信息,利用这些信息可以从server record中提取出每个field,
+ * 这些信息是从innodb数据字典dict_col_t中获取的.
+*/
 void ha_innobase::build_template(bool whole_row) {
   dict_index_t *index;
   dict_index_t *clust_index;
@@ -8536,8 +8544,25 @@ void innobase_get_multi_value(const TABLE *mysql_table, ulint f_idx,
  handle.
  @return error code */
 /** Note:外部接口
- * innodb层写记录
-*/
+ * innodb层写记录:将一行数据借助InnoDB存储引擎实现undo,redo,binlog的刷盘
+ * 调用:
+ * ha_innobase::write_row
+ * -> row_insert_for_mysql
+ * ->-> row_insert_for_mysql_using_ins_graph
+ * ->->-> row_ins_step
+ * ->->->-> row_ins
+ * ->->->->-> row_ins_index_entry_step
+ * ->->->->->-> row_ins_index_entry
+ * ->->->->->->-> row_ins_clust_index_entry
+ * ->->->->->->->-> row_ins_clust_index_entry_low
+ * ->->->->->->->->-> btr_cur_optimistic_insert
+ * ->->->->->->->->->-> btr_cur_ins_lock_and_undo
+ * ->->->->->->->->->->-> trx_undo_report_row_operation
+ * ->->->->->->->->->->->-> trx_undo_page_report_insert
+ * ->->->->->->->->->->->->-> trx_undo_page_set_next_prev_and_add
+ * ->->->->->->->->->->->->->-> trx_undof_page_add_undo_rec_log
+ * ->->->->->->->->->->->->->->-> trx_undof_page_add_undo_rec_log
+ */
 int ha_innobase::write_row(uchar *record) /*!< in: a row in MySQL format */
 {
   dberr_t error;
@@ -8613,11 +8638,18 @@ int ha_innobase::write_row(uchar *record) /*!< in: a row in MySQL format */
 
   /* Prepare INSERT graph that will be executed for actual INSERT
   (This is a one time operation) */
+  // Note:
   if (m_prebuilt->mysql_template == nullptr ||
       m_prebuilt->template_type != ROW_MYSQL_WHOLE_ROW) {
     /* Build the template used in converting quickly between
     the two database formats */
-
+    /** Note:build_template(true)函数主要是构造:
+     * row_prebuilt_t::mysql_row_templ_t* mysql_template
+     * row_prebuilt_t:: unsigned n_template.
+     * n_template = table->s->fields也就是server record的列数,mysql_row_templ_t结构的成员就不列举了,它记录了server record每个field的信息,
+     * 比如:列的类型,列的长度,列在表中的偏移,列在索引中的偏移等信息,利用这些信息可以从server record中提取出每个field,
+     * 这些信息是从innodb数据字典dict_col_t中获取的.
+    */
     build_template(true);
   }
 
@@ -8628,6 +8660,9 @@ int ha_innobase::write_row(uchar *record) /*!< in: a row in MySQL format */
   }
 
   /* Execute insert graph that will result in actual insert. */
+  /** Note:存储引擎层写行记录,开始执行真正的INSERT操作(日志具体操作,之前的操作都是预处理)
+   * m_prebuilt即row_prebuilt_t对象，record即server record.
+  */
   error = row_insert_for_mysql((byte *)record, m_prebuilt);
 
   DEBUG_SYNC(m_user_thd, "ib_after_row_insert");
@@ -13492,7 +13527,7 @@ template int create_table_info_t::create_table_update_global_dd<dd::Partition>(
 
 /** Note:内部函数
  * 在StorageEngine(SE)中创建物理文件,并记录创建日志到DDL_LOG表中
-*/
+ */
 template <typename Table>
 int innobase_basic_ddl::create_impl(THD *thd, const char *name, TABLE *form,
                                     HA_CREATE_INFO *create_info, Table *dd_tab,
@@ -13544,7 +13579,7 @@ int innobase_basic_ddl::create_impl(THD *thd, const char *name, TABLE *form,
   if ((error = info.create_table_update_global_dd(dd_tab))) {
     goto cleanup;
   }
-  
+
   // Note:创建文件目录
   error = info.create_table_update_dict();
 
@@ -14166,10 +14201,10 @@ static bool dd_is_only_column(const dd::Index *index,
 @retval 0 on success */
 /** Note:外部接口
  * 数据字典sql/dd/dd_table.cc调用
- * 
+ *
  * 该函数将会为Innodb存储引擎创建它自己需要的系统列。
  * 实际上就是把原来Innodb自己的系统表统一到DD中。
-*/
+ */
 int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
                                             const List<Create_field> *,
                                             const KEY *, uint,
@@ -14193,7 +14228,7 @@ int ha_innobase::get_extra_columns_and_keys(const HA_CREATE_INFO *,
       ut_ad(i->type() != dd::Index::IT_PRIMARY);
       fts_doc_id_index = i;
     }
-    
+
     /* Note:验证索引算法是否有效 */
     switch (i->algorithm()) {
       case dd::Index::IA_SE_SPECIFIC:
@@ -14496,7 +14531,7 @@ at statement commit time.
  * 					->sql/handler.cc/ha_create_table
  * 						->sql/handler.cc/handler::ha_create：handler创建表
  * 							->storage/innobase/handler/ha_innodb.cc/ha_innobase::create
-*/
+ */
 int ha_innobase::create(const char *name, TABLE *form,
                         HA_CREATE_INFO *create_info, dd::Table *table_def) {
   THD *thd = ha_thd();
@@ -17781,7 +17816,7 @@ int ha_innobase::extra(enum ha_extra_function operation)
       m_prebuilt->no_autoinc_locking = true;
       break;
     default: /* Do nothing */
-             ;
+        ;
   }
 
   return (0);
@@ -19286,12 +19321,12 @@ int ha_innobase::cmp_ref(
  index field in bytes.
  @return number of bytes occupied by the first n characters */
 ulint innobase_get_at_most_n_mbchars(
-    ulint charset_id, /*!< in: character set id */
-    ulint prefix_len, /*!< in: prefix length in bytes of the index
-                      (this has to be divided by mbmaxlen to get the
-                      number of CHARACTERS n in the prefix) */
-    ulint data_len,   /*!< in: length of the string in bytes */
-    const char *str)  /*!< in: character string */
+    ulint charset_id,    /*!< in: character set id */
+    ulint prefix_len,    /*!< in: prefix length in bytes of the index
+                         (this has to be divided by mbmaxlen to get the
+                         number of CHARACTERS n in the prefix) */
+    ulint data_len,      /*!< in: length of the string in bytes */
+    const char *str)     /*!< in: character string */
 {
   ulint char_length;     /*!< character length in bytes */
   ulint n_chars;         /*!< number of characters in prefix */
@@ -22685,9 +22720,9 @@ mysql_declare_plugin(innobase){
     PLUGIN_AUTHOR_ORACLE,
     "Supports transactions, row-level locking, and foreign keys",
     PLUGIN_LICENSE_GPL,
-    innodb_init, /* Plugin Init */
-    nullptr,     /* Plugin Check uninstall */
-    nullptr,     /* Plugin Deinit */
+    innodb_init,                    /* Plugin Init */
+    nullptr,                        /* Plugin Check uninstall */
+    nullptr,                        /* Plugin Deinit */
     INNODB_VERSION_SHORT,
     innodb_status_variables_export, /* status variables */
     innobase_system_variables,      /* system variables */

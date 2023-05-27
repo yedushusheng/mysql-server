@@ -1020,6 +1020,11 @@ void row_update_prebuilt_trx(row_prebuilt_t *prebuilt, trx_t *trx) {
  has not yet been built in the prebuilt struct, then this function first
  builds it.
  @return prebuilt dtuple; the column type information is also set in it */
+/** Note:内容函数
+ * row_get_prebuilt_insert_row函数主要就是为m_prebuilt->ins_node各成员赋值的,
+ * ins_node_t结构体其成员变量dtuple_t是record 在innodb 保存的格式,
+ * 创建dtuple_t的时候也一块创建了n_fields个dfield_t对象,dfield_t对象在dtuple_t结构尾部.
+*/
 static dtuple_t *row_get_prebuilt_insert_row(
     row_prebuilt_t *prebuilt) /*!< in: prebuilt struct in MySQL
                               handle */
@@ -1051,6 +1056,7 @@ static dtuple_t *row_get_prebuilt_insert_row(
 
   ins_node_t *node;
 
+  // Note:创建ins_node_t对象,为各个成员赋初值,ins_node_t::entry_sys_heap也是在该函数内分配内存,主要用来保存index entry和sys field
   node = ins_node_create(INS_DIRECT, table, prebuilt->heap);
 
   prebuilt->ins_node = node;
@@ -1070,12 +1076,21 @@ static dtuple_t *row_get_prebuilt_insert_row(
   }
 
   dtuple_t *row;
-
+  
+  /** Note:创建dtupe_t对象,并分配dfield_t内存,dict_table_get_n_cols(table)返回table->n_cols对于表t1,table->n_cols=6
+  */
   row = dtuple_create_with_vcol(prebuilt->heap, table->get_n_cols(),
                                 dict_table_get_n_v_cols(table));
 
+  // Note:把dict_table_t表t1的每个dict_col_t的信息拷贝到对应的dfield_t中,此时还不包括recode data
   dict_table_copy_types(row, table);
 
+  /** Note:注意此时dtuple_t中dfiled_t的排列顺序是这样的:
+   * a, b,c,row_id,trx_id,roll_ptr.
+   * 这个顺序与index中的排列并不相同,比如clusted index(聚簇索引)记录列的排列顺序是这样的：
+   * a,trx_id,roll_ptr,b,c
+   * 所以还需要创建index对应的dtuple_t,每个index对应一个dtuple_t,ins_node_set_new_row函数完成此工作.
+  */
   ins_node_set_new_row(node, row);
 
   prebuilt->ins_graph = static_cast<que_fork_t *>(
@@ -1496,6 +1511,9 @@ INSERT graph.
 @param[in]	mysql_rec	row in the MySQL format
 @param[in,out]	prebuilt	prebuilt struct in MySQL handle
 @return error code or DB_SUCCESS */
+/** Note:内部函数
+ * 完成用户表的INSERT操作
+*/
 static dberr_t row_insert_for_mysql_using_ins_graph(const byte *mysql_rec,
                                                     row_prebuilt_t *prebuilt) {
   trx_savept_t savept;
@@ -1553,12 +1571,22 @@ static dberr_t row_insert_for_mysql_using_ins_graph(const byte *mysql_rec,
   trx->op_info = "inserting";
 
   row_mysql_delay_if_needed();
-
+  
+  /** Note:trx_start_if_not_started_xa函数开启事务,如果trx->state的值是TRX_STATE_NOT_STARTED,则调用trx_start_low开启事务,
+   * 此处会调用trx_sys_get_max_trx_id 分配事务id,现在事务的状态为TRX_STATE_ACTIVE。
+  */
   trx_start_if_not_started_xa(trx, true);
 
+  /** Note:row_get_prebuilt_insert_row函数主要就是为m_prebuilt->ins_node各成员赋值的,
+   * ins_node_t结构体其成员变量dtuple_t是record 在innodb 保存的格式,
+   * 创建dtuple_t的时候也一块创建了n_fields个dfield_t对象,dfield_t对象在dtuple_t结构尾部.
+  */
   row_get_prebuilt_insert_row(prebuilt);
   node = prebuilt->ins_node;
-
+  
+  /** Note:该函数把server record fomat转成innobase record format,不同数据类型处理方式不同,
+   * 比如整形server端是小端存储,innodb是大端存储,每个列保存在dtule_t::dfield_t中,现在用户定义的列的数据有了,系统列的值还没绑定
+  */
   row_mysql_convert_row_to_innobase(node->row, prebuilt, mysql_rec, &blob_heap);
 
   savept = trx_savept_take(trx);
@@ -1577,7 +1605,8 @@ static dberr_t row_insert_for_mysql_using_ins_graph(const byte *mysql_rec,
 run_again:
   thr->run_node = node;
   thr->prev_node = node;
-
+  
+  // Note:完成trx_id赋值
   row_ins_step(thr);
 
   DEBUG_SYNC_C("ib_after_row_insert_step");
@@ -1701,6 +1730,9 @@ run_again:
 @param[in]	mysql_rec	row in the MySQL format
 @param[in,out]	prebuilt	prebuilt struct in MySQL handle
 @return error code or DB_SUCCESS*/
+/** Note:外部接口
+ * InnoDB真正执行INSERT操作的入口
+*/
 dberr_t row_insert_for_mysql(const byte *mysql_rec, row_prebuilt_t *prebuilt) {
   /* For intrinsic tables there a lot of restrictions that can be
   relaxed including locking of table, transaction handling, etc.
@@ -1708,6 +1740,7 @@ dberr_t row_insert_for_mysql(const byte *mysql_rec, row_prebuilt_t *prebuilt) {
   if (prebuilt->table->is_intrinsic()) {
     return (row_insert_for_mysql_using_cursor(mysql_rec, prebuilt));
   } else {
+    // Note:用户表的INSERT是进入row_insert_for_mysql_using_ins_graph函数
     return (row_insert_for_mysql_using_ins_graph(mysql_rec, prebuilt));
   }
 }

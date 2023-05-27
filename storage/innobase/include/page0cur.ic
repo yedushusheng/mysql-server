@@ -213,6 +213,22 @@ hold the tuple converted record. */
   rec_t *rec;
   rec_t *insert_rec;
 
+  /** Note:
+   * 计算physical record的大小,如果表compact格式,计算函数是rec_get_converted_size_comp_prefix_low.
+   * 计算分两部分:
+   * 1.统计record的每个field的长度data_size
+   * 2.统计除field外record的额外信息长度extra_size
+   * 每个field的长度可通过dfield_t::len获得,trx_id 占6个字节,roll_ptr 占7个字节.
+   * extra_size包括四个部分:
+   * (变长字段长度列表+nullable值列表+field_count+记录头信息),其中field_count是在线加列feature新增的,如果表没有执行过instant add column,
+   * 这不包括field_count,记录头信息的长度是固定的:5个字节,可以为空的字段从dict_index_t::n_nullable可以获取,
+   * 所以只有变长字段长度列表的长度需要根据field类型及实际长度判断：
+   * 如果是定长,无需处理;如果field是externally stored,则extra_size+=2;
+   * 如果是变长字段的字义长度大于255,或者字段类型为BLOB,则extra_size+=2,
+   * 如果定义长度小于128,或者小于256单类型不是BLOB类型,则extra_size++,
+   * 其他情况extra_size+=2.
+   * rec_size计算好之后,分配好内存,按照Compact格式装填数据,也就是把dtuple_t转换成physical record,该过程在rec_convert_dtuple_to_rec函数内完成.
+  */
   ulint size = rec_get_converted_size(index, tuple);
 
   if (!*heap) {
@@ -220,7 +236,8 @@ hold the tuple converted record. */
         size + (4 + REC_OFFS_HEADER_SIZE + dtuple_get_n_fields(tuple)) *
                    sizeof **offsets);
   }
-
+ 
+  // Note:把dtuple_t转换成physical record
   rec = rec_convert_dtuple_to_rec((byte *)mem_heap_alloc(*heap, size), index,
                                   tuple);
 

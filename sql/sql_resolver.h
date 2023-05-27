@@ -22,7 +22,7 @@
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
-/**NOTE:算法prepare的相关处理,对应MySQL5.6 JOIN::prepare
+/** NOTE:算法prepare的相关处理,对应MySQL5.6 JOIN::prepare
  * SQL逻辑优化(sql_planner.cc对应SQL物理优化)
  *                               SQL
  *                               \|/

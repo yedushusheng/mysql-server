@@ -202,10 +202,18 @@ void ins_node_set_new_row(
 
   /* Create templates for index entries */
 
+  /** Note:ins_node_create_entry_list创建index entry,不同index包含不同的dfield_t,
+   * 比如表有主键就不需要row_id了,所有index entry保存在ins_node_t::entry_list链表中.
+   * 创建index entry使用了dict_index_t结构体,这个过程可以参考函数row_build_index_entry_low.
+  */
   ins_node_create_entry_list(node);
 
   /* Allocate from entry_sys_heap buffers for sys fields */
 
+  /** Note:row_ins_alloc_sys_fields为sys field分配内存,这部分内存是从ins_node_t::entry_sys_heap 中分配的,
+   * 此时trx_id和roll_ptr还未真正赋值到这些内存区域.
+   * 上面这一系列操作完成后,目前的状态是表的dtuple_t已经准备好了,index entry也准备好了,就差record 数据了. 
+  */
   row_ins_alloc_sys_fields(node);
 
   /* As we allocated a new trx id buf, the trx id should be written
@@ -2515,6 +2523,7 @@ and return. don't execute actual insert. */
 
     if (mode != BTR_MODIFY_TREE) {
       ut_ad((mode & ~BTR_ALREADY_S_LATCHED) == BTR_MODIFY_LEAF);
+      // Note:page插入,完成与lock和undo有关的操作,并且赋值roll_ptr给field
       err = btr_cur_optimistic_insert(flags, cursor, &offsets, &offsets_heap,
                                       entry, &insert_rec, &big_rec, thr, &mtr);
     } else {
@@ -2644,7 +2653,7 @@ static dberr_t row_ins_sorted_clust_index_entry(ulint mode, dict_index_t *index,
 
     if (mode != BTR_MODIFY_TREE) {
       ut_ad((mode & ~BTR_ALREADY_S_LATCHED) == BTR_MODIFY_LEAF);
-
+      // Note:完成与lock和undo有关的操作,并且赋值roll_ptr给field
       err = btr_cur_optimistic_insert(flags, &cursor, &offsets, &offsets_heap,
                                       entry, &insert_rec, &big_rec, thr, mtr);
       if (err != DB_SUCCESS) {
@@ -2999,6 +3008,7 @@ dberr_t row_ins_sec_index_entry_low(uint32_t flags, ulint mode,
     big_rec_t *big_rec;
 
     if (mode == BTR_MODIFY_LEAF) {
+      // Note:完成与lock和undo有关的操作,并且赋值roll_ptr给field
       err = btr_cur_optimistic_insert(flags, &cursor, &offsets, &offsets_heap,
                                       entry, &insert_rec, &big_rec, thr, &mtr);
       if (err == DB_SUCCESS && dict_index_is_spatial(index) &&
@@ -3047,6 +3057,9 @@ func_exit:
  to a delete marked record, performs the insert by updating or delete
  unmarking the delete marked record.
  @return DB_SUCCESS, DB_LOCK_WAIT, DB_DUPLICATE_KEY, or some other error code */
+/** Note:内部函数
+ * 该函数会打开cursor,定位到插入的page
+*/ 
 dberr_t row_ins_clust_index_entry(
     dict_index_t *index, /*!< in: clustered index */
     dtuple_t *entry,     /*!< in/out: index entry to insert */
@@ -3094,6 +3107,7 @@ and return. don't execute actual insert. */
     }
     err = row_ins_sorted_clust_index_entry(BTR_MODIFY_LEAF, index, entry, thr);
   } else {
+    // Note:打开cursor,定位到插入的page
     err = row_ins_clust_index_entry_low(flags, BTR_MODIFY_LEAF, index, n_uniq,
                                         entry, thr, dup_chk_only);
   }
@@ -3286,6 +3300,9 @@ static dberr_t row_ins_index_entry(dict_index_t *index, dtuple_t *entry,
   });
 
   if (index->is_clustered()) {
+    /** Note:判断是否为聚簇索引(cluster index)
+     * 该函数会打开cursor,定位到插入的page
+    */
     return (row_ins_clust_index_entry(index, entry, thr, false));
   } else if (index->is_multi_value()) {
     return (
@@ -3414,6 +3431,7 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
 
   ut_ad(dtuple_check_typed(node->row));
 
+  // Note:把innobase format field的值赋给对应的index entry field
   err = row_ins_index_entry_set_vals(node->index, node->entry, node->row);
 
   if (err != DB_SUCCESS) {
@@ -3422,6 +3440,7 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
 
   ut_ad(dtuple_check_typed(node->entry));
 
+  // Note:
   err = row_ins_index_entry(node->index, node->entry, node->ins_multi_val_pos,
                             thr);
 
@@ -3541,6 +3560,7 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
 
   while (node->index != nullptr) {
     if (node->index->type != DICT_FTS) {
+      // Note:遍历每个索引index,插入index entry
       err = row_ins_index_entry_step(node, thr);
 
       switch (err) {
@@ -3618,6 +3638,7 @@ que_thr_t *row_ins_step(que_thr_t *thr) /*!< in: query thread */
   it again here. But we must write trx->id to node->trx_id_buf. */
 
   memset(node->trx_id_buf, 0, DATA_TRX_ID_LEN);
+  // Note:写trx_id
   trx_write_trx_id(node->trx_id_buf, trx->id);
 
   if (node->state == INS_NODE_SET_IX_LOCK) {
@@ -3631,7 +3652,8 @@ que_thr_t *row_ins_step(que_thr_t *thr) /*!< in: query thread */
 
       goto same_trx;
     }
-
+    
+    // Note:如果是IX锁,则锁表
     err = lock_table(0, node->table, LOCK_IX, thr);
 
     DBUG_EXECUTE_IF("ib_row_ins_ix_lock_wait", err = DB_LOCK_WAIT;);
@@ -3664,7 +3686,7 @@ que_thr_t *row_ins_step(que_thr_t *thr) /*!< in: query thread */
   }
 
   /* DO THE CHECKS OF THE CONSISTENCY CONSTRAINTS HERE */
-
+  // Note:遍历表的每个index,插入index entry
   err = row_ins(node, thr);
 
 error_handling:

@@ -3338,6 +3338,8 @@ int handler::ha_index_read_last_map(uchar *buf, const uchar *key,
  * 2.联合主键
  * key_copy(user_key, table->record[0], table->key_info, table->key_info->key_length);
  * table->file->ha_index_read_idx_map(table->record[0], 0, user_key, HA_WHOLE_KEY, HA_READ_KEY_EXACT);
+ * 3.唯一键或者部分唯一键
+ * 
 */
 int handler::ha_index_read_idx_map(uchar *buf, uint index, const uchar *key,
                                    key_part_map keypart_map,
