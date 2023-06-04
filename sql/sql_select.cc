@@ -522,7 +522,7 @@ bool Sql_cmd_select::prepare_inner(THD *thd) {
  * mysql_execute_command()
  *   lex->m_sql_cmd->execute()
  *   Sql_cmd_dml::execute()
- *     Sql_cmd_dml::prepare()
+ *     1.Sql_cmd_dml::prepare()
  *       Sql_cmd_select::precheck()
  *       Sql_cmd_select::open_tables_for_query()
  *       Sql_cmd_select::prepare_inner()
@@ -530,22 +530,22 @@ bool Sql_cmd_select::prepare_inner(THD *thd) {
  *         SELECT_LEX_UNIT::prepare() (not simple or simple SELECT_LEX::prepare)
  *           SELECT_LEX::prepare()
  *             ......
- *       Sql_cmd_dml::execute_inner
- *         SELECT_LEX_UNIT::optimize() (not simple or simple SELECT_LEX::optimize)
+ *     2.Sql_cmd_dml::execute_inner
+ *         2.1 SELECT_LEX_UNIT::optimize() (not simple or simple SELECT_LEX::optimize)
  *           SELECT_LEX::optimize()  
- *             JOIN::optimize()
+ *             JOIN::optimize()  // optimizer is from here ... MySQL8.0与5.6一致
  *             SELECT_LEX_UNIT::optimize()
  *               ......
- *         SELECT_LEX_UNIT::execute() (not simple or simple SELECT_LEX::optimize)
+ *         2.2 SELECT_LEX_UNIT::execute() (not simple or simple SELECT_LEX::optimize)
  *           SELECT_LEX::execute()  
- *             JOIN::exec()
+ *             JOIN::exec()  // MySQL8.0 Sql_cmd_dml::execute_inner
  *               JOIN::prepare_result()
  *               do_select()
  *                 sub_select()
  *                   ......
  *             SELECT_LEX_UNIT::execute()
  *               ......
- *   SELECT_LEX_UNIT::cleanup(false)
+ *     3.SELECT_LEX_UNIT::cleanup(false)
 */
 bool Sql_cmd_dml::execute(THD *thd) {
   DBUG_TRACE;
@@ -590,6 +590,7 @@ bool Sql_cmd_dml::execute(THD *thd) {
   }
 
   if (!is_prepared()) {
+    // Note:非prepare
     if (prepare(thd)) goto err;
   } else {
     /*
@@ -643,6 +644,7 @@ bool Sql_cmd_dml::execute(THD *thd) {
   }
 
   // Perform statement-specific execution
+  // Note:执行
   if (execute_inner(thd)) goto err;
 
   // Count the number of statements offloaded to a secondary storage engine.
@@ -657,6 +659,7 @@ bool Sql_cmd_dml::execute(THD *thd) {
   THD_STAGE_INFO(thd, stage_end);
 
   // Do partial cleanup (preserve plans for EXPLAIN).
+  // Note:部分清理
   lex->cleanup(thd, false);
   lex->clear_values_map();
   lex->set_secondary_engine_execution_context(nullptr);
@@ -838,19 +841,31 @@ static bool optimize_secondary_engine(THD *thd) {
   a single query block and one for query expressions containing multiple
   query blocks combined with UNION.
 */
-//NOTE:内部函数 DML execute入口
+/** NOTE:内部函数
+ * DML execute入口
+ * 调用:
+ * mysql_executor_command
+ * ->Sql_cmd_dml::execute
+ * ->->Sql_cmd_dml::execute_inner
+ * ->->->SELECT_LEX_UNIT::optimize
+ * ->->->SELECT_LEX_UNIT::execute(5.7 Query_expression::execute)
+ * ->->->->ExecuteIteratorQuery
+*/
 bool Sql_cmd_dml::execute_inner(THD *thd) {
   SELECT_LEX_UNIT *unit = lex->unit;
 
+  // Note:SQL优化
   if (unit->optimize(thd, /*materialize_destination=*/nullptr,
                      /*create_iterators=*/true))
     return true;
 
   // Calculate the current statement cost. It will be made available in
   // the Last_query_cost status variable.
+  // Note:计算代价
   thd->m_current_query_cost = accumulate_statement_cost(lex);
 
   // Perform secondary engine optimizations, if needed.
+  // Note:执行第二引擎优化
   if (optimize_secondary_engine(thd)) return true;
 
   // We know by now that execution will complete (successful or with error)
@@ -858,6 +873,7 @@ bool Sql_cmd_dml::execute_inner(THD *thd) {
   if (lex->is_explain()) {
     if (explain_query(thd, thd, unit)) return true; /* purecov: inspected */
   } else {
+    // Note:接着调用执行器,循环
     if (unit->execute(thd)) return true;
   }
 

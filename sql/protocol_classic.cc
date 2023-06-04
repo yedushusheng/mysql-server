@@ -2818,7 +2818,9 @@ static bool parse_query_bind_params(
     - @ref sect_protocol_command_phase_sp_multi_resultset
     - @ref page_protocol_basic_err_packet
 */
-
+/** Note:内部函数
+ * 解析包
+*/
 bool Protocol_classic::parse_packet(union COM_DATA *data,
                                     enum_server_command cmd) {
   DBUG_TRACE;
@@ -2960,6 +2962,34 @@ malformed:
   return true;
 }
 
+/** Note:外部接口
+ * 解析vio的包内容,如果压缩则需要解压缩
+ * my_net_set_read_timeout->vio_timeout
+ * Protocol_classic::get_command,
+ * 	Protocol_classic::read_packet
+ * 		my_net_read
+ * 			vio_set_blocking_flag
+ * 				vio_set_blocking
+ * 			net_read_packet, [multi-call if necessary]
+ * 				net_read_packet_header: read header of packet
+ * 					net_read_raw_loop: Read something from server/clinet
+ * 						vio_read
+ * 							inline_mysql_socket_recv(mysql_socket.h) -> recv
+ * 							error handling
+ * 						error handler (by timeout/error)
+ * 				net_realloc: Expand packet buffer if necessary
+ * 					check whether exceed the max_allow_packet
+ * 				net_read_raw_loop
+ * 			my_uncompress [to uncompress package]
+ * 				zstd_uncompress
+ * 				zlib_uncompress
+ * 		error handling
+ * 	get command, from first byte enum_server_command.
+ * 	Protocol_classic::parse_packet
+ * 		validate and parse for different command.
+ * 		对于COM_STMT_EXECUTE命令:需要解释Prepared Statement的参数类型,然后读取真实数据,
+ * 		对于其他命令,按照mysql协议把数据指针指向buf;
+*/
 bool Protocol_classic::create_command(COM_DATA *com_data,
                                       enum_server_command cmd, uchar *pkt,
                                       size_t length) {

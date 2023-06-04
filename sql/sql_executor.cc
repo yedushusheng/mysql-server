@@ -3933,6 +3933,7 @@ bool DynamicRangeIterator::Init() {
   // two different read sets, to be used once the access strategy is chosen
   // here.
   if (qck) {
+    // Note:初始化迭代器访问数据
     m_iterator = NewIterator<IndexRangeScanIterator>(
         thd(), table(), qck, m_qep_tab->position()->rows_fetched,
         m_examined_rows);

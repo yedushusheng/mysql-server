@@ -299,7 +299,9 @@ bool JOIN::alloc_indirection_slices() {
  *                -> make_join_readinfo
  *                -> make_tmp_tables_info
 */
-//NOTE:外部接口
+/** NOTE:外部接口
+ * 这里涉及非常多的SQL优化
+*/
 bool JOIN::optimize() {
   DBUG_TRACE;
 
@@ -339,7 +341,7 @@ bool JOIN::optimize() {
 
   if (alloc_func_list()) return true; /* purecov: inspected */
 
-  //NOTE:收集WHERE/HAVING/JOIN ON中的等值关系
+  // NOTE:收集WHERE/HAVING/JOIN ON中的等值关系
   if (select_lex->get_optimizable_conditions(thd, &where_cond, &having_cond))
     return true;
 

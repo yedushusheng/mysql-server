@@ -599,7 +599,7 @@ struct POSITION {
  * 存放了关系的一些相关信息,也存放了连接操作需要的一些信息,所以称为连接表
  * 在语法解析后被查询或者连接的表存储与TABLE_LIST链表上,在优化阶段所有的信息存放在JOIN对象中(这里有JOIN_TAB)
  * SQL命令           语法分析                       查询优化                       查询执行
- *           st_select_lex/SELECT_LEX      JOIN::prepare JOIN::optimize         JOIN::exec
+ *           st_select_lex/SELECT_LEX      JOIN::prepare JOIN::optimize         JOIN::exec //MySQL8.0:Sql_cmd_dml::execute_inner
  *                     |_______________________________
  *                     |                          _____|___                     Const_estimate
  *     ----SQL_I_List<TABLE_LIST> table_list      |         |

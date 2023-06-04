@@ -1200,7 +1200,12 @@ void bind_fields(Item *first) {
   @retval
     1  request of thread shutdown (see dispatch_command() description)
 */
-
+/** Note:do_command函数是由线程中的循环调用的,主要可以分成两个部分,
+ * 即首先从连接中读取命令,然后执行命令.
+ * 
+ * 参考:https://zhuanlan.zhihu.com/p/121772222
+ * 
+*/
 bool do_command(THD *thd) {
   bool return_value;
   int rc;
@@ -1232,6 +1237,9 @@ bool do_command(THD *thd) {
     number of seconds has passed.
   */
   net = thd->get_protocol_classic()->get_net();
+  /** Note:首先,设置vio读取的超时,即my_net_set_read_timeout,
+   * 其中vio为Virtual I/O,主要为了封装linux和window不同的IO接口.
+  */
   my_net_set_read_timeout(net, thd->variables.net_wait_timeout);
   net_new_transaction(net);
 
@@ -1263,6 +1271,11 @@ bool do_command(THD *thd) {
     See init_net_server_extension()
   */
   thd->m_server_idle = true;
+  /** Note:调用Protocol_classic::get_command:分成两个内容,
+   * 一个是从vio中读取命令,通过调用my_net_read->net_read_packet读取数据包(如果有多个包,则需要读取多次).
+   * 对于该过程,先读取包头,然后再根据包头大小去读取数据,同时会检查是否超过最大包上限.
+   * 另外,如果包是被压缩过的,则需要解压,有两种解压方式:zstd_uncompress和zlib_uncompress.
+  */
   rc = thd->get_protocol()->get_command(&com_data, &command);
   thd->m_server_idle = false;
 
@@ -1317,6 +1330,7 @@ bool do_command(THD *thd) {
 
   DEBUG_SYNC(thd, "before_command_dispatch");
 
+  // Note:分发并执行命令
   return_value = dispatch_command(thd, &com_data, command);
   thd->get_protocol_classic()->get_output_packet()->shrink(
       thd->variables.net_buffer_length);
@@ -1517,6 +1531,51 @@ static void copy_bind_parameter_values(THD *thd, PS_PARAM *parameters,
     1   request of thread shutdown, i. e. if command is
         COM_QUIT
 */
+/** Note:内部函数
+ * 调用:
+ * start_thread
+ * ->handle_connection
+ * 	->do_command
+ * 		->dispatch_command:分发不同的SQL
+ * 			->dispatch_sql_command
+ * 				->lex_start
+ * 				->parse_sql:词法语法解析
+ * 				->mysql_execute_command:Rewriter/Resolver,Optimizer,Executor
+ * 根据获取得到的命令,并且执行命令.
+ * 首先,会根据包的大小进行申请一些内存给输出(返回)的String对象中.
+ * 然后便是进入dispatch_command函数,先执行以下逻辑:
+ * 更新performance schema接口指标;
+ * 检查当前时间,如果超过了2038年,则停止该MySQL服务;
+ * 如果请求协议类型是PROTOCOL_PLUGIN,但该命令不允许PROTOCOL_PLUGIN,那么将断开该连接;
+ * 检查密码是否过期;
+ * 将该命令通知到相关的审计中audit;
+ * 具体流程:
+ * String::shrink: Reclaim some memory
+ * dispatch_command
+ * 	performance(schema) counter and profile
+ * 	if past 2038, kill mysql server
+ * 	如果请求协议类型是PROTOCOL_PLUGIN,但该命令不允许PROTOCOL_PLUGIN,那么将断开该连接
+ * 	Enforce password expiration
+ * 	mysql_audit_notify
+ * 		mysql_audit_acquire_plugins
+ * 			check_audit_mask
+ * 			acquire_lookup_mask,
+ * 			acquire_plugins：Acquire and lock any additional audit plugins, whose subscription mask overlaps with the lookup_mask.
+ * 			add_audit_mask
+ * 		event_class_dispatch_error
+ * 			event_class_dispatch
+ * 				plugins_dispatch
+ * 					st_mysql_audit::event_notify
+ * 	dispatch (switch ... case...):
+ * 最后遍进入dispatch,即执行switch ... case ... 这里列举了以下命令,
+ * 我把这些命令分成三类:功能类,数据操作类,未实现.
+ * 功能类:
+ * COM_INIT_DB,COM_REGISTER_SLAVE,COM_RESET_CONNECTION,COM_CLONE,COM_CHANGE_USER,COM_QUIT,COM_BINLOG_DUMP_GTID,COM_BINLOG_DUMP,COM_REFRESH,COM_STATISTICS,COM_PING,COM_PROCESS_INFO,COM_SET_OPTION,COM_DEBUG,COM_PROCESS_KILL
+ * 数据操作类:
+ * COM_STMT_EXECUTE,COM_STMT_FETCH,COM_STMT_SEND_LONG_DATA,COM_STMT_PREPARE,COM_STMT_CLOSE,COM_STMT_RESET,COM_QUERY,COM_FIELD_LIST
+ * 未实现:
+ * COM_SLEEP,COM_CONNECT,COM_TIME,COM_DELAYED_INSERT,COM_END
+*/
 bool dispatch_command(THD *thd, const COM_DATA *com_data,
                       enum enum_server_command command) {
   bool error = false;
@@ -1540,6 +1599,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
 #endif
 
   /* Performance Schema Interface instrumentation, begin */
+  // Note:更新performance schema接口指标
   thd->m_statement_psi = MYSQL_REFINE_STATEMENT(
       thd->m_statement_psi, com_statement_info[command].m_key);
 
@@ -1582,6 +1642,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
       }
       LogErr(WARNING_LEVEL, ER_FUTURE_DATE, tries);
     }
+    // Note:查当前时间,如果超过了2038年,则停止该MySQL服务
     if (tries > max_tries) {
       /*
         If the time has got past 2038 we need to shut this server down
@@ -1597,6 +1658,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
       kill_mysql();
     }
   }
+  // Note:设置query_id
   thd->set_query_id(next_query_id());
   thd->reset_rewritten_query();
   thd_manager->inc_thread_running();
@@ -1609,7 +1671,8 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
     beginning of each command.
   */
   thd->server_status &= ~SERVER_STATUS_CLEAR_SET;
-
+  
+  // Note:如果请求协议类型是PROTOCOL_PLUGIN,但该命令不允许PROTOCOL_PLUGIN,那么将断开该连接
   if (thd->get_protocol()->type() == Protocol::PROTOCOL_PLUGIN &&
       !(server_command_flags[command] & CF_ALLOW_PROTOCOL_PLUGIN)) {
     my_error(ER_PLUGGABLE_PROTOCOL_COMMAND_NOT_SUPPORTED, MYF(0));
@@ -1629,6 +1692,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
        and that's available through other means.
     COM_QUIT should work even for expired statements.
   */
+  // Note:检查密码是否过期
   if (unlikely(thd->security_context()->password_expired() &&
                command != COM_QUERY && command != COM_STMT_CLOSE &&
                command != COM_STMT_SEND_LONG_DATA && command != COM_PING &&
@@ -1637,7 +1701,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
     my_error(ER_MUST_CHANGE_PASSWORD, MYF(0));
     goto done;
   }
-
+  // Note:将该指令通知到相应的aduit审计插件中
   if (mysql_audit_notify(thd, AUDIT_EVENT(MYSQL_AUDIT_COMMAND_START), command,
                          command_name[command].str)) {
     goto done;
@@ -1832,7 +1896,8 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
 
       copy_bind_parameter_values(thd, com_data->com_query.parameters,
                                  com_data->com_query.parameter_count);
-
+      
+      // Note:分发SQL
       dispatch_sql_command(thd, &parser_state);
 
       // Check if the statement failed and needs to be restarted in
@@ -2682,12 +2747,18 @@ static inline void binlog_gtid_end_transaction(THD *thd) {
 
 /** Note:执行SQL的入口函数
  * https://www.bookstack.cn/read/aliyun-rds-core/bdf04a3b80187451.md
- *  
- * 大致调用流程(8.0.13):
+ * 总体流程:
+ * do_command
+ * ->dispatch_command
+ *   ->mysql_parse
+ *      ->lex_start
+ *      ->parse_sql:语法解析
+ *      ->mysql_execute_command() 
+ * 具体调用流程(8.0.13):
  * mysql_execute_command()
  *   lex->m_sql_cmd->execute()
  *   Sql_cmd_dml::execute()
- *     Sql_cmd_dml::prepare()
+ *     1.Sql_cmd_dml::prepare()
  *       Sql_cmd_select::precheck()
  *       Sql_cmd_select::open_tables_for_query()
  *       Sql_cmd_select::prepare_inner()
@@ -2695,22 +2766,22 @@ static inline void binlog_gtid_end_transaction(THD *thd) {
  *         SELECT_LEX_UNIT::prepare() (not simple or simple SELECT_LEX::prepare)
  *           SELECT_LEX::prepare()
  *             ......
- *       Sql_cmd_dml::execute_inner
- *         SELECT_LEX_UNIT::optimize() (not simple or simple SELECT_LEX::optimize)
+ *     2.Sql_cmd_dml::execute_inner
+ *         2.1 SELECT_LEX_UNIT::optimize() (not simple or simple SELECT_LEX::optimize)
  *           SELECT_LEX::optimize()  
- *             JOIN::optimize()
+ *             JOIN::optimize()  // optimizer is from here ... MySQL8.0与5.6一致
  *             SELECT_LEX_UNIT::optimize()
  *               ......
- *         SELECT_LEX_UNIT::execute() (not simple or simple SELECT_LEX::optimize)
+ *         2.2 SELECT_LEX_UNIT::execute() (not simple or simple SELECT_LEX::optimize)
  *           SELECT_LEX::execute()  
- *             JOIN::exec()
+ *             JOIN::exec()  // MySQL8.0 Sql_cmd_dml::execute_inner
  *               JOIN::prepare_result()
  *               do_select()
  *                 sub_select()
  *                   ......
  *             SELECT_LEX_UNIT::execute()
  *               ......
- *   SELECT_LEX_UNIT::cleanup(false)
+ *     3.SELECT_LEX_UNIT::cleanup(false)
 */
 /**
   Execute command saved in thd and lex->sql_command.
@@ -2732,6 +2803,7 @@ static inline void binlog_gtid_end_transaction(THD *thd) {
 /** Note:外部接口
  * 执行SQL
  * 调用:
+ * dispatch_sql_command
  * sql_prepare.cc/Execute_sql_statement::execute_server_code
 */
 int mysql_execute_command(THD *thd, bool first_level) {
@@ -3437,6 +3509,7 @@ int mysql_execute_command(THD *thd, bool first_level) {
       res = mysql_checksum_table(thd, first_table, &lex->check_opt);
       break;
     }
+    // Note:SQL入口
     case SQLCOM_REPLACE:
     case SQLCOM_INSERT:
     case SQLCOM_REPLACE_SELECT:
@@ -3453,6 +3526,7 @@ int mysql_execute_command(THD *thd, bool first_level) {
     case SQLCOM_LOAD: {
       DBUG_ASSERT(first_table == all_tables && first_table != nullptr);
       DBUG_ASSERT(lex->m_sql_cmd != nullptr);
+      // Note:执行SQL
       res = lex->m_sql_cmd->execute(thd);
       break;
     }
@@ -4903,7 +4977,9 @@ void THD::reset_for_next_command() {
   @param thd          Current session.
   @param parser_state Parser state.
 */
-/** NOTE:MySQL语法分析器的入口函数(MySQL5.7是mysql_parse函数,MySQL8.0是dispatch_sql_command函数)
+/** NOTE:内部函数
+ * MySQL语法分析器的入口函数
+ * (MySQL5.7是mysql_parse函数,MySQL8.0是dispatch_sql_command函数)
  * MySQL语法分析器负责把MySQL的SQL语句分解为查询树(AST),存放于THD结构体的select_lex类定义的对象上.
 */
 void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
@@ -4913,7 +4989,8 @@ void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
   DBUG_EXECUTE_IF("parser_debug", turn_parser_debug_on(););
 
   mysql_reset_thd_for_next_command(thd);
-  lex_start(thd);//NOTE:初始化语法分析器
+  //NOTE:初始化语法分析器
+  lex_start(thd);
 
   thd->m_parser_state = parser_state;
   invoke_pre_parse_rewrite_plugins(thd);
@@ -4927,7 +5004,8 @@ void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
   bool err = thd->get_stmt_da()->is_error();
 
   if (!err) {
-    err = parse_sql(thd, parser_state, nullptr);//NOTE:分析SQL
+    //NOTE:分析SQL
+    err = parse_sql(thd, parser_state, nullptr);
     if (!err) err = invoke_post_parse_rewrite_plugins(thd, false);
 
     found_semicolon = parser_state->m_lip.found_semicolon;
@@ -5022,7 +5100,7 @@ void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
           auto mgr_ptr = resourcegroups::Resource_group_mgr::instance();
           bool switched = mgr_ptr->switch_resource_group_if_needed(
               thd, &src_res_grp, &dest_res_grp, &ticket, &cur_ticket);
-
+          // Note:解析SQL入口(5.7为parse_sql)
           error = mysql_execute_command(thd, true);
 
           if (switched)

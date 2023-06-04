@@ -661,7 +661,17 @@ bool SELECT_LEX_UNIT::prepare(THD *thd, Query_result *sel_result,
   return false;
 }
 
-/** NOTE:外部接口 union的优化入口
+/** NOTE:外部接口
+ * union的优化入口
+ * 调用：
+ * Sql_cmd_dml::execute_inner
+ * ->SELECT_LEX_UNIT::optimize() (not simple or simple SELECT_LEX::optimize)
+ * ->->SELECT_LEX::optimize()  
+ * ->->->JOIN::optimize()  // optimizer is from here ... MySQL8.0与5.6一致
+ * ->->->SELECT_LEX_UNIT::optimize()
+ * ->->SELECT_LEX_UNIT::create_access_paths:执行优化后创建AccessPath
+ * ->->CreateIteratorFromAccessPath
+ * 说明:
  * SELECT块语句的优化入口SELECT_LEX::optimize
  * SELECT优化器JOIN::optimize
  * UNION优化器SELECT_LEX_UNIT::optimize
@@ -684,7 +694,8 @@ bool SELECT_LEX_UNIT::optimize(THD *thd, TABLE *materialize_destination,
 
     // LIMIT is required for optimization
     if (set_limit(thd, sl)) return true; /* purecov: inspected */
-
+    
+    // Note:优化器
     if (sl->optimize(thd)) return true;
 
     /*
@@ -792,6 +803,9 @@ bool SELECT_LEX_UNIT::optimize(THD *thd, TABLE *materialize_destination,
     create_access_paths(thd);
   }
 
+  /** Note:标记一下所有的查询块(Query Block)都已经优化完毕,更新状态
+   * 接着创建AccessPath,然后初始化对应的迭代器Iterator
+  */
   set_optimized();  // All query blocks optimized, update the state
 
   if (item != nullptr) {
@@ -816,6 +830,7 @@ bool SELECT_LEX_UNIT::optimize(THD *thd, TABLE *materialize_destination,
     } else {
       join = nullptr;
     }
+    // Note:优化结束后构造AccessPath
     m_root_iterator = CreateIteratorFromAccessPath(
         thd, m_root_access_path, join, /*eligible_for_batch_mode=*/true);
     if (false) {
@@ -880,6 +895,9 @@ SELECT_LEX_UNIT::setup_materialization(THD *thd, TABLE *dst_table,
   return query_blocks;
 }
 
+/** Note:外部接口
+ * 执行完优化后调用该接口创建AccessPath,然后调用不同的初始化函数创建不同的迭代器
+*/
 void SELECT_LEX_UNIT::create_access_paths(THD *thd) {
   if (is_simple()) {
     JOIN *join = first_select()->join;
@@ -1129,6 +1147,11 @@ bool SELECT_LEX_UNIT::ClearForExecution(THD *thd) {
   return false;
 }
 
+/** Note:内部函数
+ * 调用:
+ * SELECT_LEX_UNIT::execute
+ * 迭代器模型/火山模型执行入口
+*/
 bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
   THD_STAGE_INFO(thd, stage_executing);
   DEBUG_SYNC(thd, "before_join_exec");
@@ -1136,15 +1159,22 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
   Opt_trace_context *const trace = &thd->opt_trace;
   Opt_trace_object trace_wrapper(trace);
   Opt_trace_object trace_exec(trace, "join_execution");
+  /** Note:判断一个查询表达式是否有union或者多级order,如果没有说明这个查询语句简单.
+   * 如果是简单的SQL,就执行​​add_select_number.
+  */
   if (is_simple()) {
     trace_exec.add_select_number(first_select()->select_number);
   }
   Opt_trace_array trace_steps(trace, "steps");
 
+  // Note:在初始化root迭代器之前,把之前的执行迭代器的数据清除
   if (ClearForExecution(thd)) {
     return true;
   }
 
+  /** Note:运行​​get_field_list()​​,获取查询表达式的字段列表,并将所有字段都放到一个deque中,即​​mem_root_deque<Item*>​​;
+   * 对于查询块的并集,返回在准备期间生成的字段列表,对于单个查询块,尽可能返回字段列表
+  */
   mem_root_deque<Item *> *fields = get_field_list();
   Query_result *query_result = this->query_result();
   DBUG_ASSERT(query_result != nullptr);
@@ -1156,9 +1186,16 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
     return true;
   }
 
+  /** Note:运行​​start_execution​​,准备执行查询表达式或DML查询
+  */
   set_executed();
 
   // Hand over the query to the secondary engine if needed.
+  /** Note:接下来的一些操作与第二引擎有关,关于该引擎见:
+   * https://www.h5w3.com/123061.html.
+   * Secondary Engine实际上是MySQL sever上同时支持两个存储引擎,把一部分主引擎上的数据,在Secondary Engine上也保存一份,
+   * 然后查询的时候会根据优化器的的选择决定在哪个引擎上处理数据.
+  */
   if (first_select()->join->override_executor_func != nullptr) {
     thd->current_found_rows = 0;
     for (SELECT_LEX *select = first_select(); select != nullptr;
@@ -1181,6 +1218,8 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
   }
 
   if (item) {
+    /** Note:如果该查询用于子查询,那么重新reset,指向子查询
+    */
     item->reset_value_registration();
 
     if (item->assigned()) {
@@ -1193,6 +1232,16 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
   // we support SQL_CALC_FOUND_ROWS, since LimitOffsetIterator will use it
   // for reporting rows skipped by OFFSET or LIMIT. When we get rid of
   // SQL_CALC_FOUND_ROWS, we can use a local variable here instead.
+  /** Note:接下来是对于复杂句以及简单句的不同处理,从而给​​send_records_ptr​​赋值.
+   * 情况一:
+   * 如果该查询块具有UNION或者多级的ORDER BY/LIMIT的话UNION with LIMIT的话,​found_rows()​​用于最外层.
+   * LimitOffsetIterator​​​跳过偏移量行写入​​send_records​​.
+   * 情况二:
+   * 如果是个简单句的话,found_rows()​​直接用到join上.
+   * LimitOffsetIterator​​​跳过偏移量行写入​​send_records​​.
+   * 情况三:
+   * 如果是UNION,但是没有LIMIT.found_rows()​​用于最外层.
+  */
   ha_rows *send_records_ptr;
   if (fake_select_lex != nullptr) {
     // UNION with LIMIT: found_rows() applies to the outermost block.
@@ -1210,11 +1259,14 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
     // SELECT_LEX_UNIT::send_records for more information.
     send_records_ptr = &send_records;
   }
+  // Note:重置计数器
   *send_records_ptr = 0;
 
   thd->get_stmt_da()->reset_current_row_for_condition();
 
   {
+    /** Note:接下来是一个对查询块遍历,逐个释放内存的操作,用以增加并发性并减少内存消耗.
+    */
     auto join_cleanup = create_scope_guard([this, thd] {
       for (SELECT_LEX *sl = first_select(); sl; sl = sl->next_select()) {
         JOIN *join = sl->join;
@@ -1226,13 +1278,20 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
       }
     });
 
+    // Note:初始化根迭代器
     if (m_root_iterator->Init()) {
       return true;
     }
 
     PFSBatchMode pfs_batch_mode(m_root_iterator.get());
 
+    /** Note:然后for循环,从根迭代器一直到引擎的handler,调用读取数据.
+     * 如果出错就直接返回.
+     * 如果收到kill信号,也返回.
+     * 在循环中对​​send_records_ptr​​进行累加.行计数器++,指向下一行.
+    */
     for (;;) {
+      // Note:根迭代器开始读取数据
       int error = m_root_iterator->Read();
       DBUG_EXECUTE_IF("bug13822652_1", thd->killed = THD::KILL_QUERY;);
 
@@ -1248,6 +1307,7 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
 
       ++*send_records_ptr;
 
+      // Note:发送数据
       if (query_result->send_data(thd, *fields)) {
         return true;
       }
@@ -1258,6 +1318,7 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
     // row counts right.
   }
 
+  // Note:将​​send_records_ptr​​​赋值给该线程的​​current_found_rows​​
   thd->current_found_rows = *send_records_ptr;
 
   return query_result->send_eof(thd);
@@ -1271,7 +1332,12 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
   @returns false if success, true if error
 */
 /** NOTE:外部接口 执行入口 
- * Sql_cmd_dml::execute_inner调用 
+ * 调用:
+ * mysql_executor_command
+ * ->Sql_cmd_dml::execute
+ * ->->Sql_cmd_dml::execute_inner
+ * ->->->SELECT_LEX_UNIT::execute(5.7 Query_expression::execute)
+ * ->->->->ExecuteIteratorQuery
  * */
 bool SELECT_LEX_UNIT::execute(THD *thd) {
   DBUG_TRACE;

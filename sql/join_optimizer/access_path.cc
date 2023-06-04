@@ -290,6 +290,7 @@ unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
   }
 
   switch (path->type) {
+    // Note:根据不同的访问路径类型,初始化不同的迭代器
     case AccessPath::TABLE_SCAN: {
       const auto &param = path->table_scan();
       iterator = NewIterator<TableScanIterator>(

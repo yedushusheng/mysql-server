@@ -725,6 +725,8 @@ class PT_locking_clause_list : public Parse_tree_node {
   Mem_root_array_YY<PT_locking_clause *> m_locking_clauses;
 };
 
+/** Note:PT=Parse Tree
+*/
 class PT_query_expression_body : public Parse_tree_node {
  public:
   virtual bool is_union() const = 0;

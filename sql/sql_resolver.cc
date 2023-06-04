@@ -168,7 +168,37 @@ static Item *create_rollup_switcher(THD *thd, SELECT_LEX *select_lex,
    - As far as INSERT, UPDATE and DELETE statements have the same expressions
      as a SELECT statement, this note applies to those statements as well.
 */
-/**NOTE:外部接口 prepare入口(对应MySQL5.6 JOIN::prepare())
+/**NOTE:外部接口 prepare入口
+ * MySQL5.6对应接口:JOIN::prepare()
+ * 调用:
+ * mysql_execute_command()
+ *   lex->m_sql_cmd->execute()
+ *   Sql_cmd_dml::execute()
+ *     1.Sql_cmd_dml::prepare()
+ *       Sql_cmd_select::precheck()
+ *       Sql_cmd_select::open_tables_for_query()
+ *       Sql_cmd_select::prepare_inner()
+ *         SELECT_LEX_UNIT::prepare_limit()
+ *         SELECT_LEX_UNIT::prepare() (not simple or simple SELECT_LEX::prepare)
+ *           SELECT_LEX::prepare()
+ *             ......
+ *     2.Sql_cmd_dml::execute_inner
+ *         2.1 SELECT_LEX_UNIT::optimize() (not simple or simple SELECT_LEX::optimize)
+ *           SELECT_LEX::optimize()  
+ *             JOIN::optimize()
+ *             SELECT_LEX_UNIT::optimize()
+ *               ......
+ *         2.2 SELECT_LEX_UNIT::execute() (not simple or simple SELECT_LEX::optimize)
+ *           SELECT_LEX::execute()  
+ *             JOIN::exec()  //MySQL8.0:Sql_cmd_dml::execute_inner
+ *               JOIN::prepare_result()
+ *               do_select()
+ *                 sub_select()
+ *                   ......
+ *             SELECT_LEX_UNIT::execute()
+ *               ......
+ *     3.SELECT_LEX_UNIT::cleanup(false)
+ * 
  * 为获得最优的查询计划,需要通过SELECT_LEX::prepare(JOIN::prepare)函数做一些初始化赋值、计算等准备工作.
  * 注意,在这个阶段,已经着手进行子查询的优化处理工作了.
  * 调用关系:

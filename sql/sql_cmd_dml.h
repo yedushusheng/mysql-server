@@ -30,6 +30,8 @@
 struct LEX;
 class Query_result;
 
+/** Note:封装了执行器的一些接口,比如处理结果集
+*/
 class Sql_cmd_dml : public Sql_cmd {
  public:
   /// @return true if data change statement, false if not (SELECT statement)
