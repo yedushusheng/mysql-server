@@ -383,6 +383,7 @@ bool Sql_cmd_dml::prepare(THD *thd) {
     Enable_derived_merge_guard derived_merge_guard(
         thd, is_show_cmd_using_system_view(thd));
 
+    // Note:执行prepare
     if (prepare_inner(thd)) goto err;
     if (!is_regular()) {
       if (save_cmd_properties(thd)) goto err;
@@ -466,7 +467,16 @@ const MYSQL_LEX_CSTRING *Sql_cmd_select::eligible_secondary_storage_engine()
 /**
   Prepare a SELECT statement.
 */
-//NOTE:内部接口 select preparer入口(替换原来的handle_select)
+/** NOTE:内部接口
+ * select preparer入口(替换原来的handle_select)
+ * 调用:
+ * mysql_execute_command
+ * ->Sql_cmd_dml::execute
+ * ->->->Sql_cmd_dml::prepare
+ * ->->->->Sql_cmd_select::prepare_inner
+ * ->->->->->SELECT_LEX::prepare(sql_resolver.cc)
+ * ->->->->->SELECT_LEX_UNIT::prepare
+*/
 bool Sql_cmd_select::prepare_inner(THD *thd) {
   if (lex->is_explain()) {
     /*
@@ -504,7 +514,7 @@ bool Sql_cmd_select::prepare_inner(THD *thd) {
     select->make_active_options(0, 0);
 
     if (select->prepare(thd, nullptr)) return true;
-    //NOTE:prepare入口
+    //NOTE:prepare入口(sql_resover.cc),执行重写(基于规则)
 
     unit->set_prepared();
   } else {
@@ -520,7 +530,7 @@ bool Sql_cmd_select::prepare_inner(THD *thd) {
 /** NOTE:外部接口 DML执行入口
  * 大致调用流程(8.0.13):
  * mysql_execute_command()
- *   lex->m_sql_cmd->execute()
+ *   lex->m_sql_cmd->execute():根据不同的sql类型选择不同入口
  *   Sql_cmd_dml::execute()
  *     1.Sql_cmd_dml::prepare()
  *       Sql_cmd_select::precheck()
@@ -590,7 +600,7 @@ bool Sql_cmd_dml::execute(THD *thd) {
   }
 
   if (!is_prepared()) {
-    // Note:非prepare
+    // Note:未执行prepare,需要先准备相应的变量结构体
     if (prepare(thd)) goto err;
   } else {
     /*
@@ -1862,7 +1872,17 @@ void JOIN::cleanup_item_list(const mem_root_deque<Item *> &items) const {
   @param thd    thread handler
   @returns false if success, true if error
 */
-/**
+/** Note:对外接口
+ * 优化器
+ * 调用:
+ * Sql_cmd_dml::execute
+ * ->Sql_cmd_dml::prepare
+ * ->Sql_cmd_dml::execute_inner
+ * ->->SELECT_LEX_UNIT::optimize
+ * ->->->SELECT_LEX::optimize
+ * ->->->->JOIN::optimize
+ * ->->SELECT_LEX_UNIT::execute
+ * ->->->SELECT_LEX::execute
  * SELECT块语句的优化入口SELECT_LEX::optimize
  * SELECT优化器JOIN::optimize
  * UNION优化器SELECT_LEX_UNIT::optimize

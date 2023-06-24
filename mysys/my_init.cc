@@ -127,6 +127,10 @@ int set_crt_report_leaks() {
     @retval false Success
     @retval true  Error. Couldn't initialize environment
 */
+/** Note:初始化my_sys函数,资源和变量
+ * my_thread_global_init:初始化线程的环境(初始化一堆资源锁) PSI_mutex_key结构 
+ * my_thread_init:申请mysys线程的内存,主要用于debug 
+*/
 bool my_init() {
   char *str;
 
@@ -148,8 +152,10 @@ bool my_init() {
   if ((str = getenv("UMASK_DIR")) != nullptr)
     my_umask_dir = (int)(atoi_octal(str) | 0700);
 
+  // Note:初始化线程的环境(初始化一堆资源锁) PSI_mutex_key结构
   if (my_thread_global_init()) return true;
-
+  
+  // Note:申请mysys线程的内存,主要用于debug 
   if (my_thread_init()) return true;
 
   /* $HOME is needed early to parse configuration files located in ~/ */

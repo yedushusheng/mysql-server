@@ -1202,7 +1202,10 @@ void bind_fields(Item *first) {
 */
 /** Note:do_command函数是由线程中的循环调用的,主要可以分成两个部分,
  * 即首先从连接中读取命令,然后执行命令.
- * 
+ * 调用:
+ * start_thread
+ * ->handle_connection
+ * 	->do_command
  * 参考:https://zhuanlan.zhihu.com/p/121772222
  * 
 */
@@ -1540,6 +1543,7 @@ static void copy_bind_parameter_values(THD *thd, PS_PARAM *parameters,
  * 			->dispatch_sql_command
  * 				->lex_start
  * 				->parse_sql:词法语法解析
+ *          ->THD::sql_parser(解析sql_yacc.yy)
  * 				->mysql_execute_command:Rewriter/Resolver,Optimizer,Executor
  * 根据获取得到的命令,并且执行命令.
  * 首先,会根据包的大小进行申请一些内存给输出(返回)的String对象中.
@@ -2748,16 +2752,19 @@ static inline void binlog_gtid_end_transaction(THD *thd) {
 /** Note:执行SQL的入口函数
  * https://www.bookstack.cn/read/aliyun-rds-core/bdf04a3b80187451.md
  * 总体流程:
- * do_command
- * ->dispatch_command
- *   ->mysql_parse
- *      ->lex_start
- *      ->parse_sql:语法解析
- *      ->mysql_execute_command() 
+ * start_thread
+ * ->handle_connection
+ * ->->->do_command
+ * ->->->->dispatch_command
+ * ->->->->mysql_parse
+ * ->->->->lex_start
+ * ->->->->parse_sql:语法解析
+ * ->->->->THD::sql_parser(解析sql_yacc.yy)
+ * ->->->->mysql_execute_command() 
  * 具体调用流程(8.0.13):
  * mysql_execute_command()
  *   lex->m_sql_cmd->execute()
- *   Sql_cmd_dml::execute()
+ *   Sql_cmd_dml::execute():根据具体的sql类型选择不同的入口
  *     1.Sql_cmd_dml::prepare()
  *       Sql_cmd_select::precheck()
  *       Sql_cmd_select::open_tables_for_query()
@@ -2801,10 +2808,12 @@ static inline void binlog_gtid_end_transaction(THD *thd) {
   @retval true        Error
 */
 /** Note:外部接口
- * 执行SQL
+ * 执行SQL,根据不同的sql类型分别处理
  * 调用:
- * dispatch_sql_command
- * sql_prepare.cc/Execute_sql_statement::execute_server_code
+ * 1.dispatch_sql_command
+ * ->mysql_execute_command
+ * 2.sql_prepare.cc/Execute_sql_statement::execute_server_code
+ * ->mysql_execute_command
 */
 int mysql_execute_command(THD *thd, bool first_level) {
   int res = false;
@@ -3533,6 +3542,7 @@ int mysql_execute_command(THD *thd, bool first_level) {
     case SQLCOM_DROP_TABLE: {
       DBUG_ASSERT(first_table == all_tables && first_table != nullptr);
       if (!lex->drop_temporary) {
+        // Note:检查是否有权限删除表
         if (check_table_access(thd, DROP_ACL, all_tables, false, UINT_MAX,
                                false))
           goto error; /* purecov: inspected */
@@ -4977,10 +4987,12 @@ void THD::reset_for_next_command() {
   @param thd          Current session.
   @param parser_state Parser state.
 */
-/** NOTE:内部函数
+/** NOTE:内部函数 外部接口
  * MySQL语法分析器的入口函数
- * (MySQL5.7是mysql_parse函数,MySQL8.0是dispatch_sql_command函数)
  * MySQL语法分析器负责把MySQL的SQL语句分解为查询树(AST),存放于THD结构体的select_lex类定义的对象上.
+ * 说明:
+ * MySQL5.7是mysql_parse函数
+ * MySQL8.0是dispatch_sql_command函数
 */
 void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
   DBUG_TRACE;
@@ -6837,7 +6849,9 @@ class Parser_oom_handler : public Internal_error_handler {
     @retval false on success.
     @retval true on parsing error.
 */
-
+/** Note:内部函数 外部接口
+ * 解析SQL,转换为AST(抽象语法树)
+*/
 bool parse_sql(THD *thd, Parser_state *parser_state,
                Object_creation_ctx *creation_ctx) {
   DBUG_TRACE;
@@ -6896,6 +6910,7 @@ bool parse_sql(THD *thd, Parser_state *parser_state,
 
   thd->push_diagnostics_area(parser_da, false);
 
+  // Note:真正执行语法解析
   bool mysql_parse_status = thd->sql_parser();
 
   thd->pop_internal_handler();

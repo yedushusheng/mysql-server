@@ -1645,6 +1645,11 @@ std::atomic<int> signal_hand_thr_exit_code(MYSQLD_SUCCESS_EXIT);
 
   @param argv argument vector (array) for executable.
  */
+/** Note:内部函数
+ * 调用:
+ * mysqld_main
+ * 将命令行的程序名替换成全路径的程序名,可能是'全路径',home路径解释,环境变量PATH解释. 
+*/
 void substitute_progpath(char **argv) {
   if (test_if_hard_path(argv[0])) return;
 
@@ -6570,8 +6575,15 @@ int mysqld_main(int argc, char **argv)
 #endif
 {
   // Substitute the full path to the executable in argv[0]
+  /** Note:将命令行的程序名替换成全路径的程序名,可能是'全路径',home路径解释,环境变量PATH解释. 
+  */
   substitute_progpath(argv);
+  /** Note:在环境变量('NOTIFY_SOCKET')中查找socket的文件名,
+   * 如果存在的话则连接该Socket 
+  */
   sysd::notify_connect();
+  /** NOte:向Notify Socket发送正在启动的消息
+  */
   sysd::notify("STATUS=Server startup in progress\n");
 
   /*
@@ -6586,6 +6598,11 @@ int mysqld_main(int argc, char **argv)
   pre_initialize_performance_schema();
 #endif /*WITH_PERFSCHEMA_STORAGE_ENGINE */
   // For windows, my_init() is called from the win specific mysqld_main
+  /** Note:初始化my_sys函数,资源和变量
+   * my_thread_global_init:初始化线程的环境(初始化一堆资源锁) 
+   *  PSI_mutex_key结构 
+   * my_thread_init:申请mysys线程的内存,主要用于debug 
+  */
   if (my_init())  // init my_sys library & pthreads
   {
     LogErr(ERROR_LEVEL, ER_MYINIT_FAILED);
@@ -6598,6 +6615,7 @@ int mysqld_main(int argc, char **argv)
   orig_argv = argv;
   my_getopt_use_args_separator = true;
   my_defaults_read_login_file = false;
+  // Note:load_defaults->my_load_defaults:从配置文件中读取配置项
   if (load_defaults(MYSQL_CONFIG_NAME, load_default_groups, &argc, &argv,
                     &argv_alloc)) {
     flush_error_log_messages();
@@ -6613,6 +6631,12 @@ int mysqld_main(int argc, char **argv)
    config file and append read only persisted variables to command line
    options if present.
   */
+  /** Note:持久化的参数配置缓存,采用JSON进行存储
+   * Init:初始化,从命令行或者是环境变量'MYSQL_DATADIR'中获取文件
+   *     my_handle_options:主要处理参数的逻辑
+   * load_persist_file:加载持久化文件的配置,并且转成JSON格式,分析出K/V结构
+   * append_read_only_variables:将上一步分解出的只读配置参数追加到命令行参数中. 
+  */
   if (persisted_variables_cache.init(&argc, &argv) ||
       persisted_variables_cache.load_persist_file() ||
       persisted_variables_cache.append_read_only_variables(&argc, &argv)) {
@@ -6623,6 +6647,7 @@ int mysqld_main(int argc, char **argv)
   remaining_argc = argc;
   remaining_argv = argv;
 
+  // Note:初始化配置文件的作用域(enum_variable_source) 
   init_variable_default_paths();
 
   /* Must be initialized early for comparison of options name */
@@ -6637,9 +6662,16 @@ int mysqld_main(int argc, char **argv)
   /*
     Initialize the array of performance schema instrument configurations.
   */
+  // Note:PSI: performance schema interface; PFS:performance storage 
   init_pfs_instrument_array();
 #endif /* WITH_PERFSCHEMA_STORAGE_ENGINE */
 
+  /** Note:handle_early_options:处理早期的选项,包括:performance schema与help或者启动相关的参数
+   * ->sys_var_add_options:增加系统参数;
+   * ->增加命令行中的早期选项;
+   * ->add_terminator:增加终结.
+   * ->handle_options->my_handle_options:处理参数 
+  */
   heo_error = handle_early_options();
 
   init_sql_statement_names();
@@ -7930,6 +7962,13 @@ static void process_bootstrap() {
   - options related to the bootstrap
   The performance schema needs to be initialized as early as possible,
   before to-be-instrumented objects of the server are initialized.
+*/
+/** Note:handle_early_options:处理早期的选项
+ * 包括:performance schema与help或者启动相关的参数
+ * ->sys_var_add_options:增加系统参数;
+ * ->增加命令行中的早期选项;
+ * ->add_terminator:增加终结.
+ * ->handle_options->my_handle_options:处理参数 
 */
 static int handle_early_options() {
   int ho_error;

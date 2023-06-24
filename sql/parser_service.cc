@@ -229,7 +229,11 @@ void mysql_parser_set_current_database(MYSQL_THD thd,
   }
 }
 
-/** NOTE:语法解析
+/** NOTE:外部接口
+ * Rewitter的时候语法解析,这里是封装了lex_start/parse_sql
+ * 因为Rewriter之后是需要重新解析一遍语法树,重新生成AST的,这里封装就是为Rewriter阶段使用
+ * 调用:
+ * plugin/rewiter/service.cc
 */
 int mysql_parser_parse(MYSQL_THD thd, const MYSQL_LEX_STRING query,
                        unsigned char is_prepared,

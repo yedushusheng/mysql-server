@@ -331,7 +331,12 @@ static int fn_expand(const char *filename, char *result_buf) {
     The global variable 'my_defaults_group_suffix' is updated with value for
     --defaults_group_suffix
 */
-
+/** Note:处理在缺省目录下的配置文件,即上一步结果
+ * get_defaults_options:从命令行中获取配置选项;
+ * init_variable_default_paths:初始化配置文件的作用域(enum_variable_source) 
+ * search_default_file:如果是绝对路径,直接读取; 
+ * search_default_file_with_ext:从输入配置的文件中读取;
+*/
 int my_search_option_files(const char *conf_file, int *argc, char ***argv,
                            uint *args_used, Process_option_func func,
                            void *func_ctx, const char **default_directories,
@@ -343,6 +348,7 @@ int my_search_option_files(const char *conf_file, int *argc, char ***argv,
   /* Skip for login file. */
   if (!is_login_file) {
     /* Check if we want to force the use a specific default file */
+    // Note:从命令行中获取配置选项
     *args_used += get_defaults_options(
         *argc - *args_used, *argv + *args_used, &forced_default_file,
         &forced_extra_defaults, const_cast<char **>(&my_defaults_group_suffix),
@@ -366,6 +372,7 @@ int my_search_option_files(const char *conf_file, int *argc, char ***argv,
     }
 
     defaults_already_read = true;
+    // Note:初始化配置文件的作用域(enum_variable_source)
     init_variable_default_paths();
 
     /*
@@ -448,6 +455,7 @@ int my_search_option_files(const char *conf_file, int *argc, char ***argv,
   // If conf_file is an absolute path, we only read it
   if (dirname_length(conf_file)) {
     int error;
+    // Note:如果是绝对路径,直接读取
     if ((error = search_default_file(func, func_ctx, NullS, conf_file,
                                      is_login_file)) < 0)
       goto err;
@@ -455,6 +463,7 @@ int my_search_option_files(const char *conf_file, int *argc, char ***argv,
   // If my defaults file is set (from a previous run), we read it
   else if (my_defaults_file) {
     int error;
+    // Note:从输入配置的文件中读取
     if ((error = search_default_file_with_ext(
              func, func_ctx, "", "", my_defaults_file, 0, is_login_file)) < 0)
       goto err;
@@ -619,6 +628,7 @@ int get_defaults_options(int argc, char **argv, char **defaults,
     0 ok
     1 The given conf_file didn't exists
 */
+// Note:load_defaults->my_load_defaults:从配置文件中读取配置项
 int load_defaults(const char *conf_file, const char **groups, int *argc,
                   char ***argv, MEM_ROOT *alloc) {
   return my_load_defaults(conf_file, groups, argc, argv, alloc,
@@ -664,7 +674,8 @@ bool my_defaults_read_login_file = true;
      - 1 is returned if the given conf_file didn't exist. In this case, the
      value pointed to by default_directories is undefined.
 */
-
+/** Note:load_defaults->my_load_defaults:从配置文件中读取配置项
+*/
 int my_load_defaults(const char *conf_file, const char **groups, int *argc,
                      char ***argv, MEM_ROOT *alloc,
                      const char ***default_directories) {
@@ -682,6 +693,7 @@ int my_load_defaults(const char *conf_file, const char **groups, int *argc,
   uint args_sep = my_getopt_use_args_separator ? 1 : 0;
   DBUG_TRACE;
 
+  // Note:获取配置的目录
   if ((dirs = init_default_directories(alloc)) == nullptr) goto err;
   /*
     Check if the user doesn't want any default option processing
@@ -700,6 +712,7 @@ int my_load_defaults(const char *conf_file, const char **groups, int *argc,
   ctx.m_args = &my_args;
   ctx.group = &group;
 
+  // Note:处理在缺省目录下的配置文件,即上一步(init_default_directories)结果
   if ((error = my_search_option_files(conf_file, argc, argv, &args_used,
                                       handle_default_option, (void *)&ctx, dirs,
                                       false, found_no_defaults))) {
@@ -708,6 +721,7 @@ int my_load_defaults(const char *conf_file, const char **groups, int *argc,
 
   if (my_defaults_read_login_file) {
     /* Read options from login group. */
+    // Note:从login集群中读取配置
     if (my_default_get_login_file(my_login_file, sizeof(my_login_file)) &&
         (error = my_search_option_files(my_login_file, argc, argv, &args_used,
                                         handle_default_option, (void *)&ctx,
@@ -746,6 +760,7 @@ int my_load_defaults(const char *conf_file, const char **groups, int *argc,
   if (my_getopt_use_args_separator) {
     /* set arguments separator for arguments from config file and
        command line */
+    // Note:分隔符
     set_args_separator(&res[my_args.size() + 1]);
   }
 
@@ -1281,6 +1296,7 @@ void print_defaults(const char *conf_file, const char **groups) {
   command line options/persistent config file path/login file path
   and corresponding enum_variable_source values.
 */
+// Note:初始化配置文件的作用域(enum_variable_source) 
 void init_variable_default_paths() {
   char datadir[FN_REFLEN] = {0};
   string extradir =
@@ -1549,6 +1565,7 @@ static const char *my_get_module_parent(char *buf, size_t size) {
 }
 #endif /* _WIN32 */
 
+// Note:获取配置的目录
 static const char **init_default_directories(MEM_ROOT *alloc) {
   const char **dirs;
   char *env;
@@ -1607,7 +1624,7 @@ static const char **init_default_directories(MEM_ROOT *alloc) {
   @return 1 - Success
           0 - Failure
 */
-
+// Note:从login集群中读取配置
 int my_default_get_login_file(char *file_name, size_t file_name_size) {
   size_t rc;
 

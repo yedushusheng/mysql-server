@@ -564,6 +564,7 @@ bool JOIN::optimize() {
   if (thd->lex->using_hypergraph_optimizer) {
     if (thd->opt_trace.is_started()) {
       std::string trace_str;
+      // Note:如果是使用了超图优化,则查询最优的查询计划
       m_root_access_path = FindBestQueryPlan(thd, select_lex, &trace_str);
       Opt_trace_object trace_wrapper2(&thd->opt_trace);
       Opt_trace_array join_optimizer(&thd->opt_trace, "join_optimizer");

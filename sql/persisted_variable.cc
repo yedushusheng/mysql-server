@@ -200,6 +200,9 @@ st_persist_var::st_persist_var(const std::string key, const std::string value,
    @return 1 Failure
 
 */
+/** Note:Init:初始化,从命令行或者是环境变量'MYSQL_DATADIR'中获取文件
+ * my_handle_options:主要处理参数的逻辑
+*/
 int Persisted_variables_cache::init(int *argc, char ***argv) {
 #ifdef HAVE_PSI_INTERFACE
   my_init_persist_psi_keys();
@@ -645,6 +648,7 @@ void Persisted_variables_cache::close_persist_file() {
     @retval true An error occurred
     @retval false Success
 */
+// Note:加载持久化文件的配置,并且转成JSON格式,分析出K/V结构
 bool Persisted_variables_cache::load_persist_file() {
   if (read_persist_file() > 0) return true;
   return false;
@@ -1100,6 +1104,7 @@ int Persisted_variables_cache::read_persist_file() {
   @return 0 Success
   @return 1 Failure
 */
+// Note:将上一步分解出的只读配置参数追加到命令行参数中
 bool Persisted_variables_cache::append_read_only_variables(
     int *argc, char ***argv, bool plugin_options) {
   Prealloced_array<char *, 100> my_args(key_memory_persisted_variables);

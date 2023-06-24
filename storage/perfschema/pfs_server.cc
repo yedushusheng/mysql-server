@@ -375,6 +375,7 @@ void shutdown_performance_schema(void) {
   Initialize the dynamic array used to hold PFS_INSTRUMENT configuration
   options.
 */
+// Note:PSI: performance schema interface; PFS:performance storage 
 void init_pfs_instrument_array() {
   pfs_instr_config_array = new Pfs_instr_config_array(PSI_NOT_INSTRUMENTED);
 }

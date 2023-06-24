@@ -177,7 +177,8 @@ static Item *create_rollup_switcher(THD *thd, SELECT_LEX *select_lex,
  *     1.Sql_cmd_dml::prepare()
  *       Sql_cmd_select::precheck()
  *       Sql_cmd_select::open_tables_for_query()
- *       Sql_cmd_select::prepare_inner()
+ *       Sql_cmd_select::prepare_inner()  // sql_select.cc
+ *         SELECT_LEX::prepare()          // sql_resover.cc,执行重写
  *         SELECT_LEX_UNIT::prepare_limit()
  *         SELECT_LEX_UNIT::prepare() (not simple or simple SELECT_LEX::prepare)
  *           SELECT_LEX::prepare()

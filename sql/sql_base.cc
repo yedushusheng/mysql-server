@@ -656,7 +656,10 @@ static void update_schema_options(const dd::Schema *sch_obj,
 
   @return Pointer to the new TABLE_SHARE, or NULL if there was an error
 */
-//NOTE:这个函数还额外维护一个TABLE_SHARE的hash表,这个函数会先查找hash表,如果找不到定义,再调用open_table_def读入表定义
+/** NOTE:这个函数还额外维护一个TABLE_SHARE的hash表,这个函数会先查找hash表,如果找不到定义,再调用open_table_def读入表定义
+ * 参考:
+ * https://www.cnblogs.com/yuyue2014/p/3721172.html(table_id生成原理)
+*/
 TABLE_SHARE *get_table_share(THD *thd, const char *db, const char *table_name,
                              const char *key, size_t key_length, bool open_view,
                              bool open_secondary) {
