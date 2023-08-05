@@ -151,7 +151,7 @@ class ORDER_with_src {
  *                  JOIN
  * 1.JOIN::JOIN
  * bool select_distinct
- * select)result result
+ * select_result result
  * List<Item>& fields_list
  * List<Item> all_fields
  * JOIN在初始化后和其他对象的关系:

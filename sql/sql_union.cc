@@ -781,7 +781,7 @@ bool SELECT_LEX_UNIT::optimize(THD *thd, TABLE *materialize_destination,
   if (thd->lex->m_sql_cmd != nullptr &&
       thd->lex->m_sql_cmd->using_secondary_storage_engine()) {
     // Not supported when using secondary storage engine.
-    create_access_paths(thd);
+    create_access_paths(thd);  // Note:AccessPath
   } else if (estimated_rowcount <= 1) {
     // Don't do it for const tables, as for those, optimize_derived() wants to
     // run the query during optimization, and thus needs an iterator.
@@ -963,12 +963,14 @@ void SELECT_LEX_UNIT::create_access_paths(THD *thd) {
     if (fake_select_lex != nullptr) {
       table_path = fake_select_lex->join->root_access_path();
     } else {
+      // Note:
       table_path = NewTableScanAccessPath(thd, tmp_table,
                                           /*count_examined_rows=*/false);
     }
     bool push_limit_down =
         global_parameters()->order_list.size() == 0 && !calc_found_rows;
     AppendPathParameters param;
+    // Note:
     param.path = NewMaterializeAccessPath(
         thd, move(query_blocks), /*invalidators=*/nullptr, tmp_table,
         table_path,
@@ -991,6 +993,7 @@ void SELECT_LEX_UNIT::create_access_paths(THD *thd) {
       ConvertItemsToCopy(*join->fields, tmp_table->visible_field_ptr(),
                          &join->tmp_table_param);
       AppendPathParameters param;
+      // Note:
       param.path = NewStreamingAccessPath(thd, join->root_access_path(), join,
                                           &join->tmp_table_param, tmp_table,
                                           /*ref_slice=*/-1);
@@ -1006,12 +1009,14 @@ void SELECT_LEX_UNIT::create_access_paths(THD *thd) {
   } else {
     // Just append all the UNION ALL sub-blocks.
     DBUG_ASSERT(streaming_allowed);
+    // Note:
     m_root_access_path = NewAppendAccessPath(thd, union_all_sub_paths);
   }
 
   // NOTE: If there's a fake_select_lex, its JOIN's iterator already handles
   // LIMIT/OFFSET, so we don't do it again here.
   if ((limit != HA_POS_ERROR || offset != 0) && fake_select_lex == nullptr) {
+    // Note:
     m_root_access_path = NewLimitOffsetAccessPath(
         thd, m_root_access_path, limit, offset, calc_found_rows,
         /*reject_multiple_rows=*/false, &send_records);
