@@ -40,6 +40,27 @@
 
   See also NewIterator, below.
  */
+/** Note:外部类
+ * 功能:
+ * 在MySQL8.0之前,在查询执行计划中检测步骤是不可行的,因为代码是分散的和异构的.
+ * 从MySQL8.0开始,在查询执行计划中检测步骤是微不足道的,因为每个步骤本质上都是一样的:一个迭代器。
+ * 由于迭代器是一个接口,因此可以透明地将每个真正的迭代器包装在一个定时迭代器(sql/timing_iterator.h)中：
+ * template <class RealIterator>
+ * bool TimingIterator<RealIterator>::Init() {
+ *   ++m_num_init_calls;
+ *   steady_clock::time_point start = now();     //start time
+ *   bool err = m_iterator.Init();               //real iterator
+ *   steady_clock::time_point end = now();       //end time
+ *   m_time_spent_in_first_row += end - start;
+ *   m_first_row = true;
+ *   return err;
+ * }
+ * TimingIterator这是包装和测量真实迭代器的挂钟时间的类的一部分.
+ * 在执行查询时,MySQL直接执行真正的迭代器.
+ * 对于EXPLAIN ANALYZE,MySQL将每个真正的迭代器包装在a中TimingIterator(并丢弃结果集)。
+ * 调用:
+ * 
+*/
 template <class RealIterator>
 class TimingIterator final : public RowIterator {
  public:

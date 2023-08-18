@@ -42,6 +42,8 @@ struct TABLE_REF;
   For each record on the left side of a join (given in Init()), returns one or
   more matching rows from the given table, i.e., WHERE column=\<ref\>.
  */
+/** Note:索引使用类型(访问方式)为ref的时候,需要使用的迭代器.
+*/
 template <bool Reverse>
 class RefIterator final : public TableRowIterator {
  public:

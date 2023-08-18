@@ -670,6 +670,8 @@ AccessPath *CreateMaterializationPathForSortingAggregates(
 
 /** Note:优化器
  * 寻找最优的执行计划(超图算法Hyper Graph)
+ * 调用:
+ * sql/sql_optimizer.cc/JOIN::optimize
 */
 AccessPath *FindBestQueryPlan(THD *thd, SELECT_LEX *select_lex, string *trace) {
   JOIN *join = select_lex->join;
@@ -721,6 +723,7 @@ AccessPath *FindBestQueryPlan(THD *thd, SELECT_LEX *select_lex, string *trace) {
 
   // Now that we have decided on a full plan, expand all the applied
   // filter maps into proper FILTER nodes for execution.
+  // Note:sql/join_optimizer/access_path.cc
   ExpandFilterAccessPaths(thd, root_path, join, graph.predicates);
 
   // Apply GROUP BY, if applicable. We currently always do this by sorting
@@ -738,6 +741,7 @@ AccessPath *FindBestQueryPlan(THD *thd, SELECT_LEX *select_lex, string *trace) {
                    /*limit_arg=*/HA_POS_ERROR, /*force_stable_sort=*/false,
                    /*remove_duplicates=*/false, /*force_sort_positions=*/false,
                    /*unwrap_rollup=*/false);
+      // Note:
       AccessPath *sort_path = NewSortAccessPath(thd, root_path, filesort,
                                                 /*count_examined_rows=*/false);
 
@@ -829,6 +833,7 @@ AccessPath *FindBestQueryPlan(THD *thd, SELECT_LEX *select_lex, string *trace) {
           thd, join, root_path, temp_table, temp_table_param, filesort);
     }
 
+    // Note:
     AccessPath *sort_path = NewSortAccessPath(thd, root_path, filesort,
                                               /*count_examined_rows=*/false);
     sort_path->num_output_rows = root_path->num_output_rows;

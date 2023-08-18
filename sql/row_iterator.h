@@ -32,7 +32,9 @@ class Item;
 class JOIN;
 class THD;
 struct TABLE;
-
+/** Note:定义了基本的RowIterator迭代器
+ * 具体的子类实现在basic_row_iterator.h中
+*/
 /**
   A context for reading through a single table using a chosen access method:
   index read, scan, etc, use of cache, etc.. It is mostly meant as an interface,

@@ -145,6 +145,10 @@ static void GetAccessPathsFromItem(Item *item_arg, const char *source_text,
   });
 }
 
+/** Note:内部函数
+ * 调用:
+ * PrintQueryPlan
+*/
 vector<ExplainData::Child> GetAccessPathsFromSelectList(JOIN *join) {
   vector<ExplainData::Child> ret;
   if (join == nullptr) {
@@ -321,6 +325,11 @@ static void AddChildrenFromPushedCondition(
   }
 }
 
+/** Note:外部接口
+ * 调用:
+ * AddTableIteratorDescription
+ * PrintQueryPlan
+*/
 ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join) {
   vector<string> description;
   vector<ExplainData::Child> children;
@@ -824,6 +833,11 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join) {
   return {description, children};
 }
 
+/** Note:外部接口
+ * 调用:
+ * sql/opt_explain.cc/ExplainIterator
+ * sql/sql_union.cc/SELECT_LEX_UNIT::optimize
+*/
 string PrintQueryPlan(int level, AccessPath *path, JOIN *join,
                       bool is_root_of_join) {
   string ret;
@@ -832,7 +846,7 @@ string PrintQueryPlan(int level, AccessPath *path, JOIN *join,
     ret.assign(level * 4, ' ');
     return ret + "<not executable by iterator executor>\n";
   }
-
+  // Note:
   ExplainData explain = ExplainAccessPath(path, join);
 
   int top_level = level;

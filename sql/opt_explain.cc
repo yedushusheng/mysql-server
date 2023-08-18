@@ -2012,6 +2012,11 @@ static string FindUpdatedTables(JOIN *join) {
   return ret;
 }
 
+/** Note:内部函数
+ * 调用:
+ * explain_single_table_modification
+ * explain_query
+*/
 static bool ExplainIterator(THD *ethd, const THD *query_thd,
                             SELECT_LEX_UNIT *unit) {
   Query_result_send result;
@@ -2141,7 +2146,10 @@ class Query_result_null : public Query_result_interceptor {
 
   @return false if success, true if error
 */
-
+/** Note:内部函数
+ * 调用:
+ * Sql_cmd_explain_other_thread::execute
+*/
 bool explain_query(THD *explain_thd, const THD *query_thd,
                    SELECT_LEX_UNIT *unit) {
   DBUG_TRACE;
@@ -2180,6 +2188,7 @@ bool explain_query(THD *explain_thd, const THD *query_thd,
       push_warning(explain_thd, Sql_condition::SL_NOTE, ER_YES,
                    "Query is executed in secondary engine; the actual"
                    " query plan may diverge from the printed one");
+    // Note:
     return ExplainIterator(explain_thd, query_thd, unit);
   }
 

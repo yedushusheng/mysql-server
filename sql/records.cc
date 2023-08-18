@@ -151,6 +151,10 @@ template class IndexScanIterator<false>;
   @param count_examined_rows
     See AccessPath::count_examined_rows.
  */
+/** Note:外部接口
+ * 调用:
+ * 
+*/
 AccessPath *create_table_access_path(THD *thd, TABLE *table, QEP_TAB *qep_tab,
                                      bool count_examined_rows) {
   // If only 'table' is given, assume no quick, no condition.
@@ -162,6 +166,7 @@ AccessPath *create_table_access_path(THD *thd, TABLE *table, QEP_TAB *qep_tab,
 
   AccessPath *path;
   if (qep_tab != nullptr && qep_tab->quick() != nullptr) {
+    // Note:sql/join_optimizer/access_path.cc接口
     path = NewIndexRangeScanAccessPath(thd, table, qep_tab->quick(),
                                        count_examined_rows);
   } else if (qep_tab != nullptr && qep_tab->table_ref != nullptr &&
@@ -171,6 +176,7 @@ AccessPath *create_table_access_path(THD *thd, TABLE *table, QEP_TAB *qep_tab,
     path = NewTableScanAccessPath(thd, table, count_examined_rows);
   }
   if (qep_tab != nullptr && qep_tab->position() != nullptr) {
+    // Note:sql_executor.cc接口
     SetCostOnTableAccessPath(*thd->cost_model(), qep_tab->position(),
                              /*is_after_filter=*/false, path);
   }

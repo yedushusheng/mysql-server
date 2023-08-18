@@ -64,7 +64,8 @@ class SJ_TMP_TABLE;
 class THD;
 class Temp_table_param;
 class Window;
-
+/** Note:定义基本算子的迭代器类型以及对应的操作方法
+*/
 /**
   An iterator that takes in a stream of rows and passes through only those that
   meet some criteria (i.e., a condition evaluates to true). This is typically

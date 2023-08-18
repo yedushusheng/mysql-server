@@ -1662,6 +1662,10 @@ AccessPath *GetTableAccessPath(THD *thd, QEP_TAB *qep_tab, QEP_TAB *qep_tabs) {
   return table_path;
 }
 
+/** Note:外部接口
+ * 调用:
+ * sql/record.cc/create_table_access_path
+*/
 void SetCostOnTableAccessPath(const Cost_model_server &cost_model,
                               const POSITION *pos, bool is_after_filter,
                               AccessPath *path) {
@@ -3075,10 +3079,12 @@ AccessPath *JOIN::create_root_access_path_for_join() {
                                       /*reject_multiple_rows=*/false,
                                       /*send_records_override=*/nullptr);
     } else if (dup_filesort != nullptr) {
+      // Note:
       path = NewSortAccessPath(thd, path, dup_filesort,
                                /*count_examined_rows=*/true);
     }
     if (filesort != nullptr) {
+      // Note:
       path = NewSortAccessPath(thd, path, filesort,
                                /*count_examined_rows=*/true);
     }
@@ -4279,6 +4285,7 @@ AccessPath *QEP_TAB::access_path() {
 
     // Wrap the chosen RowIterator in a SortingIterator, so that we get
     // sorted results out.
+    // Note:
     path = NewSortAccessPath(join()->thd, path, filesort,
                              /*count_examined_rows=*/true);
   }
@@ -6328,7 +6335,10 @@ static bool replace_contents_of_rollup_wrappers_with_tmp_fields(
 
   @returns false if success, true if error
 */
-
+/** Note:外部接口
+ * 调用:
+ * sql/sql_select.cc/JOIN::make_tmp_tables_info
+*/
 bool change_to_use_tmp_fields_except_sums(mem_root_deque<Item *> *fields,
                                           THD *thd, SELECT_LEX *select,
                                           Ref_item_array ref_item_array,

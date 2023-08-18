@@ -3328,6 +3328,7 @@ void subselect_hash_sj_engine::create_iterators(THD *thd) {
   if (unit->root_access_path() == nullptr) {
     m_root_access_path =
         NewZeroRowsAccessPath(thd, "Not optimized, outer query is empty");
+    // Note:
     m_iterator =
         CreateIteratorFromAccessPath(thd, m_root_access_path, /*join=*/nullptr,
                                      /*eligible_for_batch_mode=*/true);

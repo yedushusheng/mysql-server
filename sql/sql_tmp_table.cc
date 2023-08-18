@@ -844,7 +844,11 @@ inline void relocate_field(Field *field, uchar *pos, uchar *null_flags,
 #define STRING_TOTAL_LENGTH_TO_PACK_ROWS 128
 #define AVG_STRING_LENGTH_TO_PACK_ROWS 64
 #define RATIO_TO_PACK_ROWS 2
-
+/** Note:外部接口
+ * 功能:创建临时表
+ * 调用:
+ * 
+*/
 TABLE *create_tmp_table(THD *thd, Temp_table_param *param,
                         const mem_root_deque<Item *> &fields, ORDER *group,
                         bool distinct, bool save_sum_fields,

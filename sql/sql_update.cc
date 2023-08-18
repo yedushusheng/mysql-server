@@ -616,6 +616,7 @@ bool Sql_cmd_update::update_single_table(THD *thd) {
             /*force_stable_sort=*/false,
             /*remove_duplicates=*/false,
             /*force_sort_positions=*/true, /*unwrap_rollup=*/false));
+        // Note:
         path = NewSortAccessPath(thd, path, fsort.get(),
                                  /*count_examined_rows=*/false);
         iterator = CreateIteratorFromAccessPath(

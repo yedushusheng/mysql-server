@@ -39,6 +39,25 @@
   Nothing currently uses post-order traversal, but it has been requested for
   future use.
  */
+/** Note:外部接口
+ * 功能:
+ * 遍历下面的每个访问路径path(可能受限于当前查询块的参数cross_query_blocks)
+ * 通过前序或后序遍历为每个访问路径调用func().
+ * 如果func()返回true,则遍历不会深入到当前路径的child.
+ * 对于后序遍历,当调用func()时,child已经被遍历,因此跳过它们为时已晚,并且func()的返回值实际上被忽略.
+ * 
+ * join参数表示查询块属于哪个查询块,因为路径本身并不是隐式的.
+ * 该函数将跟踪它在整个树中的变化(在MATERIALIZE或STREAM访问路径中),并向func()回调提供正确的值。
+ * 
+ * 如果策略是ENTIRE_QUERY_BLOCK,则仅由WalkAccessPaths()本身调用;
+ * 如果不是,它仅用于func()回调,也可以将其设置为nullptr.
+ * func()必须具有签名func(AccessPath *, const JOIN *),或者如果输入了非常量(non-const)JOIN,则它可以是JOIN *类型.
+ * 调用:
+ * sql/join_optimizer/access_path.cc/FindSingleAccessPathOfType
+ * sql/join_optimizer/access_path.cc/FindTablesToGetRowidFor
+ * sql/join_optimizer/access_path.cc/ExpandFilterAccessPaths
+ * sql/join_optimizer/join_optimizer.cc/FindBestQueryPlan
+*/
 template <class Func>
 void WalkAccessPaths(AccessPath *path, const JOIN *join,
                      bool cross_query_blocks, Func &&func,

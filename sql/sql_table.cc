@@ -17998,12 +17998,13 @@ static int copy_data_between_tables(
         thd, {from}, /*keep_buffers=*/false, order, HA_POS_ERROR,
         /*force_stable_sort=*/false, /*remove_duplicates=*/false,
         /*force_sort_positions=*/true, /*unwrap_rollup=*/false));
+    // Note:
     path = NewSortAccessPath(thd, path, fsort.get(),
                              /*count_examined_rows=*/false);
   }
 
   if (!unit->is_prepared()) unit->set_prepared();
-
+  // Note:
   iterator = CreateIteratorFromAccessPath(thd, path, /*join=*/nullptr,
                                           /*eligible_for_batch_mode=*/true);
   if (iterator == nullptr || iterator->Init()) {

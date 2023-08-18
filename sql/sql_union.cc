@@ -848,6 +848,7 @@ bool SELECT_LEX_UNIT::optimize(THD *thd, TABLE *materialize_destination,
 bool SELECT_LEX_UNIT::force_create_iterators(THD *thd) {
   if (m_root_iterator == nullptr) {
     JOIN *join = is_union() ? nullptr : first_select()->join;
+    // Note:
     m_root_iterator = CreateIteratorFromAccessPath(
         thd, m_root_access_path, join, /*eligible_for_batch_mode=*/true);
   }

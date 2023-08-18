@@ -41,6 +41,14 @@
 using pack_rows::TableCollection;
 using std::vector;
 
+/** Note:外部接口
+ * 调用:
+ * sql/sql_delete.cc/Sql_cmd_delete::delete_from_single_table
+ * sql/sql_executor.cc/JOIN::create_root_access_path_for_join
+ * sql/sql_executor.cc/QEP_TAB::access_path
+ * sql/sql_table.cc/copy_data_between_tables
+ * sql/sql_update.cc/Sql_cmd_update::update_single_table
+*/
 AccessPath *NewSortAccessPath(THD *thd, AccessPath *child, Filesort *filesort,
                               bool count_examined_rows) {
   AccessPath *path = new (thd->mem_root) AccessPath;
@@ -104,6 +112,10 @@ static RowIterator *FindSingleIteratorOfType(AccessPath *path,
   }
 }
 
+/** Note:外部接口
+ * 调用:
+ * 
+*/
 table_map GetUsedTables(const AccessPath *path) {
   switch (path->type) {
     case AccessPath::TABLE_SCAN:
@@ -220,6 +232,8 @@ table_map GetUsedTables(const AccessPath *path) {
 // Mirrors QEP_TAB::pfs_batch_update(), with one addition:
 // If there is more than one table, batch mode will be handled by the join
 // iterators on the probe side, so joins will return false.
+/** Note:内部函数
+*/
 bool ShouldEnableBatchMode(AccessPath *path) {
   switch (path->type) {
     case AccessPath::TABLE_SCAN:
@@ -280,6 +294,17 @@ static TableCollection GetUsedTablesForAggregate(JOIN *join,
   return tables;
 }
 
+/** Note:外部接口
+ * 从前面构造的AccessPath构造迭代器Iterator
+ * 调用:
+ * sql/item_subselect.cc/subselect_hash_sj_engine::create_iterators
+ * sql/record.cc/init_table_iterator
+ * sql/sql_delete.cc/Sql_cmd_delete::delete_from_single_table
+ * sql/sql_table.cc/copy_data_between_tables
+ * sql/sql_union.cc/SELECT_LEX_UNIT::optimize
+ * sql/sql_union.cc/SELECT_LEX_UNIT::force_create_iterators
+ * sql/sql_update.cc/Sql_cmd_update::update_single_table
+*/
 unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
     THD *thd, AccessPath *path, JOIN *join, bool eligible_for_batch_mode) {
   unique_ptr_destroy_only<RowIterator> iterator;
@@ -712,6 +737,8 @@ unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
   return iterator;
 }
 
+/** Note:外部接口
+*/
 void FindTablesToGetRowidFor(AccessPath *path) {
   table_map handled_by_others = 0;
 
@@ -779,6 +806,10 @@ void FindTablesToGetRowidFor(AccessPath *path) {
   }
 }
 
+/** Note:内部函数
+ * 调用:
+ * ExpandFilterAccessPaths
+*/
 static Item *ConditionFromFilterPredicates(
     const Mem_root_array<Predicate> &predicates, uint64_t mask) {
   if (IsSingleBitSet(mask)) {
@@ -796,6 +827,10 @@ static Item *ConditionFromFilterPredicates(
   }
 }
 
+/** Note:外部接口
+ * 调用:
+ * sql/join_optimizer/join_optimizer.cc/FindBestQueryPlan
+*/
 void ExpandFilterAccessPaths(THD *thd, AccessPath *path_arg, const JOIN *join,
                              const Mem_root_array<Predicate> &predicates) {
   WalkAccessPaths(

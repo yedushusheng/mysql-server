@@ -79,7 +79,9 @@ bool test_drive_fix_pins(MDL_context *);
    An interface to separate the MDL module from the THD, and the rest of the
    server code.
  */
-
+/** Note:外部类
+ * https://help.aliyun.com/document_detail/426497.html
+*/
 class MDL_context_owner {
  public:
   virtual ~MDL_context_owner() {}

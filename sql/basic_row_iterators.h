@@ -77,6 +77,11 @@ class TableScanIterator final : public TableRowIterator {
 };
 
 /** Perform a full index scan along an index. */
+/** Note:外部类
+ * 在record.cc中实现
+ * 调用:
+ * sql/record.cc
+*/
 template <bool Reverse>
 class IndexScanIterator final : public TableRowIterator {
  public:

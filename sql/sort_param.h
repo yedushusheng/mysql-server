@@ -43,7 +43,11 @@ class Field;
 class Filesort;
 class Item;
 struct TABLE;
-
+/** Note:参考:
+ * https://www.codenong.com/cs110475544/
+ * https://dev.mysql.com/doc/dev/mysql-server/latest/classSort__param.html
+ * addon插件,可以认为是插件的算子
+*/
 enum class Addon_fields_status {
   unknown_status,
   using_addon_fields,
