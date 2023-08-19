@@ -583,6 +583,7 @@ bool Sql_cmd_dml::execute(THD *thd) {
   if (is_data_change_stmt()) {
     // Push ignore / strict error handler
     if (lex->is_ignore()) {
+      // Note:处理错误信息
       thd->push_internal_handler(&ignore_handler);
       error_handler_active = true;
       /*
@@ -709,6 +710,7 @@ err:
     result->abort_result_set(thd);
     result->cleanup(thd);
   }
+  // Note:将内部错误信息弹出,后面THD使用的时候重新初始化
   if (error_handler_active) thd->pop_internal_handler();
 
   if (statement_timer_armed && thd->timer) reset_statement_timer(thd);

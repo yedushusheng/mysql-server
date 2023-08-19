@@ -412,6 +412,7 @@ bool JOIN::optimize() {
   if (unit->select_limit_cnt == 0 && !calc_found_rows) {
     zero_result_cause = "Zero limit";
     best_rowcount = 0;
+    // Note:优化limit 0的情况,构造对应的AccessPath
     create_access_paths_for_zero_rows();
     goto setup_subq_exit;
   }
