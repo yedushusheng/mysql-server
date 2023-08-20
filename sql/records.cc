@@ -353,6 +353,7 @@ bool TableScanIterator::Init() {
   */
   const bool first_init = !table()->file->inited;
 
+  // Note:调用Handler的接口
   int error = table()->file->ha_rnd_init(true);
   if (error) {
     PrintError(error);
@@ -368,6 +369,9 @@ bool TableScanIterator::Init() {
 
 int TableScanIterator::Read() {
   int tmp;
+  /** Note:调用Handler接口读取数据
+   * 这里的结果m_record是初始化的时候table->record[0]传入的
+  */
   while ((tmp = table()->file->ha_rnd_next(m_record))) {
     /*
       ha_rnd_next can return RECORD_DELETED for MyISAM when one thread is

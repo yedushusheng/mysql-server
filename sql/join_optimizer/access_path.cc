@@ -318,6 +318,10 @@ unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
     // Note:根据不同的访问路径类型,初始化不同的迭代器
     case AccessPath::TABLE_SCAN: {
       const auto &param = path->table_scan();
+      /** Note:初始化Iterator的时候会传递Table信息(param.table),
+       * 结果集(param.table->record[0])
+       * 预期结果信息(path->num_output_rows, examined_rows)
+      */
       iterator = NewIterator<TableScanIterator>(
           thd, param.table, path->num_output_rows, examined_rows);
       break;
@@ -732,7 +736,7 @@ unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
       break;
     }
   }
-
+  // Note:返回AccessPath对应的迭代器
   path->iterator = iterator.get();
   return iterator;
 }

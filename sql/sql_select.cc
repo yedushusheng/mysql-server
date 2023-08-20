@@ -866,7 +866,7 @@ static bool optimize_secondary_engine(THD *thd) {
 bool Sql_cmd_dml::execute_inner(THD *thd) {
   SELECT_LEX_UNIT *unit = lex->unit;
 
-  // Note:SQL优化
+  // Note:SQL优化(MySQL的优化器和执行器是杂糅在一起的)
   if (unit->optimize(thd, /*materialize_destination=*/nullptr,
                      /*create_iterators=*/true))
     return true;
