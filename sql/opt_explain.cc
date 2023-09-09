@@ -2146,9 +2146,12 @@ class Query_result_null : public Query_result_interceptor {
 
   @return false if success, true if error
 */
-/** Note:内部函数
+/** Note:外部接口 内部函数
+ * 功能:
+ * explain的入口,根据format的不同选择不同执行逻辑
  * 调用:
  * Sql_cmd_explain_other_thread::execute
+ * sql/sql_select.cc/Sql_cmd_dml::execute_inner
 */
 bool explain_query(THD *explain_thd, const THD *query_thd,
                    SELECT_LEX_UNIT *unit) {
@@ -2157,6 +2160,7 @@ bool explain_query(THD *explain_thd, const THD *query_thd,
   const bool other = (explain_thd != query_thd);
 
   LEX *lex = explain_thd->lex;
+  // Note:如果是EXPLAIN format=tree,则处理迭代器
   if (lex->explain_format->is_tree()) {
     const bool secondary_engine =
         explain_thd->lex->m_sql_cmd != nullptr &&
@@ -2179,7 +2183,7 @@ bool explain_query(THD *explain_thd, const THD *query_thd,
       Query_result_null null_result;
       unit->set_query_result(&null_result);
       explain_thd->running_explain_analyze = true;
-      unit->execute(explain_thd);
+      unit->execute(explain_thd);  // Note:执行SQL,但是结果设置为空
       explain_thd->running_explain_analyze = false;
       unit->set_executed();
       if (query_thd->is_error()) return true;
@@ -2188,7 +2192,7 @@ bool explain_query(THD *explain_thd, const THD *query_thd,
       push_warning(explain_thd, Sql_condition::SL_NOTE, ER_YES,
                    "Query is executed in secondary engine; the actual"
                    " query plan may diverge from the printed one");
-    // Note:
+    // Note:调用迭代器获取执行计划
     return ExplainIterator(explain_thd, query_thd, unit);
   }
 
