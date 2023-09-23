@@ -8985,7 +8985,19 @@ longlong Item_func_is_visible_dd_object::val_int() {
 
   @returns ulonglong representing the statistics requested.
 */
-
+/** Note:内部函数
+ * 功能:
+ * 
+ * 调用:
+ * Item_func_internal_table_rows::val_int
+ * Item_func_internal_avg_row_length::val_int
+ * Item_func_internal_data_length::val_int
+ * Item_func_internal_max_data_length::val_int
+ * Item_func_internal_index_length::val_int
+ * Item_func_internal_data_free::val_int
+ * Item_func_internal_auto_increment::val_int
+ * Item_func_internal_checksum::val_int
+*/
 static ulonglong get_table_statistics(
     Item **args, uint arg_count, dd::info_schema::enum_table_stats_type stype,
     bool *null_value) {
@@ -9039,6 +9051,7 @@ static ulonglong get_table_statistics(
   // Read the statistic value from cache.
   THD *thd = current_thd;
   dd::Object_id se_private_id = (dd::Object_id)args[3]->val_uint();
+  // Note:读取统计信息并缓存
   ulonglong result = thd->lex->m_IS_table_stats.read_stat(
       thd, *schema_name_ptr, *table_name_ptr, *engine_name_ptr,
       (partition_name_ptr ? partition_name_ptr->c_ptr_safe() : nullptr),
@@ -9240,6 +9253,7 @@ longlong Item_func_internal_index_column_cardinality::val_int() {
 
   ulonglong result = 0;
   THD *thd = current_thd;
+  // Note:
   result = thd->lex->m_IS_table_stats.read_stat(
       thd, *schema_name_ptr, *table_name_ptr, *index_name_ptr, nullptr,
       *column_name_ptr, index_ordinal_position - 1, column_ordinal_position - 1,

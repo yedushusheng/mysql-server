@@ -3109,6 +3109,26 @@ static int fill_used_fields_bitmap(PARAM *param) {
   by calling QEP_TAB::set_quick() and updating tab->type() if appropriate.
 
 */
+/** Note:外部接口
+ * 功能:
+ * 全表扫描:快速计算CPU和IO代价
+ * 先计算一下代价,然后看如何优化
+ * test_quick_select:
+ * double scan_time=                                                    
+ *    cost_model->row_evaluate_cost(static_cast<double>(records)) + 1;   
+ * Cost_estimate cost_est= head->file->table_scan_cost();               
+ * cost_est.add_io(1.1);//这里加1.1应该是个调节值                                                
+ * cost_est.add_cpu(scan_time);
+ * 调用:
+ * sql/sql_delete.cc/Sql_cmd_delete::delete_from_single_table
+ * sql/sql_executor.cc/DynamicRangeIterator::Init
+ * sql/sql_help.cc/prepare_simple_select
+ * sql/sql_optimizer.cc/test_if_skip_sort_order
+ * sql/sql_optimizer.cc/can_switch_from_ref_to_range
+ * sql/sql_optimizer.cc/get_quick_record_count
+ * sql/sql_optimizer.cc/make_join_select
+ * sql/sql_update.cc/Sql_cmd_update::update_single_table
+*/
 int test_quick_select(THD *thd, Key_map keys_to_use, table_map prev_tables,
                       ha_rows limit, bool force_quick_range,
                       const enum_order interesting_order,
@@ -3143,9 +3163,12 @@ int test_quick_select(THD *thd, Key_map keys_to_use, table_map prev_tables,
   TABLE *const head = tab->table();
   ha_rows records = head->file->stats.records;
   if (!records) records++; /* purecov: inspected */
+  // Note:CPU代价
   double scan_time =
       cost_model->row_evaluate_cost(static_cast<double>(records)) + 1;
+  // Note:IO代价
   Cost_estimate cost_est = head->file->table_scan_cost();
+  // Note:应该是调节值
   cost_est.add_io(1.1);
   cost_est.add_cpu(scan_time);
   if (ignore_table_scan) {
@@ -4914,6 +4937,7 @@ static TABLE_READ_PLAN *get_best_disjunct_quick(PARAM *param,
       Add one rowid/key comparison for each row retrieved on non-CPK
       scan. (it is done in QUICK_RANGE_SELECT::row_in_ranges)
     */
+    // Note:
     const double rid_comp_cost =
         cost_model->key_compare_cost(static_cast<double>(non_cpk_scan_records));
     imerge_cost.add_cpu(rid_comp_cost);
@@ -5017,6 +5041,7 @@ skip_to_ror_scan:
       scan_cost = param->table->file->read_cost(
           param->real_keynr[(*cur_child)->key_idx], 1,
           static_cast<double>((*cur_child)->records));
+      // Note:
       scan_cost.add_cpu(
           cost_model->row_evaluate_cost(rows2double((*cur_child)->records)));
     } else
@@ -5064,6 +5089,7 @@ skip_to_ror_scan:
     get_sweep_read_cost(param->table, roru_total_records, is_interrupted,
                         &roru_total_cost);
     roru_total_cost += roru_index_cost;
+    // Note:
     roru_total_cost.add_cpu(cost_model->key_compare_cost(
         rows2double(roru_total_records) * std::log2(n_child_scans)));
   }
@@ -12880,6 +12906,7 @@ static void cost_group_min_max(TABLE *table, uint key, uint used_key_parts,
     Estimate IO cost.
   */
   const Cost_model_table *const cost_model = table->cost_model();
+  // Note:
   cost_est->add_io(cost_model->page_read_cost_index(key, io_blocks));
 
   /* Infix factor increases the number of groups (rows) examined. */

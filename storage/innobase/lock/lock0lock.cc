@@ -1118,6 +1118,12 @@ static void remove_from_trx_locks(lock_t *lock) {
 }
 }  // namespace locksys
 
+/** Note:内部函数
+ * 功能:
+ * 加锁
+ * 调用:
+ * RecLock::create
+*/
 void RecLock::lock_add(lock_t *lock) {
   ut_ad((lock->type_mode | LOCK_REC) == (m_mode | LOCK_REC));
   ut_ad(m_rec_id.matches(lock));

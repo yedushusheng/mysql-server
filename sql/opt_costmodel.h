@@ -37,7 +37,29 @@ struct TABLE;
   API for getting cost estimates for server operations that are not
   directly related to a table object.
 */
-
+/** Note:外部类
+ * 线程cost model初始化
+ * Cost_model_server
+ * 在每个线程的thd上,挂了一个Cost_model_server的对象THD::m_cost_model,
+ * 在lex_start()时,如果发现线程的m_cost_model没有初始化,就会去获取全局的指针,存储到本地:
+ * Cost_model_server::init
+ * const Cost_model_constants *m_cost_constants = cost_constant_cache->get_cost_constants();
+ * // 会增加一个引用计数,以确保不会在引用时被删除
+ * const Server_cost_constants *m_server_cost_constants = m_cost_constants->get_server_cost_constants();
+ * // 同样获取的是全局指针
+ * 可见thd不创建自己的cost model, 只引用cache中的指针
+ * 
+ * Table Cost Model
+ * struct TABLE::m_cost_model, 类型:Cost_model_table
+ * 其值取自上述thd中存储的cost model对象
+ * 
+ * Cost_estimate
+ * 统一的对象类型cost_estimate来存储计算的cost结果,包含四个维度:
+ * double io_cost;      ///< cost of I/O operations
+ * double cpu_cost;     ///< cost of CPU operations
+ * double import_cost;  ///< cost of remote operations
+ * double mem_cost;     ///< memory used (bytes)
+*/
 class Cost_model_server {
  public:
   /**
@@ -80,7 +102,12 @@ class Cost_model_server {
 
     @return Cost of evaluating the records
   */
-
+  /** Note:外部接口
+   * 功能:
+   * CPU Cost中获取ROW_EVALUATE_COST
+   * 调用:
+   * 
+  */
   double row_evaluate_cost(double rows) const {
     DBUG_ASSERT(m_initialized);
     DBUG_ASSERT(rows >= 0.0);
@@ -259,7 +286,12 @@ class Cost_model_table {
 
     @return Cost of evaluating the records
   */
-
+  /** Note:外部接口
+   * 功能:
+   * CPU Cost
+   * 调用:
+   * sql/handler.cc/
+  */
   double row_evaluate_cost(double rows) const {
     DBUG_ASSERT(m_initialized);
     DBUG_ASSERT(rows >= 0.0);
@@ -274,7 +306,11 @@ class Cost_model_table {
 
     @return Cost of comparing the keys
   */
-
+  /** Note:外部接口
+   * 调用:
+   * sql/uniques.cc/get_merge_buffers_cost
+   * sql/uniques.cc/Unique::get_use_cost
+  */
   double key_compare_cost(double keys) const {
     DBUG_ASSERT(m_initialized);
     DBUG_ASSERT(keys >= 0.0);
@@ -289,7 +325,9 @@ class Cost_model_table {
 
     @return Cost estimate
   */
-
+  /** Note:外部接口
+   * 获取IO Cost的IO_BLOCK_READ_COST 
+  */
   double io_block_read_cost(double blocks) const {
     DBUG_ASSERT(m_initialized);
     DBUG_ASSERT(blocks >= 0.0);

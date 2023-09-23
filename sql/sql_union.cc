@@ -1154,6 +1154,8 @@ bool SELECT_LEX_UNIT::ClearForExecution(THD *thd) {
 }
 
 /** Note:内部函数
+ * 功能:
+ * 火山模型中执行前面optimizer阶段AccessPath构造的Iterator
  * 调用:
  * SELECT_LEX_UNIT::execute
  * 迭代器模型/火山模型执行入口

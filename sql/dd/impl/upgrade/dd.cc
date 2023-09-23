@@ -1036,6 +1036,10 @@ bool update_object_ids(THD *thd, const std::set<String_type> &create_set,
 namespace upgrade {
 // Create the target tables for upgrade and migrate the meta data.
 /* purecov: begin inspected */
+/** Note:外部接口
+ * 调用:
+ * 
+*/
 bool upgrade_tables(THD *thd) {
   if (!bootstrap::DD_bootstrap_ctx::instance().is_dd_upgrade()) return false;
 
@@ -1178,6 +1182,7 @@ bool upgrade_tables(THD *thd) {
   bootstrap::DD_bootstrap_ctx::instance().set_stage(bootstrap::Stage::STARTED);
 
   store_predefined_tablespace_metadata(thd);
+  // Note:
   if (create_dd_schema(thd) || initialize_dd_properties(thd) ||
       create_tables(thd, nullptr) || sync_meta_data(thd)) {
     return true;

@@ -74,6 +74,14 @@ void Cost_model_table::init(const Cost_model_server *cost_model_server,
 #endif
 }
 
+/** Note:外部接口
+ * 功能:
+ * 代价模型计算
+ * 调用:
+ * sql/handler.cc/handler::multi_range_read_info_const
+ * sql/handler.cc/get_sweep_read_cost
+ * sql/sql_optimizer.cc/JOIN::estimate_rowcount
+*/
 double Cost_model_table::page_read_cost(double pages) const {
   DBUG_ASSERT(m_initialized);
   DBUG_ASSERT(pages >= 0.0);
@@ -84,12 +92,19 @@ double Cost_model_table::page_read_cost(double pages) const {
   const double pages_on_disk = pages - pages_in_mem;
   DBUG_ASSERT(pages_on_disk >= 0.0);
 
+  /** Note:io_block_read_cost即获取IO_BLOCK_READ_COST 
+  */
   const double cost =
       buffer_block_read_cost(pages_in_mem) + io_block_read_cost(pages_on_disk);
 
   return cost;
 }
 
+/** Note:外部接口
+ * 调用:
+ * sql/handler.cc/handler::index_scan_cost
+ * sql/opt_range.cc/cost_group_min_max
+*/
 double Cost_model_table::page_read_cost_index(uint index, double pages) const {
   DBUG_ASSERT(m_initialized);
   DBUG_ASSERT(pages >= 0.0);

@@ -4672,6 +4672,12 @@ static int innodb_init_params() {
 
 /** Perform post-commit/rollback cleanup after DDL statement
 @param[in,out]	thd	connection thread */
+/** Note:内部函数
+ * 功能:
+ * InnoDB存储引擎执行DDL的入口
+ * 调用:
+ * 
+*/
 static void innobase_post_ddl(THD *thd) {
   /* During upgrade, etc., the log_ddl may haven't been
   initialized and there is nothing to do now. */
@@ -4692,6 +4698,12 @@ static void innobase_post_ddl(THD *thd) {
 @param[in,out]	p	InnoDB handlerton
 @return error code
 @retval 0 on success */
+/** Note:内部函数
+ * 功能:
+ * 以插件的方式初始化InnoDB存储引擎
+ * 调用:
+ * mysql_declare_plugin
+*/
 static int innodb_init(void *p) {
   DBUG_TRACE;
 
@@ -16281,7 +16293,13 @@ ha_rows ha_innobase::estimate_rows_upper_bound() {
  comparable to the number returned by records_in_range so that we can
  decide if we should scan the table or use keys.
  @return estimated time measured in disk seeks */
-
+/** Note:外部接口
+ * 功能:
+ * 获取IO代价中的pages in table
+ * IO-cost:#pagess in table * IO_BLOCK_READ_COST
+ * 调用:
+ * sql/handler.cc/handler::table_scan_cost
+*/
 double ha_innobase::scan_time() {
   /* Since MySQL seems to favor table scans too much over index
   searches, we pretend that a sequential read takes the same time
@@ -16621,6 +16639,12 @@ various fields of the handle object.
 @param[in]	flag		what information is requested
 @param[in]	is_analyze	True if called from "::analyze()".
 @return HA_ERR_* error code or 0 */
+/** Note:内部函数
+ * 功能:
+ * CPU Cost获取表拥有的行数
+ * 调用:
+ * ha_innobase::info
+*/
 int ha_innobase::info_low(uint flag, bool is_analyze) {
   dict_table_t *ib_table;
   ib_uint64_t n_rows;

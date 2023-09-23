@@ -4443,6 +4443,11 @@ struct LEX : public Query_tables_list {
     These statistics are cached, to avoid opening of table more
     than once while preparing a single output record buffer.
   */
+  /** Note:IS=Information Scheam
+   * PFS=Performance Schema
+   * 在INFORMATION_SCHEMA视图中从存储引擎动态获取表统计信息
+   * 这些从存储引擎读取的统计信息是需要缓存起来的,这里就是缓存这些统计信息使用的
+  */
   dd::info_schema::Table_statistics m_IS_table_stats;
   dd::info_schema::Tablespace_statistics m_IS_tablespace_stats;
 

@@ -1071,6 +1071,14 @@ bool create_dd_schema(THD *thd) {
                                     dd::String_type(MYSQL_SCHEMA_NAME.str));
 }
 
+/** Note:外部接口 内部函数
+ * 功能:
+ * actual_dd_version将会从dd_properties表中获取,这里是确定是否进入升级流程的关键
+ * dd_properties标识数据字典属性的表,例如它的版本.
+ * 服务器使用它来确定是否必须将数据字典升级到较新的版本.
+ * 调用:
+ * sql/dd/impl/upgrade/dd.cc/upgrade_tables
+*/
 bool initialize_dd_properties(THD *thd) {
   // Create the dd_properties table.
   const Object_table_definition *dd_properties_def =

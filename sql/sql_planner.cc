@@ -171,6 +171,17 @@ Optimize_table_order::Optimize_table_order(THD *thd_arg, JOIN *join_arg,
   @return pointer to Key_use for the index with best 'ref' access, NULL if
           no 'ref' access method is found.
 */
+/** Note:外部接口
+ * 功能:
+ * ref访问方式:
+ * 从find_best_ref得知ref访问方式的Cost大致为:
+ * IO-cost:#prefix_rowcount * IO_BLOCK_READ_COST + CPU cost:#prefix_rowcount * cur_fanout * ROW_EVALUATE_COST,
+ * 需要实现cur_fanout这个变量,而这个变量跟info中的rec_per_key
+ * (rec_per_key的意思是,比如对于select * from test_db.table1 where c2=3,table1中有多少行数据满足c2=3)有关系,
+ * 所以实现rec_per_key算法后就可以知道其Cost值了.
+ * 调用:
+ * 
+*/
 Key_use *Optimize_table_order::find_best_ref(
     const JOIN_TAB *tab, const table_map remaining_tables, const uint idx,
     const double prefix_rowcount, bool *found_condition,
@@ -750,6 +761,12 @@ Key_use *Optimize_table_order::find_best_ref(
                               rows that are estimated to be filtered out
                               by query conditions.
 */
+/** Note:内部函数
+ * 功能:
+ * 在构造AccessPath的时候计算扫描的代价
+ * 调用:
+ * Optimize_table_order::best_access_path
+*/
 double Optimize_table_order::calculate_scan_cost(
     const JOIN_TAB *tab, const uint idx, const Key_use *best_ref,
     const double prefix_rowcount, const bool found_condition,
@@ -826,6 +843,7 @@ double Optimize_table_order::calculate_scan_cost(
       scan_cost = table->file->read_cost(tab->ref().key, 1,
                                          static_cast<double>(tab->records()));
     else
+      // Note:IO代价
       scan_cost = table->file->table_scan_cost();  // table scan
     const double single_scan_read_cost = scan_cost.total_cost();
 
@@ -1125,7 +1143,7 @@ void Optimize_table_order::best_access_path(JOIN_TAB *tab,
       therefore has to be compared to the cost of scanning.
     */
     double rows_after_filtering;
-
+    // Note:
     double scan_read_cost = calculate_scan_cost(
         tab, idx, best_ref, prefix_rowcount, found_condition, disable_jbuf,
         &rows_after_filtering, &trace_access_scan);
@@ -1136,6 +1154,7 @@ void Optimize_table_order::best_access_path(JOIN_TAB *tab,
       This cost plus scan_cost gives us total cost of using
       TABLE/INDEX/RANGE SCAN.
     */
+    // Note:计算总代价
     const double scan_total_cost =
         scan_read_cost +
         cost_model->row_evaluate_cost(prefix_rowcount * rows_after_filtering);

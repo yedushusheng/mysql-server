@@ -296,6 +296,13 @@ static TableCollection GetUsedTablesForAggregate(JOIN *join,
 
 /** Note:外部接口
  * 从前面构造的AccessPath构造迭代器Iterator
+ * 这里的Iterator会存储当前的算子的record结果集,期待行数等信息
+ * 比如这里TABLE_SCAN算子为例,这里在构造对应的TableScanIterator的时候,需要存储如下的信息:
+ * 1.record结果
+ * 2.预期结果:num_output_rows examined_rows
+ * 这里构造好的AccessPath在执行器调用:
+ * SELECT_LEX_UNIT::execute
+ * ->ExecuteIteratorQuery
  * 调用:
  * sql/item_subselect.cc/subselect_hash_sj_engine::create_iterators
  * sql/record.cc/init_table_iterator
@@ -317,6 +324,7 @@ unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
   switch (path->type) {
     // Note:根据不同的访问路径类型,初始化不同的迭代器
     case AccessPath::TABLE_SCAN: {
+      // Note:执行TableScan操作获取结果
       const auto &param = path->table_scan();
       /** Note:初始化Iterator的时候会传递Table信息(param.table),
        * 结果集(param.table->record[0])

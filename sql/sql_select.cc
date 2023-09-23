@@ -5100,6 +5100,7 @@ bool test_if_cheaper_ordering(const JOIN_TAB *tab, ORDER_with_src *order,
       if (fanout < 0) break;  // fanout became 'unknown'
     }
   } else
+    // Note:IO代价
     read_time = table->file->table_scan_cost().total_cost();
 
   /*
@@ -5216,6 +5217,7 @@ bool test_if_cheaper_ordering(const JOIN_TAB *tab, ORDER_with_src *order,
           to calculate the cost of accessing data rows for one
           index entry.
         */
+        // Note:IO代价
         const Cost_estimate table_scan_time = table->file->table_scan_cost();
         const double index_scan_time =
             select_limit / rec_per_key *

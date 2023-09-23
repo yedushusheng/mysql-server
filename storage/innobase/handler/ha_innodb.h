@@ -35,7 +35,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "row0pread-adapter.h"
 #include "row0pread-histogram.h"
 #include "trx0trx.h"
-
+/** Note:InnoDB Storage的接口
+*/
 /** "GEN_CLUST_INDEX" is the name reserved for InnoDB default
 system clustered index when there is no primary key. */
 extern const char innobase_index_reserve_name[];

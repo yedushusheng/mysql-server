@@ -585,6 +585,7 @@ static bool prepare_simple_select(THD *thd, Item *cond, TABLE *table,
   Opt_trace_object wrapper(&thd->opt_trace);
   Key_map keys_to_use(Key_map::ALL_BITS), needed_reg_dummy;
   QUICK_SELECT_I *qck;
+  // Note:
   const bool impossible =
       test_quick_select(thd, keys_to_use, 0, HA_POS_ERROR, false,
                         ORDER_NOT_RELEVANT, tab, cond, &needed_reg_dummy, &qck,

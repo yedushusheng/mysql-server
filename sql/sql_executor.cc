@@ -3892,6 +3892,7 @@ bool DynamicRangeIterator::Init() {
   QUICK_SELECT_I *old_qck = m_qep_tab->quick();
   QUICK_SELECT_I *qck;
   DEBUG_SYNC(thd(), "quick_not_created");
+  // Note:
   const int rc = test_quick_select(
       thd(), m_qep_tab->keys(),
       0,  // empty table map

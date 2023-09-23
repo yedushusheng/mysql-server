@@ -4619,6 +4619,7 @@ uint handler::get_dup_key(int error) {
   table->file->errkey = (uint)-1;
   if (error == HA_ERR_FOUND_DUPP_KEY || error == HA_ERR_FOUND_DUPP_UNIQUE ||
       error == HA_ERR_NULL_IN_SPATIAL || error == HA_ERR_DROP_INDEX_FK)
+    // Note:获取代价模型中的行数(CPU Cost)
     table->file->info(HA_STATUS_ERRKEY | HA_STATUS_NO_LOCK);
   return table->file->errkey;
 }
@@ -6080,6 +6081,30 @@ double handler::estimate_in_memory_buffer(ulonglong table_index_size) const {
   return in_mem_est;
 }
 
+/** Note:外部接口
+ * 功能:
+ * Table scan访问方式
+ * 从全表扫描cost计算公式可以知道Table scan的Cost分为IO的Cost跟CPU Cost两个部分之和
+ * 大致的公式为:
+ * IO-cost:#pages in table * IO_BLOCK_READ_COST + CPU cost:#records * ROW_EVALUATE_COST,
+ * 其中IO-cost是通过table_scan_cost来计算的
+ * io代价table_scan_cost会根据buffer pool大小和索引大小来估算page in memory和in disk的比例,分别算出代价.
+ * 
+ * 这里有两个关键的变量records跟pages in table:
+ * records--表示这个表有多少行
+ * pages in table--表示这个表有多少page
+ * 这两个变量的值是怎么来的呢?
+ * 如果使用的是innodb,那么前者(records)来自于ha_innobase::info_low(ha_innobase::info),
+ * 后者来自于ha_innobase::scan_time()(而这两个函数都是SQL层handler.h定义的虚函数,不同的存储引擎分别实现之),
+ * 知道了这两个变量的值,就知道具体的Cost值了.
+ * 调用:
+ * sql/opt_range.cc/
+ * sql/sql_optimizer.cc/JOIN::estimate_rowcount
+ * sql/sql_planner.cc/Optimize_table_order::calculate_scan_cost
+ * sql/sql_select.cc/test_if_cheaper_ordering
+ * sql/join_optimizer/join_optimizer.cc/CostingReceiver::FoundSingleNode
+ * sql/join_optimizer/join_optimizer.cc/CreateMaterializationPathForSortingAggregates
+*/
 Cost_estimate handler::table_scan_cost() {
   /*
     This function returns a Cost_estimate object. The function should be
@@ -6087,13 +6112,33 @@ Cost_estimate handler::table_scan_cost() {
     optimization" to avoid creating the temporary object for the return value
     and use of the copy constructor.
   */
-
+  /** Note:这里就对应计算公式:IO-cost:pages_in_table * IO_BLOCK_READ_COST
+   * 其中scan_time计算数据所占page数
+   * page_read_cost计算读取单个page的代价
+   * buffer_block_read_cost(pages_in_mem) + io_block_read_cost(pages_on_disk); 
+  */
   const double io_cost = scan_time() * table->cost_model()->page_read_cost(1.0);
   Cost_estimate cost;
   cost.add_io(io_cost);
   return cost;
 }
 
+/** Note:外部接口
+ * 功能:
+ * Index scan访问方式:
+ * 覆盖索引的扫描,从index_scan_cost得知Index scan的Cost为:
+ * IO-cost:#(records/keys_per_block) * IO_BLOCK_READ_COST + CPU cost:#records * ROW_EVALUATE_COST,
+ * 由于IO_BLOCK_READ_COST跟ROW_EVALUATE_COST都是常量,
+ * 所以需要关注是keys_per_block(keys_per_block的计算跟block_size等有关)跟records这两个变量,
+ * 也就是说如果知道了这两个变量的值,就知道了具体的Cost值了.
+ * index_scan_cost:
+ * const double io_cost= index_only_read_time(index, rows) *  //估算index占page个数 = 1.0987925356750823
+ * table->cost_model()->page_read_cost_index(index, 1.0);     //根据buffer pool大小和索引大小来估算page in memory和in disk的比例,计算读一个page的代价. = 1
+ * 调用:
+ * sql/handler.cc/
+ * sql/opt_range.cc/
+ * sql/sql_planner.cc/
+*/
 Cost_estimate handler::index_scan_cost(uint index,
                                        double ranges MY_ATTRIBUTE((unused)),
                                        double rows) {
@@ -6107,6 +6152,7 @@ Cost_estimate handler::index_scan_cost(uint index,
   DBUG_ASSERT(ranges >= 0.0);
   DBUG_ASSERT(rows >= 0.0);
 
+  // Note:
   const double io_cost = index_only_read_time(index, rows) *
                          table->cost_model()->page_read_cost_index(index, 1.0);
   Cost_estimate cost;
@@ -6114,6 +6160,28 @@ Cost_estimate handler::index_scan_cost(uint index,
   return cost;
 }
 
+/** Note:内部函数
+ * 功能:
+ * create table t1(c1 int primary key, c2 int unique,c3 int) engine=innodb;
+ * let $loop=100;
+ * while($loop)
+ * {
+ *   eval insert into t1(c1,c2,c3) values($loop, $loop+1, $loop+2);
+ *   dec $loop;
+ * }
+ * set optimizer_trace = "enabled=on";
+ * explain select * from t1 where c2 > 10;
+ * id      select_type     table   partitions      type    possible_keys   key     key_len ref     rows    filtered        Extra
+ * 1       SIMPLE  t1      NULL    ALL     c2      NULL    NULL    NULL    100     91.00   Using where
+ * read_cost: //92*1=92
+ * const double io_cost= read_time(index, static_cast<uint>(ranges)
+ *                                 static_cast<ha_rows>(rows)) *
+ *                                 table->cost_model()->page_read_cost(1.0);   
+ * read_time: //91+1=92
+ * virtual double read_time(uint index, uint ranges, ha_rows rows)
+ * { return rows2double(ranges+rows); }
+ * 这里回表时计算代价为每行代价为1,默认认为回表时每行都对于聚集索引的一个page.
+*/
 Cost_estimate handler::read_cost(uint index, double ranges, double rows) {
   /*
     This function returns a Cost_estimate object. The function should be
@@ -6195,7 +6263,22 @@ static bool key_uses_partial_cols(TABLE *table, uint keyno) {
     other         OK, *cost contains cost of the scan, *bufsz and *flags
                   contain scan parameters.
 */
-
+/** Note:外部接口
+ * 功能:
+ * 索引扫描:
+ * multi_range_read_info_const:
+ * cost= index_scan_cost(keyno, static_cast<double>(n_ranges),
+ *                           static_cast<double>(total_rows));
+ * cost->add_cpu(cost_model->row_evaluate_cost(static_cast<double>(total_rows)) + 0.01);
+ * MRR的代价计算
+ * range access访问方式:
+ * 从multi_range_read_info_const得知range access的Cost为:
+ * IO-cost:#records_in_range * IO_BLOCK_READ_COST + CPU cost:2#records_in_range ROW_EVALUATE_COST
+ * 由于IO_BLOCK_READ_COST跟ROW_EVALUATE_COST都是常量,
+ * 所以只需要知道records_in_range这个变量的值,就能计算其Cost了.
+ * 调用:
+ * 
+*/
 ha_rows handler::multi_range_read_info_const(
     uint keyno, RANGE_SEQ_IF *seq, void *seq_init_param,
     uint n_ranges_arg MY_ATTRIBUTE((unused)), uint *bufsz, uint *flags,
@@ -6295,11 +6378,16 @@ ha_rows handler::multi_range_read_info_const(
 
     DBUG_ASSERT(cost->is_zero());
     if (*flags & HA_MRR_INDEX_ONLY)
+      // Note:IO代价
       *cost = index_scan_cost(keyno, static_cast<double>(n_ranges),
                               static_cast<double>(total_rows));
     else
+      // Note:非覆盖索引,需要回表
       *cost = read_cost(keyno, static_cast<double>(n_ranges),
                         static_cast<double>(total_rows));
+    /** Note:CPU Cost
+     * 这里根据过滤条件算出total_rows
+    */
     cost->add_cpu(
         cost_model->row_evaluate_cost(static_cast<double>(total_rows)) + 0.01);
   }
@@ -7053,7 +7141,8 @@ static void get_sort_and_sweep_cost(TABLE *table, ha_rows nrows,
   @retval true   Error, DS-MRR cannot be used (the buffer is too small
                  for even 1 rowid)
 */
-
+/** Note:外部接口
+*/
 bool DsMrr_impl::get_disk_sweep_mrr_cost(uint keynr, ha_rows rows, uint flags,
                                          uint *buffer_size,
                                          Cost_estimate *cost) {
@@ -7114,6 +7203,7 @@ bool DsMrr_impl::get_disk_sweep_mrr_cost(uint keynr, ha_rows rows, uint flags,
     Add CPU cost for processing records (see
     @handler::multi_range_read_info_const()).
   */
+  // Note:CPU Cost
   cost->add_cpu(
       table->cost_model()->row_evaluate_cost(static_cast<double>(rows)));
   return false;
@@ -7250,6 +7340,7 @@ void get_sweep_read_cost(TABLE *table, ha_rows nrows, bool interrupted,
       The random access cost for reading the data pages will be the upper
       limit for the sweep_cost.
     */
+    // Note:
     cost->add_io(cost_model->page_read_cost(busy_blocks));
     if (!interrupted) {
       Cost_estimate sweep_cost;

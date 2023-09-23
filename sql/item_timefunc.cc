@@ -3498,6 +3498,7 @@ bool Item_func_internal_update_time::get_date(MYSQL_TIME *ltime,
     else if (arg_count == 9)
       partition_name_ptr = args[8]->val_str(&partition_name);
 
+    // Note:
     unixtime = thd->lex->m_IS_table_stats.read_stat(
         thd, *schema_name_ptr, *table_name_ptr, *engine_name_ptr,
         (partition_name_ptr ? partition_name_ptr->c_ptr_safe() : nullptr),
@@ -3579,6 +3580,7 @@ bool Item_func_internal_check_time::get_date(MYSQL_TIME *ltime,
     else if (arg_count == 9)
       partition_name_ptr = args[8]->val_str(&partition_name);
 
+    // Note:
     unixtime = thd->lex->m_IS_table_stats.read_stat(
         thd, *schema_name_ptr, *table_name_ptr, *engine_name_ptr,
         (partition_name_ptr ? partition_name_ptr->c_ptr_safe() : nullptr),

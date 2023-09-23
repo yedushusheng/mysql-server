@@ -449,6 +449,7 @@ static double get_merge_buffers_cost(Unique::Imerge_cost_buf_type buff_elems,
   const double io_ops =
       static_cast<double>(total_buf_elems * elem_size) / IO_SIZE;
   const double io_cost = cost_model->io_block_read_cost(io_ops);
+  // Note:
   const double cpu_cost =
       cost_model->key_compare_cost(total_buf_elems * std::log2(n_buffers));
 
@@ -586,6 +587,7 @@ double Unique::get_use_cost(Imerge_cost_buf_type buffer, uint nkeys,
   double n_compares = 2 * log2_n_fact(last_tree_elems + 1);
   if (n_full_trees)
     n_compares += n_full_trees * log2_n_fact(max_elements_in_tree + 1);
+  // Note:
   double result = cost_model->key_compare_cost(n_compares);
 
   DBUG_PRINT("info",

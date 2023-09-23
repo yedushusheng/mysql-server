@@ -54,7 +54,37 @@
   decremented. When the reference counter becomes zero, the cost
   constant set is deleted.
 */
-
+/** Note:外部类
+ * 在MySQL中,`cost_constant_cache` 是一个用于存储查询执行计划优化器成本模型的内部参数.
+ * 它用于在优化查询时评估不同执行计划的成本,以选择最佳的执行路径.
+ * 这个参数是MySQL内部优化器使用的,通常情况下,用户不需要直接调整它.
+ * 优化器会根据查询的复杂性、表的大小、索引情况等因素自动调整这个值.
+ * 具体来说,`cost_constant_cache` 的作用在于:
+ * 1. 成本估算:MySQL优化器会根据查询的复杂度和表的统计信息等,估算执行每个可能执行计划的成本.
+ * 2. 选择最优执行路径:根据成本估算,MySQL优化器会选择执行计划中成本最低的路径作为实际执行的路径.
+ * 总的来说,`cost_constant_cache` 是MySQL内部优化器的一部分,用于在执行查询时选择最优的执行计划,以提高查询性能.
+ * 对于大多数用户来说,不需要手动调整这个参数,MySQL通常能够自动根据查询和表的特性来做出合适的选择.
+ * 
+ * 全局cache Cost_constant_cache全局cache维护了一个当前的cost model信息,
+ * 用户线程在lex_start时会去判断其有没有初始化本地指针,如果没有的话就去该cache中将指针拷贝到本地
+ * 初始化全局cache:
+ * Cost_constant_cache::init
+ *   :
+ * 创建Cost_model_constants, 其中包含了两类信息: server层cost model和引擎层cost model, 类结构如下:
+ * 
+ * Cost_constant_cache ----> Cost_model_constants
+ *                        ---> Server_cost_constants
+ *                             //server_cost
+ *                        ---> Cost_model_se_info
+ *                             --->SE_cost_constants
+ *                             //engine_cost 如果存储引擎提供了接口函数get_cost_constants的话,则从存储引擎那取
+ * 从系统表读取配置,适用于初始化和flush optimizer_costs并更新cache:
+ * read_cost_constants()
+ *   |--> read_server_cost_constants
+ *   |--> read_engine_cost_constants
+ * 由于用户可以动态的更新系统表,执行完flush optimizer_costs后,有可能老的版本还在被某些session使用,因此需要引用计数,
+ * 老的版本ref counter被降为0后才能被释放
+*/
 class Cost_constant_cache {
  public:
   /**

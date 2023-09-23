@@ -273,8 +273,10 @@ static int get_index_max_value(TABLE *table, TABLE_REF *ref, uint range_fl) {
 /** NOTE:用于对查询语句中带有聚合函数(包括COUNT()、MIN()、MAX())且没有GROUPBY子句的形式进行优化
  * 所谓优化,就是对COUNT函数利用存储引擎的功能直接求值,对MIN/MAX函数利用索引直接求值.
  * 使用optimize_aggregated_query(MySQL5.6 opt_sum_query)进行优化时分为如下情况:
- * 1.COUNT函数:没有WHERE子句、函数参数不可为NULL、不存在外连接、能够精确技计数,则调用get_exact_record_count函数为COUNT函数求精确值.
- * 2.MIN/MAX函数:调用find_key_for_maxmin查看是否可以利用索引得到MAX/MIN的值,如果能利用,则会大大加快执行速度.
+ * 1.COUNT函数:
+ * 没有WHERE子句、函数参数不可为NULL、不存在外连接、能够精确技计数,则调用get_exact_record_count函数为COUNT函数求精确值(深潜).
+ * 2.MIN/MAX函数:
+ * 调用find_key_for_maxmin查看是否可以利用索引得到MAX/MIN的值(index dive深潜),如果能利用,则会大大加快执行速度.
  * 调用关系:
  * JOIN::optimize -> optimize_aggregated_query
 */

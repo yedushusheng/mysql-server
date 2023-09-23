@@ -197,6 +197,7 @@ bool CostingReceiver::FoundSingleNode(int node_idx) {
   tl->fetch_number_of_rows();
 
   double num_output_rows = table->file->stats.records;
+  // Note:IO代价
   double cost = table->file->table_scan_cost().total_cost();
 
   path->num_output_rows_before_filter = num_output_rows;
@@ -655,6 +656,7 @@ AccessPath *CreateMaterializationPathForSortingAggregates(
     // Try to get usable estimates. Ignored by InnoDB, but used by
     // TempTable.
     temp_table->file->stats.records = path->num_output_rows;
+    // Note:IO代价
     materialize_path->cost = path->cost +
                              kMaterializeOneRowCost * path->num_output_rows +
                              temp_table->file->table_scan_cost().total_cost();

@@ -434,6 +434,15 @@ ulonglong Table_statistics::get_stat(ha_statistics &stat,
 
 // Read dynamic table statistics from SE by opening the user table
 // provided OR by reading cached statistics from SELECT_LEX.
+/** Note:外部接口
+ * 功能:
+ * 通过打开用户表(mysq.xxx)的方式读取存储引擎表的动态统计信息
+ * 调用:
+ * sql/item_func.cc/get_table_statistics
+ * sql/item_func.cc/Item_func_internal_index_column_cardinality::val_int
+ * sql/item_timefunc.cc/Item_func_internal_update_time::get_date
+ * sql/item_timefunc.cc/Item_func_internal_check_time::get_date
+*/
 ulonglong Table_statistics::read_stat(
     THD *thd, const String &schema_name_ptr, const String &table_name_ptr,
     const String &index_name_ptr, const char *partition_name,
@@ -497,6 +506,7 @@ ulonglong Table_statistics::read_stat(
         index_ordinal_position, column_ordinal_position, se_private_id,
         ts_se_private_data, tbl_se_private_data, stype, hton);
   else
+    // Note:如果不是从存储引擎(SE)获取统计信息,则从Server的数据字典获取
     result = read_stat_by_open_table(
         thd, schema_name_ptr, table_name_ptr, index_name_ptr, partition_name,
         column_name_ptr, column_ordinal_position, stype);
@@ -656,6 +666,12 @@ ulonglong Table_statistics::read_stat_from_SE(
 }
 
 // Fetch stats by opening the table.
+/** Note:内部函数
+ * 功能:
+ * 打开Server的状态统计数据字典(mysql.innodb_index_stats等)获取统计信息
+ * 调用:
+ * Table_statistics::read_stat
+*/
 ulonglong Table_statistics::read_stat_by_open_table(
     THD *thd, const String &schema_name_ptr, const String &table_name_ptr,
     const String &index_name_ptr, const char *partition_name,

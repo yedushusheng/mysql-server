@@ -1853,6 +1853,11 @@ regardless of the value of the global srv_stats_persistent_auto_recalc
   ib_uint64_t stat_n_rows;
 
   /** Approximate clustered index size in database pages. */
+  /** Note:聚簇索引的页大小估算值
+   * 在代价估算的时候使用:
+   * IO-cost:#pages in table * IO_BLOCK_READ_COST 
+   * 这里就是pages in table(该表拥有多少页)
+  */
   ulint stat_clustered_index_size;
 
   /** Approximate size of other indexes in database pages. */

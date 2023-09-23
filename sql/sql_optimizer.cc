@@ -468,6 +468,8 @@ bool JOIN::optimize() {
       !(select_lex->active_options() & OPTION_NO_CONST_TABLES)) {
   /** NOTE:有聚合函数但没有GROUPBY子句,则implicit_grouping在SELECT_LEX::prepare(JON::prepare)
    * 方法中被赋值为TRUE(此种情况下,结果集应该是0行或一行数据).
+   * 说明:
+   * 这里是在优化器的优化过程中构造火山模型的AccessPath
   */
     aggregate_evaluated outcome;
     if (optimize_aggregated_query(thd, select_lex, *fields, where_cond,
@@ -532,6 +534,7 @@ bool JOIN::optimize() {
     count_field_types(select_lex, &tmp_table_param, *fields, false, false);
     // Make plan visible for EXPLAIN
     set_plan_state(NO_TABLES);
+    // Note:火山模型-构造AccessPath
     create_access_paths();
     return false;
   }
@@ -952,6 +955,7 @@ bool JOIN::optimize() {
 
   count_field_types(select_lex, &tmp_table_param, *fields, false, false);
 
+  // Note:火山模型-构造AccessPath
   create_access_paths();
 
   // Creating iterators may evaluate a constant hash join condition, which may
@@ -2260,6 +2264,7 @@ static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
           trace_recest.add_utf8_table(tab->table_ref)
               .add_utf8("index", table->key_info[new_ref_key].name);
           QUICK_SELECT_I *qck;
+          // Note:
           const bool no_quick =
               test_quick_select(
                   thd, new_ref_key_map,
@@ -2372,6 +2377,7 @@ static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
       Key_map keys_to_use;            // Force the creation of quick select
       keys_to_use.set_bit(best_key);  // only best_key.
       QUICK_SELECT_I *qck;
+      // Note:
       test_quick_select(
           thd, keys_to_use,
           0,  // empty table_map
@@ -2743,6 +2749,7 @@ static bool can_switch_from_ref_to_range(THD *thd, JOIN_TAB *tab,
             trace, "rerunning_range_optimizer_for_single_index");
 
         QUICK_SELECT_I *qck;
+        // Note:
         if (test_quick_select(
                 thd, new_ref_key_map, 0,  // empty table_map
                 tab->join()->row_limit, false, ordering, tab,
@@ -5128,6 +5135,7 @@ bool JOIN::make_join_plan() {
   if (const_tables && sargables) update_sargable_from_const(sargables);
 
   // Make a first estimate of the fanout for each table in the query block.
+  // Note:在查询块中的每一个表先计算一下fanout情况
   if (estimate_rowcount()) return true;
 
   /*
@@ -5658,7 +5666,12 @@ void JOIN::update_sargable_from_const(SARGABLE_PARAM *sargables) {
 
   @returns false if success, true if error
 */
-
+/** Note:内部函数
+ * 功能:
+ * 
+ * 调用:
+ * JOIN::make_join_plan
+*/
 bool JOIN::estimate_rowcount() {
   Opt_trace_context *const trace = &thd->opt_trace;
   Opt_trace_object trace_wrapper(trace);
@@ -5678,12 +5691,14 @@ bool JOIN::estimate_rowcount() {
 
       // Only one matching row and one block to read
       tab->set_records(tab->found_records = 1);
+      // Note:
       tab->worst_seeks = cost_model->page_read_cost(1.0);
       tab->read_time = tab->worst_seeks;
       continue;
     }
     // Approximate number of found rows and cost to read them
     tab->set_records(tab->found_records = tab->table()->file->stats.records);
+    // Note:IO代价
     const Cost_estimate table_scan_time = tab->table()->file->table_scan_cost();
     tab->read_time = table_scan_time.total_cost();
 
@@ -5960,6 +5975,7 @@ static ha_rows get_quick_record_count(THD *thd, JOIN_TAB *tab, ha_rows limit) {
     QUICK_SELECT_I *qck;
     Key_map keys_to_use = tab->const_keys;
     keys_to_use.merge(tab->skip_scan_keys);
+    // Note:
     int error = test_quick_select(
         thd, keys_to_use,
         0,  // empty table_map
@@ -9681,6 +9697,7 @@ static bool make_join_select(JOIN *join, Item *cond) {
                 tab->set_type(JT_ALL);
               }
               QUICK_SELECT_I *qck;
+              // Note:
               search_if_impossible =
                   test_quick_select(
                       thd, usable_keys, used_tables & ~tab->table_ref->map(),
@@ -9706,6 +9723,7 @@ static bool make_join_select(JOIN *join, Item *cond) {
                 tab->set_type(JT_ALL);
               }
               QUICK_SELECT_I *qck;
+              // Note:
               const bool impossible_where =
                   test_quick_select(
                       thd, tab->keys(), used_tables & ~tab->table_ref->map(),
