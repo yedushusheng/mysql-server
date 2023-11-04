@@ -44,7 +44,8 @@ class CacheStorageTest;
  * Storage_adapter是MySQL内部实现的一种存储适配器,用于在MySQL中管理存储引擎之间的数据转换和交互.
  * 在MySQL中,每个存储引擎都有自己的存储格式和数据访问方式,Storage_adapter的作用就是将不同存储引擎之间的数据转换为统一的格式,以实现数据的共享和交互.
  * Storage_adapter在MySQL中是由ha_storage_adapter类实现的.它通过提供一组接口来访问和管理存储引擎中的数据,包括读取和写入数据、锁定和释放数据、事务管理、索引管理等等.
- * Storage_adapter还提供了一组标准的API,以便存储引擎可以实现与MySQL内部的交互.当一个存储引擎被加载到MySQL中时,它会注册自己的API,以便MySQL可以使用Storage_adapter来访问和管理它的数据.
+ * Storage_adapter还提供了一组标准的API,以便存储引擎可以实现与MySQL内部的交互.
+ * 当一个存储引擎被加载到MySQL中时,它会注册自己的API,以便MySQL可以使用Storage_adapter来访问和管理它的数据.
  * 总的来说,Storage_adapter是MySQL内部实现的一种存储适配器,它通过提供一组接口和标准的API,将不同存储引擎之间的数据转换为统一的格式,以实现数据的共享和交互.它是MySQL数据字典的核心组成部分之一.
  * 
  * 数据字典表本身的元数据也会保存到数据字典表里,但是某个数据字典表创建的时候,有一些数据字典表还没有创建,这就有问题了.

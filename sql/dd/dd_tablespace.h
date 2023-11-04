@@ -31,6 +31,7 @@ class THD;
 class st_alter_tablespace;
 struct handlerton;
 /** Note:数据字典中表空间table space操作接口
+ * 主要是完成tablespace操作的同时执行相关数据字典的操作
 */
 namespace dd {
 

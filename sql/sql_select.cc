@@ -620,7 +620,7 @@ bool Sql_cmd_dml::execute(THD *thd) {
 
     if (m_lazy_result) {
       Prepared_stmt_arena_holder ps_arena_holder(thd);
-
+      // Note:处理结果集
       if (result->prepare(thd, *unit->get_unit_column_types(), unit)) goto err;
       m_lazy_result = false;
     }

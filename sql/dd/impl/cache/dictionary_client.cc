@@ -1657,6 +1657,14 @@ static bool get_index_statistics_entries(
   Remove the dynamic statistics stored in mysql.table_stats and
   mysql.index_stats.
 */
+/** Note:外部接口
+ * 功能:
+ * 在删除表的时候同时清理系统表mysql.table_stats,mysql.index_stats中的记录
+ * 调用:
+ * sql/dd/dd_table.cc/drop_table
+ * sql/dd/impl/distionary_impl.cc/create_native_table
+ * sql/dd/impl/distionary_impl.cc/drop_native_table
+*/
 bool Dictionary_client::remove_table_dynamic_statistics(
     const String_type &schema_name, const String_type &table_name) {
   //

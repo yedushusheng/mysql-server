@@ -501,6 +501,7 @@ ulonglong Table_statistics::read_stat(
 
   // Try to get statistics without opening the table.
   if (!partition_name && hton_implements_get_statistics)
+    // Note:从StorageEngine存储引擎获取统计信息(如果是执行的直方图获取统计信息则使用这种方式)
     result = read_stat_from_SE(
         thd, schema_name_ptr, table_name_ptr, index_name_ptr, column_name_ptr,
         index_ordinal_position, column_ordinal_position, se_private_id,

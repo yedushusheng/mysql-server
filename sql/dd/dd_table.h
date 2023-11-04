@@ -64,6 +64,8 @@ static const char FIELD_NAME_SEPARATOR_CHAR = ';';
 static const char CHECK_CONSTRAINT_NAME_SUBSTR[] = "_chk_";
 
 /** Note:该文件中主要是封装了数据字典中表相关操作接口
+ * 主要是完成表操作中涉及的数据字典操作,比如在执行drop table的时候需要同步清理index_stats,table_stats系统表
+ * 调用:
  * 在sql/sql_table.h中是表操作的入口,会调用这里的数据字典操作接口
  * sql/dd/dd_table.h:数据字典中表操作接口
  * sql/dd/types/table.h:主要是表定义

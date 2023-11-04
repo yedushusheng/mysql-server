@@ -1037,6 +1037,7 @@ namespace upgrade {
 // Create the target tables for upgrade and migrate the meta data.
 /* purecov: begin inspected */
 /** Note:外部接口
+ * 升级的时候同步迁移数据字典表
  * 调用:
  * 
 */

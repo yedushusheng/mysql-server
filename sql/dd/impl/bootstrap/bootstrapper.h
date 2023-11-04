@@ -83,7 +83,8 @@ class THD;
   Please see more elaborated descriptions for the initialize() and restart()
   methods below.
 */
-
+/** Note:主要是完成启动过程中数据字典的相关操作
+*/
 namespace dd {
 class Dictionary_impl;
 
