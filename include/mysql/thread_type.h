@@ -29,6 +29,23 @@
   @file include/mysql/thread_type.h
 */
 
+/* Note:在MySQL中，enum_thread_type是一个用于表示线程类型的枚举类型.
+具体来说，`enum_thread_type` 定义了以下几种线程类型：
+1. **后台任务线程（Background Task Threads）**
+   - 这些线程负责执行一些后台任务，例如刷新查询缓存、清理临时表等。
+2. **二进制日志线程（Binary Log Dump Threads）**
+   - 这些线程负责处理二进制日志文件的传输，通常用于主从复制。
+3. **连接处理线程（Connect Handling Threads）**
+   - 这些线程负责处理客户端连接请求，接受新的连接，分配新的线程来处理连接上的查询。
+4. **事件调度线程（Event Scheduler Threads）**
+   - 用于执行 MySQL 事件调度器中定义的周期性任务。
+5. **查询执行线程（Query Execution Threads）**
+   - 这些线程负责执行客户端发送的查询语句。
+6. **主线程（Main Thread）**
+   - MySQL 服务器的主线程，负责初始化、启动其他线程，并处理一些全局性的任务。
+通过查看线程的 `enum_thread_type` 类型，可以了解到每个线程在 MySQL 服务器中执行的特定任务。这对于诊断和监视 MySQL 服务器的运行状态非常有用。
+请注意，具体的线程类型可能因 MySQL 版本和配置而异，因此在查看相关文档时请参考您使用的 MySQL 版本的文档。
+*/
 /* Flags for the THD::system_thread variable */
 enum enum_thread_type {
   NON_SYSTEM_THREAD = 0,
