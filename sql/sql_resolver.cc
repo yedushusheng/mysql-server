@@ -1201,6 +1201,9 @@ bool SELECT_LEX::check_view_privileges(THD *thd, ulong want_privilege_first,
 bool SELECT_LEX::setup_tables(THD *thd, TABLE_LIST *tables,
                               bool select_insert) {
   DBUG_TRACE;
+  // XXX enable this assert
+  assert(true || (select_insert && !tables->next_name_resolution_table) || !tables ||
+         (context.table_list && context.first_name_resolution_table));
 
   DBUG_ASSERT((select_insert && !tables->next_name_resolution_table) ||
               !tables ||

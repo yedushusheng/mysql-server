@@ -1129,6 +1129,8 @@ class SELECT_LEX_UNIT {
 
   bool walk(Item_processor processor, enum_walk walk, uchar *arg);
 
+  bool clone_from(THD *thd, Query_expression *from,
+                  Item_clone_context *context);
   /*
     An exception: this is the only function that needs to adjust
     explain_marker.
@@ -1309,6 +1311,8 @@ class SELECT_LEX {
   SELECT_LEX *next_select() const { return next; }  //NOTE:当前节点的兄弟节点(同一个level)
 
   TABLE_LIST *find_table_by_name(const Table_ident *ident);
+
+  TABLE_LIST *find_identical_table_with(const TABLE_LIST *tl) const;
 
   /**
     @return true  If STRAIGHT_JOIN applies to all tables.
@@ -1950,6 +1954,8 @@ class SELECT_LEX {
   bool field_list_is_empty() const;
 
   void remove_hidden_fields();
+
+  bool clone_from(THD *thd, Query_block *from, Item_clone_context *context);
 
   // ************************************************
   // * Members (most of these should not be public) *
@@ -3870,6 +3876,7 @@ struct LEX : public Query_tables_list {
     does not properly understand yet.
    */
   bool using_hypergraph_optimizer = false;
+  bool is_partial_plan = false;
   LEX_STRING name;  //NOTE:对象的名称,在不同的命令下有不同的用途
   char *help_arg;
   char *to_log; /* For PURGE MASTER LOGS TO */

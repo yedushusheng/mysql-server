@@ -71,6 +71,7 @@
 #include "sql/opt_explain.h"  // explain_no_table
 #include "sql/opt_explain_format.h"
 #include "sql/opt_trace.h"
+#include "sql/parallel_query/planner.h"
 #include "sql/parse_tree_node_base.h"
 #include "sql/parse_tree_nodes.h"  // PT_with_clause
 #include "sql/pfs_batch_mode.h"
@@ -1278,6 +1279,8 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
     auto join_cleanup = create_scope_guard([this, thd] {
       for (SELECT_LEX *sl = first_select(); sl; sl = sl->next_select()) {
         JOIN *join = sl->join;
+        if (join->parallel_plan)
+          join->parallel_plan->EndCollector(thd, &join->send_records);
         join->join_free();
         thd->inc_examined_row_count(join->examined_rows);
       }
@@ -1329,6 +1332,9 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
   // Note:将​​send_records_ptr​​​赋值给该线程的​​current_found_rows​​
   thd->current_found_rows = *send_records_ptr;
 
+  // Parallel query could change error status of THD in EndCollector()
+  if (thd->is_error()) return true;
+  
   return query_result->send_eof(thd);
 }
 

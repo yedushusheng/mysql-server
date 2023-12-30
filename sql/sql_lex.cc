@@ -4692,6 +4692,13 @@ TABLE_LIST *SELECT_LEX::find_table_by_name(const Table_ident *ident) {
   return nullptr;
 }
 
+TABLE_LIST *Query_block::find_identical_table_with(const TABLE_LIST *tl) const {
+  for (TABLE_LIST *table = leaf_tables; table; table = table->next_leaf) {
+    if (tl->is_identical(table)) return table;
+  }
+  return nullptr;
+}
+
 /**
   Save prepared statement properties for a query block and underlying
   query expressions. Required for repeated optimizations of the command.

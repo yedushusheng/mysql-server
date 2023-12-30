@@ -71,7 +71,9 @@ class Filesort {
   bool m_force_sort_positions;
   // TODO: Consider moving this into private members of Filesort.
   Sort_param m_sort_param;
-
+  // Parallel query needs this to recreate filesort by AccessPath.
+  ORDER *src_order;
+  
   // TODO(sgunders): Change tables to a table_map; however, currently
   // some semijoin tables are missing from select_lex->leaf_tables,
   // so we can't do that yet.

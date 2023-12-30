@@ -4972,6 +4972,31 @@ Security_context *TABLE_LIST::find_view_security_context(THD *thd) {
   return sctx;
 }
 
+TABLE_LIST *TABLE_LIST::clone(MEM_ROOT *mem_root) {
+  TABLE_LIST *tl = new (mem_root) TABLE_LIST;
+  if (!tl) return nullptr;
+  tl->db = db;
+  tl->db_length = db_length;
+  tl->table_name = table_name;
+  tl->table_name_length = table_name_length;
+  tl->alias = alias;
+  tl->updating = updating;
+  tl->ignore_leaves = ignore_leaves;
+  tl->option = option;
+  tl->index_hints = index_hints;
+  tl->partition_names = partition_names;
+  tl->mdl_request.set_type(mdl_request.type);
+  tl->m_map = m_map;
+
+  tl->effective_algorithm = effective_algorithm;
+  tl->derived = derived;
+  tl->derived_key_list = derived_key_list;
+  tl->table = table;
+  tl->set_lock(m_lock_descriptor);
+  tl->m_id = m_id;
+  return tl;
+}
+
 /**
   Prepare security context and load underlying tables priveleges for view
 

@@ -377,6 +377,8 @@ class QEP_TAB : public QEP_shared_owner {
   /// @return the index used for a table in a QEP
   uint effective_index() const;
 
+  void clone_from(const QEP_TAB *source, bool full);
+
   bool pfs_batch_update(const JOIN *join) const;
 
  public:

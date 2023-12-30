@@ -450,7 +450,9 @@ Field *create_tmp_field(THD *thd, TABLE *table, Item *item, Item::Type type,
     case Item::SUM_FUNC_ITEM:
       if (type == Item::SUM_FUNC_ITEM && !is_wf) {
         Item_sum *item_sum = down_cast<Item_sum *>(item);
-        result = item_sum->create_tmp_field(group, table);
+        result = item_sum->create_tmp_field(
+            group || item_sum->sum_stage() == Item_sum::TRANSITION_STAGE,
+            table);
         if (!result) my_error(ER_OUT_OF_RESOURCES, MYF(ME_FATALERROR));
       } else {
         /*
