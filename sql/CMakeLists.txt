@@ -576,6 +576,7 @@ SET(SQL_SHARED_SOURCES
   tztime.cc
   uniques.cc
   xa.cc
+  parallel_query/message_queue.cc
 )
 
 # BISON_TARGET(<Name> <YaccInput> <CodeOutput>
