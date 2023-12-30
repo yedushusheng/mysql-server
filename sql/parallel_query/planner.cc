@@ -32,8 +32,20 @@ static void ChooseParallelPlan(JOIN *join) {
         trace_choosing.add("chosen", chosen);
         if (!chosen) trace_choosing.add_alnum("cause", cause);
       });
+
+  // Global status we don't support yet.
   if (thd->variables.max_parallel_degree == 0) {
     cause = "max_parallel_degree_is_not_set";
+    return;
+  }
+  if (thd->lex->sql_command != SQLCOM_SELECT) {
+    cause = "not_supported_sql_command";
+    return;
+  }
+
+  // Block plan which does't support yet
+  if (join->zero_result_cause) {
+    cause = "plan_with_zero_result";
     return;
   }
   // We just support single table
@@ -47,18 +59,30 @@ static void ChooseParallelPlan(JOIN *join) {
     cause = "include_window_function_or_rullup";
     return;
   }
-  // Only support table scan and index scan
-  QEP_TAB *tab = &join->qep_tab[0];
-  if (tab->type() != JT_ALL && tab->type() != JT_INDEX_SCAN) {
+
+  // Block parallel query based on table properties
+  auto *qt = &join->qep_tab[0];
+  auto *table = qt->table();
+  if (qt->type() != JT_ALL && qt->type() != JT_INDEX_SCAN) {
     cause = "access_type_is_not_table_scan_or_index_scan";
     return;
   }
+  if (!(table->file->ha_table_flags() & HA_CAN_PARALLEL_SCAN)) {
+    cause = "table_does_not_support_parallel_scan";
+    return;
+  }
+  if (is_system_table(table->s->db.str, table->s->table_name.str)) {
+    cause = "include_system_tables";
+    return;
+  }
+
+  // Block parallel query based on item expressions
   for (Item *item : join->query_block->fields) {
     if (IsItemParallelSafe(item)) continue;
     cause = "include_unsafe_items_in_fields";
     return;
   }
-  if (tab->condition() && !IsItemParallelSafe(tab->condition())) {
+  if (qt->condition() && !IsItemParallelSafe(qt->condition())) {
     cause = "filter_has_unsafe_condition";
     return;
   }
