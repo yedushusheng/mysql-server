@@ -6,6 +6,7 @@
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
 #include "sql/join_optimizer/walk_access_paths.h"
+#include "sql/opt_trace.h"
 #include "sql/parallel_query/executor.h"
 #include "sql/parallel_query/rewrite_access_path.h"
 #include "sql/sql_join_buffer.h"
@@ -14,29 +15,80 @@
 
 namespace pq {
 
-static ParallelPlan *ChooseParallelPlan(JOIN *join) {
-  THD *thd = join->thd;
+static bool IsItemParallelSafe(const Item *item) {
+  assert(item);
+  return item->parallel_safe() == Item_parallel_safe::Safe;
+}
 
-  if (thd->variables.max_parallel_degree == 0) return nullptr;
+static void ChooseParallelPlan(JOIN *join) {
+  THD *thd = join->thd;
+  Opt_trace_context *const trace = &thd->opt_trace;
+  Opt_trace_object wrapper(trace);
+  Opt_trace_object trace_choosing(trace, "considering");
+  bool chosen = false;
+  const char *cause = nullptr;
+  auto trace_set_guard =
+      create_scope_guard([&trace_choosing, &chosen, &cause]() {
+        trace_choosing.add("chosen", chosen);
+        if (!chosen) trace_choosing.add_alnum("cause", cause);
+      });
+  if (thd->variables.max_parallel_degree == 0) {
+    cause = "max_parallel_degree_is_not_set";
+    return;
+  }
   // We just support single table
-  if (join->const_tables > 0 || join->primary_tables != 1) return nullptr;
+  if (join->const_tables > 0 || join->primary_tables != 1) {
+    cause = "not_single_table_or_just_const_tables";
+    return;
+  }
   // Don't support window function and rollup yet
   if (!join->m_windows.is_empty() ||
-      join->rollup_state != JOIN::RollupState::NONE) return nullptr;
+      join->rollup_state != JOIN::RollupState::NONE) {
+    cause = "include_window_function_or_rullup";
+    return;
+  }
   // Only support table scan and index scan
   QEP_TAB *tab = &join->qep_tab[0];
-  if (tab->type() != JT_ALL && tab->type() != JT_INDEX_SCAN) return nullptr;
+  if (tab->type() != JT_ALL && tab->type() != JT_INDEX_SCAN) {
+    cause = "access_type_is_not_table_scan_or_index_scan";
+    return;
+  }
+  for (Item *item : join->query_block->fields) {
+    if (IsItemParallelSafe(item)) continue;
+    cause = "include_unsafe_items_in_fields";
+    return;
+  }
+  if (tab->condition() && !IsItemParallelSafe(tab->condition())) {
+    cause = "filter_has_unsafe_condition";
+    return;
+  }
+  if (join->having_cond && !IsItemParallelSafe(join->having_cond)) {
+    cause = "having_is_unsafe";
+    return;
+  }
 
-  return new (thd->mem_root) ParallelPlan(thd->mem_root, join->query_block);
+  chosen = true;
+  join->parallel_plan =
+      new (thd->mem_root) ParallelPlan(thd->mem_root, join->query_block);
 }
 
 bool GenerateParallelPlan(JOIN *join) {
-  ParallelPlan *parallel_plan = ChooseParallelPlan(join);
+  THD *thd = join->thd;
+  Opt_trace_context *const trace = &thd->opt_trace;
+  Opt_trace_object trace_wrapper(trace);
+  Opt_trace_object trace_parallel_plan(trace, "parallel_plan");
+  Opt_trace_array trace_steps(trace, "steps");
+
+  ChooseParallelPlan(join);
+  if (thd->is_error()) return true;
+
+  ParallelPlan *parallel_plan = join->parallel_plan;
+
   if (!parallel_plan) return false;
   bool fallback;
   if (parallel_plan->Generate(fallback)) return true;
 
-  if (!fallback) join->parallel_plan = parallel_plan;
+  if (fallback) join->parallel_plan = nullptr;
   return false;
 }
 
@@ -88,32 +140,29 @@ static bool is_item_field_in_fields(Item_field *item_field,
   return false;
 }
 
+class PartialItemGenContext : public Item_clone_context {
+  using Item_clone_context::Item_clone_context;
+
+ public:
+  void rebind_field(Item_field *item_field,
+                    const Item_field *from_field) override {
+    // We moved origin table to partial plan, so table_ref is not changed
+    item_field->table_ref = from_field->table_ref;
+    item_field->field = from_field->field;
+    item_field->set_result_field(item_field->field);
+    item_field->field_index = from_field->field_index;
+  }
+
+  void rebind_hybrid_field(Item_sum_hybrid_field *item_hybrid,
+                           const Item_sum_hybrid_field *from_item) override {
+    item_hybrid->set_field(from_item->get_field());
+  }
+};
+
 bool ParallelPlan::GenPartialFields(Item_clone_context *context,
                                     FieldsPushdownDesc *fields_pushdown_desc) {
   Query_block *source = SourceQueryBlock();
   Query_block *partial_query_block = PartialQueryBlock();
-
-  context->set_fix_func(Item_clone_context::SUM_FIX_FUNC,
-                        [](Item *item, uchar *) {
-                          Item_sum *item_sum = down_cast<Item_sum *>(item);
-                          item_sum->set_sum_stage(Item_sum::TRANSITION_STAGE);
-                          // XXX don't show Sum(Sum(a)) for leader's aggregation
-                          // in EXPLAIN
-                          Item *arg = item_sum->get_arg(0);
-                          item_sum->item_name = arg->item_name;
-                          return false;
-                        });
-
-  context->set_fix_func(
-      Item_clone_context::FIELD_FIX_FUNC,
-      [partial_query_block](Item *item, uchar *) {
-        Item_field *item_field = down_cast<Item_field *>(item);
-        item_field->table_ref = partial_query_block->find_identical_table_with(
-            item_field->table_ref);
-        TABLE *table = item_field->table_ref->table;
-        item_field->field = table->field[item_field->field_index];
-        return false;
-      });
 
   for (uint i = 0; i < source->fields.size(); i++) {
     Item *item = source->fields[i];
@@ -126,9 +175,16 @@ bool ParallelPlan::GenPartialFields(Item_clone_context *context,
         !(item->has_aggregation() && item->type() != Item::SUM_FUNC_ITEM);
 
     if (pushdown) {
-      if (!(new_item = item->clone(context)) ||
-          partial_query_block->add_item_to_list(new_item))
-        return true;
+      if (!(new_item = item->clone(context))) return true;
+      if (new_item->type() == Item::SUM_FUNC_ITEM) {
+        Item_sum *item_sum = down_cast<Item_sum *>(new_item);
+        item_sum->set_sum_stage(Item_sum::TRANSITION_STAGE);
+        // change item_name so let EXPLAIN doesn't show Sum(Sum(a)) for leader's
+        // aggregation
+        Item *arg = item_sum->get_arg(0);
+        item_sum->item_name = arg->item_name;
+      }
+      if (partial_query_block->add_item_to_list(new_item)) return true;
       if (fields_pushdown_desc->push_back(item->type() != Item::SUM_FUNC_ITEM
                                               ? FieldPushdownDesc::Replace
                                               : FieldPushdownDesc::Clone))
@@ -181,6 +237,76 @@ bool ParallelPlan::ClonePartialOrders() {
   return false;
 }
 
+class OriginItemRewriteContext : public Item_clone_context {
+ public:
+  OriginItemRewriteContext(THD *thd, Query_block *query_block,
+                           TABLE *collector_table,
+                           mem_root_deque<Item *> &partial_fields)
+      : Item_clone_context(thd, query_block),
+        m_collector_table(collector_table),
+        m_partial_fields(partial_fields) {}
+
+  void rebind_field(Item_field *item_field, const Item_field *from) override {
+    if (from->type() == Item::DEFAULT_VALUE_ITEM) {
+      // Here is unpushed down Default_value_item, It's safe for Default by
+      // reading original table
+      item_field->field_index = from->field_index;
+      item_field->field = from->field;
+      item_field->set_result_field(from->field);
+      return;
+    }
+    // Find table field no for pushed down item sum
+    for (uint i = 0; i < m_partial_fields.size(); i++) {
+      auto *partial_field = m_partial_fields[i];
+      if (item_field->is_identical(partial_field)) {
+        item_field->field_index = i;
+        item_field->field = m_collector_table->field[i];
+        item_field->set_result_field(item_field->field);
+        break;
+      }
+    }
+  }
+
+  void rebind_hybrid_field(Item_sum_hybrid_field *item_hybrid,
+                           const Item_sum_hybrid_field *from_item) override {
+    item_hybrid->set_field(from_item->get_field());
+  }
+
+  Item *replace_sum_arg(Item_sum *item_func, const Item *arg) override {
+    assert(item_func->arg_count <= 1);
+    // Find table field no for pushed down item sum
+    for (uint i = 0; i < m_partial_fields.size(); i++) {
+      auto *pitem = m_partial_fields[i];
+      if (item_func->is_identical(pitem)) {
+        Item_field *item_field = new Item_field(m_collector_table->field[i]);
+        // Arg could be nullptr, e.g. PTI_count_sym
+        if (arg) item_field->set_id(arg->id());
+        return item_field;
+      }
+    }
+    assert(0);
+    return nullptr;
+  }
+
+  void repoint_ref(Item_ref *item_ref, const Item_ref *from) override {
+    assert(from->ref);
+    auto &base_ref_items = m_query_block->base_ref_items;
+    for (uint i = 0; i < m_query_block->fields.size(); i++) {
+      auto *item = base_ref_items[i];
+      if (!item) break;
+      if (item->is_identical(*from->ref)) {
+        item_ref->ref = &base_ref_items[i];
+        break;
+      }
+    }
+    assert(item_ref->ref);
+  }
+
+ private:
+  TABLE *m_collector_table;
+  mem_root_deque<Item *> &m_partial_fields;
+};
+
 bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
   Query_block *source_query_block = SourceQueryBlock();
   JOIN *source_join = SourceJoin();
@@ -188,106 +314,48 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
   THD *thd = source_join->thd;
   TABLE *collector_table = m_collector->CollectorTable();
   auto &partial_fields = partial_query_block->fields;
-  Item_clone_context clone_context(thd, source_query_block);
+  Opt_trace_object trace_wrapper(&thd->opt_trace);
+  Opt_trace_object trace(&thd->opt_trace, "final_plan");
 
-  // XXXXXX change source plan
-  Item_sum **sum_funcs = source_join->sum_funcs;
-  clone_context.set_fix_func(
-      Item_clone_context::SUM_FIX_FUNC, [sum_funcs](Item *item, uchar *) {
-        Item_sum *item_sum = down_cast<Item_sum *>(item);
-        item_sum->set_sum_stage(Item_sum::COMBINE_STAGE);
-        for (auto **sum_func_ptr = sum_funcs; *sum_func_ptr; sum_func_ptr++) {
-          if (!item_sum->is_identical(*sum_func_ptr)) continue;
-          *sum_func_ptr = item_sum;
-        }
-        return false;
-      });
-
-  clone_context.set_fix_func(
-      Item_clone_context::FUNC_SET_ARG_FUNC,
-      [thd, collector_table, &partial_fields](Item *item, uchar *data) {
-        if (item->type() != Item::SUM_FUNC_ITEM) return false;
-        Item_func *item_func = down_cast<Item_func *>(item);
-        Item_clone_context::Func_set_arg *func_set_arg =
-            pointer_cast<Item_clone_context::Func_set_arg *>(data);
-        assert(func_set_arg->arg_index == 0);
-        // Find table field no for pushed down item sum
-        for (uint i = 0; i < partial_fields.size(); i++) {
-          auto *pitem = partial_fields[i];
-          if (item->is_identical(pitem)) {
-            Item_field *item_field = new Item_field(collector_table->field[i]);
-            Item *arg = item_func->arguments()[0];
-            // Arg could be nullptr, e.g. PTI_count_sym
-            if (arg) item_field->set_id(arg->id());
-            item_func->set_arg_resolve(thd, 0, item_field);
-            func_set_arg->is_set = true;
-            break;
-          }
-        }
-        assert(func_set_arg->is_set);
-        return false;
-      });
-
-  clone_context.set_fix_func(
-      Item_clone_context::FIELD_FIX_FUNC,
-      [collector_table, &partial_fields](Item *item, uchar *) {
-        Item_field *item_field = down_cast<Item_field *>(item);
-        // Find table field no for pushed down item sum
-        for (uint i = 0; i < partial_fields.size(); i++) {
-          auto *pitem = partial_fields[i];
-          if (item->is_identical(pitem)) {
-            item_field->table_ref = nullptr;
-            item_field->field_index = i;
-            item_field->field = collector_table->field[i];
-            break;
-          }
-        }
-        return false;
-      });
-
-  clone_context.set_fix_func(
-      Item_clone_context::REF_FIX_FUNC,
-      [&source_query_block](Item *item, uchar *arg) {
-        Item_ref *ref_item = down_cast<Item_ref *>(item);
-        for (uint i = 0; i < source_query_block->fields.size(); i++) {
-          if (!source_query_block->base_ref_items[i]) break;
-          if (source_query_block->base_ref_items[i]->is_identical(
-                  pointer_cast<Item *>(arg))) {
-            ref_item->ref = &source_query_block->base_ref_items[i];
-            break;
-          }
-        }
-        assert(ref_item->ref);
-        return false;
-      });
-
+  OriginItemRewriteContext clone_context(thd, source_query_block,
+                                         collector_table, partial_fields);
   // Process original fields
   for (uint i = 0; i < source_query_block->fields.size(); i++) {
     FieldPushdownDesc &desc = (*fields_pushdown_desc)[i];
     Item *item = source_query_block->fields[i];
-    Item *pitem = nullptr;
+    Item *new_item = nullptr;
     if (desc.pushdown_action == FieldPushdownDesc::Replace) {
       for (uint j = 0; j < partial_fields.size(); j++) {
         if (item->is_identical(partial_fields[j])) {
           Field *field = collector_table->field[j];
-          if (!(pitem = new Item_field(field))) return true;
-          pitem->set_id(item->id());
-          pitem->hidden = item->hidden;
+          if (!(new_item = new Item_field(field))) return true;
+          new_item->set_id(item->id());
+          new_item->hidden = item->hidden;
           break;
         }
       }
-      assert(pitem);
+      assert(new_item);
     } else {
       assert(desc.pushdown_action == FieldPushdownDesc::Clone);
-      if (!(pitem = item->clone(&clone_context))) return true;
+      if (!(new_item = item->clone(&clone_context))) return true;
+      // XXXXXX change source plan
+      if (new_item->type() == Item::SUM_FUNC_ITEM) {
+        Item_sum *item_sum = down_cast<Item_sum *>(new_item);
+        item_sum->set_sum_stage(Item_sum::COMBINE_STAGE);
+        for (auto **sum_func_ptr = source_join->sum_funcs; *sum_func_ptr;
+             sum_func_ptr++) {
+          if (!item_sum->is_identical(*sum_func_ptr)) continue;
+          *sum_func_ptr = item_sum;
+        }
+      }
     }
-    if (m_fields.push_back(pitem)) return true;
+    if (m_fields.push_back(new_item)) return true;
 
     // XXXXXX change source plan
     bool found [[maybe_unused]] = false;
     for (size_t j = 0; j < source_query_block->fields.size(); j++) {
-      if (source_query_block->base_ref_items[j]->is_identical(pitem)) {
-        source_query_block->base_ref_items[j] = pitem;
+      if (source_query_block->base_ref_items[j]->is_identical(new_item)) {
+        source_query_block->base_ref_items[j] = new_item;
 #ifndef NDEBUG
         found = true;
 #endif
@@ -309,6 +377,9 @@ bool ParallelPlan::GeneratePartialPlan(
   MEM_ROOT *mem_root = thd->mem_root;
   Query_expression *unit;
   LEX *lex_saved = thd->lex;
+  Opt_trace_object trace_wrapper(&thd->opt_trace);
+  Opt_trace_object trace(&thd->opt_trace, "partial_plan");
+
   auto lex_restore_guard =
       create_scope_guard([&thd, lex_saved]() { thd->lex = lex_saved; });
   if (!(thd->lex = new (mem_root) st_lex_local)) return true;
@@ -333,7 +404,7 @@ bool ParallelPlan::GeneratePartialPlan(
   if (AddPartialLeafTables()) return true;
 
   if (!(*partial_clone_context =
-            new (mem_root) Item_clone_context(thd, partial_query_block)))
+            new (mem_root) PartialItemGenContext(thd, partial_query_block)))
     return true;
 
   if (GenPartialFields(*partial_clone_context, fields_pushdown_desc))
@@ -363,8 +434,10 @@ bool ParallelPlan::GeneratePartialPlan(
 
   // We don't support blob type in row exchange
   TABLE *table = m_collector->CollectorTable();
-  if (table->s->blob_fields > 0) return true;
-
+  if (table->s->blob_fields > 0) {
+    trace.add_alnum("fallback_cause", "have_blob_fields");
+    return true;
+  }
   return false;
 }
 
@@ -375,9 +448,17 @@ bool ParallelPlan::Generate(bool &fallback) {
   Query_block *source_query_block = source_join->query_block;
   Item_clone_context *partial_clone_context;
   FieldsPushdownDesc fields_pushdown_desc(mem_root);
+
+  Opt_trace_context *const trace = &thd->opt_trace;
+  Opt_trace_object trace_wrapper(trace);
+  Opt_trace_object trace_generating(trace, "generating");
+  Opt_trace_array trace_steps(trace, "steps");
+
   fallback = false;
   if (GeneratePartialPlan(&partial_clone_context, &fields_pushdown_desc)) {
     DestroyCollector();
+    Opt_trace_object trace_fallback(trace);
+    trace_fallback.add("fallback", true);
     fallback = true;
     return false;
   }
@@ -429,6 +510,8 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   AccessPath *partial_path;
   AccessPath *parallelized_path;
   AccessPathParallelizer rewriter(clone_context, source_join, partial_join);
+  Opt_trace_object trace_wrapper(&thd->opt_trace);
+  Opt_trace_object trace(&thd->opt_trace, "access_path_rewriting");
 
   assert(source_join->root_access_path());
   rewriter.set_collector_access_path(CreateCollectorAccessPath(thd));

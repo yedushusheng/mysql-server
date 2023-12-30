@@ -128,6 +128,11 @@ class Item_row : public Item {
     return true;
   }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_row(const_cast<Item_row *>(this));
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
+
   bool fix_fields(THD *thd, Item **ref) override;
   void fix_after_pullout(SELECT_LEX *parent_select,
                          SELECT_LEX *removed_select) override;

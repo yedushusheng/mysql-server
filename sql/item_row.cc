@@ -209,3 +209,18 @@ Item *Item_row::transform(Item_transformer transformer, uchar *arg) {
 void Item_row::bring_value() {
   for (uint i = 0; i < arg_count; i++) items[i]->bring_value();
 }
+
+bool Item_row::init_from(const Item *from, Item_clone_context *context) {
+  if (super::init_from(from, context)) return true;
+
+  auto *item = down_cast<const Item_row *>(from);
+  not_null_tables_cache = item->not_null_tables_cache;
+  with_null = item->with_null;
+  // The function new_item() copied items pointer.
+  Item **from_items = items;
+  if (!(items = (*THR_MALLOC)->ArrayAlloc<Item *>(arg_count))) return true;
+  for (uint i = 0; i < arg_count; i++) {
+    if (!(items[i] = from_items[i]->clone(context))) return true;
+  }
+  return false;
+}

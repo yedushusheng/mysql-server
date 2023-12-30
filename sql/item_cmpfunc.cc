@@ -2626,6 +2626,15 @@ longlong Item_func_strcmp::val_int() {
   return !value ? 0 : (value < 0 ? (longlong)-1 : (longlong)1);
 }
 
+bool Item_func_opt_neg::init_from(const Item *from,
+                                  Item_clone_context *context) {
+  if (Item_int_func::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func_opt_neg *>(from);
+  negated = item->negated;
+  pred_level = item->pred_level;
+  return false;
+}
+
 bool Item_func_opt_neg::eq(const Item *item, bool binary_cmp) const {
   /* Assume we don't have rtti */
   if (this == item) return true;
@@ -2722,6 +2731,30 @@ bool Item_func_interval::resolve_type(THD *thd) {
 void Item_func_interval::update_used_tables() {
   Item_func::update_used_tables();
   not_null_tables_cache = row->not_null_tables();
+}
+
+bool Item_func_interval::init_from(const Item *from,
+                                   Item_clone_context *context) {
+  if (super::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func_interval *>(from);
+  row = down_cast<Item_row *>(args[0]);
+  use_decimal_comparison = item->use_decimal_comparison;
+  // See my resolve_type() for intervals initialization, XXX How to ensure rows
+  // same with `from`?
+  if (item->intervals) {
+    uint rows = row->cols();
+    intervals = static_cast<interval_range *>(context->thd()->memdup(
+        item->intervals, sizeof(interval_range) * (rows - 1)));
+    if (use_decimal_comparison) {
+      for (uint i = 0; i < rows - 1; i++) {
+        interval_range *range = intervals + i;
+        if (range->type != DECIMAL_RESULT) continue;
+        range->dec.init();
+        range->dec = item->intervals[i].dec;
+      }
+    }
+  }
+  return false;
 }
 
 /**
@@ -2983,6 +3016,23 @@ bool Item_func_between::resolve_type(THD *thd) {
 void Item_func_between::update_used_tables() {
   Item_func::update_used_tables();
   update_not_null_tables();
+}
+
+bool Item_func_between::init_from(const Item *from,
+                                   Item_clone_context *context) {
+  if (Item_func_opt_neg::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func_between *>(from);
+  cmp_collation.set(item->cmp_collation);
+  cmp_type = item->cmp_type;
+  compare_as_dates_with_strings = item->compare_as_dates_with_strings;
+  compare_as_temporal_dates = item->compare_as_temporal_dates;
+  compare_as_temporal_times = item->compare_as_temporal_times;
+  // See Item_func_between::resolve_type()
+  if (compare_as_dates_with_strings) {
+    ge_cmp.set_datetime_cmp_func(this, args, args + 1);
+    le_cmp.set_datetime_cmp_func(this, args, args + 2);
+  }
+  return false;
 }
 
 float Item_func_between::get_filtering_effect(THD *thd,
@@ -3919,6 +3969,26 @@ bool Item_func_case::resolve_type_inner(THD *thd) {
   return false;
 }
 
+bool Item_func_case::init_from(const Item *from, Item_clone_context *context) {
+  if (super::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func_case *>(from);
+  first_expr_num = item->first_expr_num;
+  else_expr_num = item->else_expr_num;
+  cached_result_type = item->cached_result_type;
+  left_result_type = item->left_result_type;
+  ncases = item->ncases;
+  cmp_type = item->cmp_type;
+  cmp_collation.set(item->cmp_collation);
+  for (uint i = 0; i <= (uint)DECIMAL_RESULT; i++) {
+    if (item->cmp_items[i] &&
+        !(cmp_items[i] = item->cmp_items[i]->clone(context)))
+      return true;
+  }
+  if (item->case_item && !(case_item = item->case_item->clone(context)))
+    return true;
+  return false;
+}
+
 uint Item_func_case::decimal_precision() const {
   int max_int_part = 0;
   for (uint i = 0; i < ncases; i += 2)
@@ -4203,6 +4273,16 @@ bool in_longlong::compare_elems(uint pos1, uint pos2) const {
   return cmp_longlong(&base[pos1], &base[pos2]) != 0;
 }
 
+in_vector *in_longlong::new_in_vector(Item_clone_context *context) const {
+  auto *mem_root = context->mem_root();
+  return new (mem_root) in_longlong(mem_root, used_count);
+}
+bool in_longlong::init_from(const in_vector *from, Item_clone_context *) {
+  auto *vec = down_cast<const in_longlong *>(from);
+  for (uint i = 0; i < used_count; ++i) base[i] = vec->base[i];
+  return false;
+}
+
 class Cmp_row {
  public:
   bool operator()(const cmp_item_row *a, const cmp_item_row *b) {
@@ -4223,6 +4303,22 @@ bool in_row::find_item(Item *item) {
                             tmp.get(), Cmp_row());
 }
 
+bool in_row::init_from(const in_vector *from, Item_clone_context *context) {
+  if (in_vector::init_from(from, context)) return true;
+  auto *vec = down_cast<const in_row *>(from);
+  cmp_item_row *new_tmp;
+  if (vec->tmp) {
+    if (!(new_tmp = down_cast<cmp_item_row *>(vec->tmp->clone(context))))
+      return true;
+    tmp.reset(new_tmp);
+  }
+  for (uint i = 0; i < used_count; ++i) {
+    if (base_objects[i].init_from(vec->base_pointers[i], context)) return false;
+    base_pointers[i] = &base_objects[i];
+  }
+  return false;
+}
+
 bool in_row::compare_elems(uint pos1, uint pos2) const {
   return base_pointers[pos1]->compare(base_pointers[pos2]) != 0;
 }
@@ -4236,6 +4332,19 @@ in_string::in_string(MEM_ROOT *mem_root, uint elements, const CHARSET_INFO *cs)
   for (uint ix = 0; ix < elements; ++ix) {
     base_pointers[ix] = &base_objects[ix];
   }
+}
+
+in_vector *in_string::new_in_vector(Item_clone_context *context) const {
+  auto *mem_root = context->mem_root();
+  return new (mem_root) in_string(mem_root, used_count, collation);
+}
+bool in_string::init_from(const in_vector *from, Item_clone_context *) {
+  auto *vec = down_cast<const in_string *>(from);
+  for (uint i = 0; i < used_count; ++i) {
+    if (base_objects[i].clone_from(*vec->base_pointers[i])) return true;
+    base_pointers[i] = &base_objects[i];
+  }
+  return false;
 }
 
 void in_string::set(uint pos, Item *item) {
@@ -4341,6 +4450,13 @@ void in_datetime::val_item(Item *item, packed_longlong *result) {
   result->unsigned_flag = true;
 }
 
+bool in_datetime::init_from(const in_vector *from,
+                            Item_clone_context *context) {
+  if (in_longlong::init_from(from, context)) return true;
+  if (warn_item && !(warn_item = warn_item->clone(context))) return true;
+  return false;
+}
+
 void in_double::set(uint pos, Item *item) { base[pos] = item->val_real(); }
 
 void in_double::resize_and_sort() {
@@ -4353,6 +4469,13 @@ bool in_double::find_item(Item *item) {
   double dbl = item->val_real();
   if (item->null_value) return false;
   return std::binary_search(base.begin(), base.end(), dbl);
+}
+
+bool in_double::init_from(const in_vector *from, Item_clone_context *context) {
+  if (in_vector::init_from(from, context)) return true;
+  auto *vec = down_cast<const in_double *>(from);
+  for (uint i = 0; i < used_count; ++i) base[i] = vec->base[i];
+  return false;
 }
 
 bool in_double::compare_elems(uint pos1, uint pos2) const {
@@ -4378,6 +4501,13 @@ bool in_decimal::find_item(Item *item) {
   const my_decimal *dec = item->val_decimal(&val);
   if (item->null_value) return false;
   return std::binary_search(base.begin(), base.end(), *dec);
+}
+
+bool in_decimal::init_from(const in_vector *from, Item_clone_context *context) {
+  if (in_vector::init_from(from, context)) return true;
+  auto *vec = down_cast<const in_decimal *>(from);
+  for (uint i = 0; i < used_count; ++i) base[i] = vec->base[i];
+  return false;
 }
 
 bool in_decimal::compare_elems(uint pos1, uint pos2) const {
@@ -4457,6 +4587,23 @@ void cmp_item_json::store_value(Item *item) {
   set_null_value(err || item->null_value);
 }
 
+cmp_item *cmp_item_json::new_cmp_item(Item_clone_context *context) const {
+  return make_cmp_item_json(context->mem_root());
+}
+bool cmp_item_json::init_from(const cmp_item *from,
+                              Item_clone_context *context) {
+  if (cmp_item_scalar::init_from(from, context)) return true;
+  auto *cmp = down_cast<const cmp_item_json *>(from);
+  if (m_str_value.clone_from(cmp->m_str_value)) return true;
+  /*
+    No need to intialize the contents pointed by m_holder, since they are
+    already in m_value.
+  */
+  Json_dom_ptr ptr = cmp->m_value.get()->clone_dom(context->thd());
+  *m_value.get() = Json_wrapper(std::move(ptr));
+  return false;
+}
+
 int cmp_item_json::cmp(Item *arg) {
   Json_scalar_holder holder;
   Json_wrapper wr;
@@ -4525,6 +4672,21 @@ void cmp_item_row::store_value(Item *item) {
       item->null_value |= item->element_index(i)->null_value;
     }
   }
+}
+
+bool cmp_item_row::init_from(const cmp_item *from,
+                             Item_clone_context *context) {
+  if (cmp_item::init_from(from, context)) return true;
+  auto *cmp = down_cast<const cmp_item_row *>(from);
+  auto *thd = context->thd();
+  n = cmp->n;
+  if (!(comparators =
+            static_cast<cmp_item **>(thd->mem_calloc(sizeof(cmp_item *) * n))))
+    return true;
+  for (uint i = 0; i < n; ++i) {
+    if (!(comparators[i] = cmp->comparators[i]->clone(context))) return true;
+  }
+  return false;
 }
 
 void cmp_item_row::store_value_by_template(cmp_item *t, Item *item) {
@@ -4615,6 +4777,16 @@ void cmp_item_datetime::store_value(Item *item) {
   else
     value = get_time_value(current_thd, &p, nullptr, nullptr, &is_null);
   set_null_value(item->null_value);
+}
+
+bool cmp_item_datetime::init_from(const cmp_item *from,
+                                  Item_clone_context *context) {
+  if (cmp_item_scalar::init_from(from, context)) return true;
+  auto *cmp = down_cast<const cmp_item_datetime *>(from);
+  value = cmp->value;
+  has_date = cmp->has_date;
+  if (warn_item && !(warn_item = warn_item->clone(context))) return true;
+  return false;
 }
 
 int cmp_item_datetime::cmp(Item *item) {
@@ -5116,6 +5288,24 @@ bool Item_func_in::resolve_type(THD *thd) {
   }
   Opt_trace_object(&thd->opt_trace)
       .add("IN_uses_bisection", bisection_possible);
+  return false;
+}
+
+bool Item_func_in::init_from(const Item *from, Item_clone_context *context) {
+  if (Item_func_opt_neg::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func_in *>(from);
+  if (item->array && !(array = item->array->clone(context))) return true;
+  have_null = item->have_null;
+  populated = item->populated;
+  values_are_const = item->values_are_const;
+  dep_subq_in_list = item->dep_subq_in_list;
+  left_result_type = item->left_result_type;
+  for (uint i = 0; i <= (uint)DECIMAL_RESULT; i++) {
+    if (item->cmp_items[i] &&
+        !(cmp_items[i] = item->cmp_items[i]->clone(context)))
+      return true;
+  }
+  cmp_collation.set(item->cmp_collation);
   return false;
 }
 
@@ -5753,6 +5943,18 @@ void Item_cond::print(const THD *thd, String *str,
     first = false;
   }
   str->append(')');
+}
+
+bool Item_cond::init_from(const Item *from, Item_clone_context *context) {
+  if (super::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_cond *>(from);
+  abort_on_null = item->abort_on_null;
+  Item *new_item;
+  for (auto &from_item : item->list) {
+    if (!(new_item = from_item.clone(context)) || list.push_back(new_item))
+      return true;
+  }
+  return false;
 }
 
 bool Item_cond::truth_transform_arguments(THD *thd, Bool_test test) {

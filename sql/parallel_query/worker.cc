@@ -1,5 +1,6 @@
 #include "sql/parallel_query/worker.h"
 #include "sql/item.h"
+#include "sql/item_sum.h"
 #include "sql/mysqld.h"
 #include "sql/parallel_query/message_queue.h"
 #include "sql/parallel_query/planner.h"
@@ -179,22 +180,27 @@ void Worker::Terminate() {
 
 void Worker::InitExecThdFromLeader() {
   THD *thd = &m_thd;
-  THD *leader_thd = m_leader_thd;
+  THD *from = m_leader_thd;
 
+  // FIXME: Clone thd->variables from leader
   // FIXME: XXX transaction state of thd may be changed by Attachable_trx. If
   // so, the transation state may be invalid when the workers finished
-  thd->tx_isolation = leader_thd->tx_isolation;
+  thd->tx_isolation = from->tx_isolation;
 
-  thd->set_time(&leader_thd->start_time);
-  thd->set_db(leader_thd->db());
-  mysql_mutex_lock(&leader_thd->LOCK_thd_query);
-  thd->set_query(leader_thd->query());
-  mysql_mutex_unlock(&leader_thd->LOCK_thd_query);
-  thd->set_query_id(leader_thd->query_id);
-  thd->set_security_context(leader_thd->security_context());
+  thd->set_time(&from->start_time);
+  thd->set_db(from->db());
+  mysql_mutex_lock(&from->LOCK_thd_query);
+  thd->set_query(from->query());
+  mysql_mutex_unlock(&from->LOCK_thd_query);
+  thd->set_query_id(from->query_id);
+  thd->set_security_context(from->security_context());
 
+  //  LAST_INSERT_ID() push down need this, see class Item_func_last_insert_id;
   thd->first_successful_insert_id_in_prev_stmt =
-      leader_thd->first_successful_insert_id_in_prev_stmt;
+      from->first_successful_insert_id_in_prev_stmt;
+
+  //myrock_encode function need this.
+  thd->save_raw_record = from->save_raw_record;
 }
 
 void Worker::ThreadMainEntry() {
@@ -231,6 +237,44 @@ void Worker::ThreadMainEntry() {
   my_thread_end();
   my_thread_exit(nullptr);
 }
+
+class PartialItemCloneContext : public Item_clone_context {
+ public:
+  PartialItemCloneContext(THD *thd, Query_block *query_block, THD *leader_thd)
+      : Item_clone_context(thd, query_block), m_leader_thd(leader_thd) {}
+
+  using Item_clone_context::Item_clone_context;
+  void rebind_field(Item_field *item_field,
+                    const Item_field *from_field) override {
+    item_field->table_ref =
+        m_query_block->find_identical_table_with(from_field->table_ref);
+    TABLE *table = item_field->table_ref->table;
+    item_field->field = table->field[from_field->field_index];
+    item_field->set_result_field(item_field->field);
+    item_field->field_index = from_field->field_index;
+  }
+
+  void rebind_hybrid_field(Item_sum_hybrid_field *item_hybrid,
+                           const Item_sum_hybrid_field *from_item) override {
+    // Rebind to current worker leaf table
+    Field *orig_field = from_item->get_field();
+    TABLE_LIST *table_ref = m_query_block->find_identical_table_with(
+        orig_field->table->pos_in_table_list);
+    assert(table_ref);
+    item_hybrid->set_field(table_ref->table->field[orig_field->field_index()]);
+  }
+
+  void rebind_user_var(Item_func_get_user_var *item) override {
+    const std::string key(item->name.ptr(), item->name.length());
+    mysql_mutex_lock(&m_leader_thd->LOCK_thd_data);
+    user_var_entry *entry = find_or_nullptr(m_leader_thd->user_vars, key);
+    mysql_mutex_unlock(&m_leader_thd->LOCK_thd_data);
+    item->set_var_entry(entry);
+  }
+
+ private:
+  THD *m_leader_thd;
+};
 
 bool Worker::PrepareQueryPlan() {
   THD *thd = &m_thd;
@@ -277,17 +321,7 @@ bool Worker::PrepareQueryPlan() {
   Query_expression *unit = lex->unit,
                    *from_unit = m_query_plan->QueryExpression();
 
-  Item_clone_context clone_context(thd, query_block);
-  clone_context.set_fix_func(
-      Item_clone_context::FIELD_FIX_FUNC, [query_block](Item *item, uchar *) {
-        Item_field *item_field = down_cast<Item_field *>(item);
-        item_field->table_ref =
-            query_block->find_identical_table_with(item_field->table_ref);
-        TABLE *table = item_field->table_ref->table;
-        item_field->field = table->field[item_field->field_index];
-        return false;
-      });
-
+  PartialItemCloneContext clone_context(thd, query_block, m_leader_thd);
   if (unit->clone_from(thd, from_unit, &clone_context)) return true;
   if (query_block->change_query_result(thd, query_result, nullptr)) return true;
 

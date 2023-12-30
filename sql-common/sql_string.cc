@@ -399,6 +399,17 @@ bool String::copy(const char *str, size_t arg_length,
   return false;
 }
 
+bool String::clone_from(const String &s) {
+  if (m_alloced_length == 0 && !s.is_alloced()) {
+    set(s.m_ptr, s.m_length, s.m_charset);
+    return false;
+  }
+
+  // myself has been given its own space or the source String is
+  // allocated.
+  return copy(s);
+}
+
 /*
   Set a string to the value of a latin1-string, keeping the original charset
 

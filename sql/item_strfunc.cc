@@ -930,6 +930,15 @@ bool Item_func_statement_digest::resolve_type(THD *thd) {
   return false;
 }
 
+bool Item_func_statement_digest::init_from(const Item *from,
+                                                Item_clone_context *context) {
+  if (Item_str_ascii_func::init_from(from, context)) return true;
+  if (!(m_token_buffer = static_cast<uchar *>(
+            context->thd()->alloc(get_max_digest_length()))))
+    return true;
+  return false;
+}
+
 /**
   Implementation of the STATEMENT_DIGEST() native function.
 
@@ -972,6 +981,15 @@ bool Item_func_statement_digest_text::resolve_type(THD *thd) {
   set_data_type_string(MAX_BLOB_WIDTH, args[0]->collation);
   m_token_buffer = static_cast<uchar *>(thd->alloc(get_max_digest_length()));
   if (m_token_buffer == nullptr) return true;
+  return false;
+}
+
+bool Item_func_statement_digest_text::init_from(const Item *from,
+                                                Item_clone_context *context) {
+  if (Item_str_func::init_from(from, context)) return true;
+  if (!(m_token_buffer = static_cast<uchar *>(
+            context->thd()->alloc(get_max_digest_length()))))
+    return true;
   return false;
 }
 
@@ -1341,6 +1359,14 @@ String *Item_str_conv::val_str(String *str) {
     res = &tmp_value;
   }
   return res;
+}
+
+bool Item_str_conv::init_from(const Item *from, Item_clone_context *context) {
+  if (Item_str_func::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_str_conv *>(from);
+  multiply = item->multiply;
+  converter = item->converter;
+  return false;
 }
 
 bool Item_func_lower::resolve_type(THD *thd) {
@@ -1760,6 +1786,13 @@ String *Item_func_trim::val_str(String *str) {
   tmp_value.set(*res, static_cast<uint>(ptr - res->ptr()),
                 static_cast<uint>(end - ptr));
   return &tmp_value;
+}
+
+bool Item_func_trim::init_from(const Item *from, Item_clone_context *context) {
+  if (Item_str_func::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func_trim *>(from);
+  if (remove.clone_from(item->remove)) return true;
+  return false;
 }
 
 bool Item_func_trim::resolve_type(THD *thd) {

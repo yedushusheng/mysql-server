@@ -46,6 +46,9 @@ class Item_func_pfs_current_thread_id final : public Item_int_func {
       : Item_int_func(pos), m_thread_id(0) {}
   bool itemize(Parse_context *pc, Item **res) override;
   const char *func_name() const override { return "ps_current_thread_id"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_pfs_current_thread_id(POS());
+  }  
   bool resolve_type(THD *) override;
   bool fix_fields(THD *thd, Item **ref) override;
   longlong val_int() override;
@@ -62,6 +65,9 @@ class Item_func_pfs_thread_id final : public Item_int_func {
       : Item_int_func(pos, a), m_thread_id(0) {}
   bool itemize(Parse_context *pc, Item **res) override;
   const char *func_name() const override { return "ps_thread_id"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_pfs_thread_id(POS(), args[0]);
+  }  
   bool resolve_type(THD *) override;
   longlong val_int() override;
 };
@@ -76,6 +82,9 @@ class Item_func_pfs_format_bytes final : public Item_str_func {
  public:
   Item_func_pfs_format_bytes(const POS &pos, Item *a) : Item_str_func(pos, a) {}
   const char *func_name() const override { return "format_bytes"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_pfs_format_bytes(POS(), args[0]);
+  }  
   bool resolve_type(THD *) override;
   String *val_str(String *str) override;
 };
@@ -91,6 +100,9 @@ class Item_func_pfs_format_pico_time final : public Item_str_func {
   Item_func_pfs_format_pico_time(const POS &pos, Item *a)
       : Item_str_func(pos, a) {}
   const char *func_name() const override { return "format_pico_time"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_pfs_format_pico_time(POS(), args[0]);
+  }  
   bool resolve_type(THD *) override;
   String *val_str(String *str) override;
 };

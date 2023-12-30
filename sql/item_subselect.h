@@ -211,6 +211,10 @@ class Item_subselect : public Item_result_field {
   void fix_after_pullout(SELECT_LEX *parent_select,
                          SELECT_LEX *removed_select) override;
   virtual bool exec(THD *thd);
+  Item_parallel_safe parallel_safe() const override {
+    // Don't support yet
+    return Item_parallel_safe::Unsafe;
+  }  
   bool resolve_type(THD *) override;
   table_map used_tables() const override { return used_tables_cache; }
   table_map not_null_tables() const override { return 0; }

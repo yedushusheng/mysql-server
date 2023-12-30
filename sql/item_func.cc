@@ -3425,7 +3425,11 @@ bool Item_func_rand::resolve_type(THD *thd) {
 
 bool Item_func_rand::fix_fields(THD *thd, Item **ref) {
   if (Item_real_func::fix_fields(thd, ref)) return true;
+  if (setup_random(thd)) return true;
+  return false;
+}
 
+bool Item_func_rand::setup_random(THD *thd) {  
   if (arg_count) {  // Only use argument once in query
     /*
       Allocate rand structure once: we must use thd->stmt_arena
@@ -3569,6 +3573,15 @@ bool Item_func_min_max::resolve_type_inner(THD *thd) {
                               "comparison of JSON in the "
                               "LEAST and GREATEST operators");
   if (data_type() == MYSQL_TYPE_JSON) set_data_type(MYSQL_TYPE_VARCHAR);
+  return false;
+}
+
+bool Item_func_min_max::init_from(const Item *from, Item_clone_context *context) {
+  if (Item_func_numhybrid::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func_min_max *>(from);
+  // Don't need clone m_string_buf
+  if (item->temporal_item &&
+      !(temporal_item = item->temporal_item->clone(context))) return true;
   return false;
 }
 
@@ -6733,6 +6746,17 @@ bool Item_func_get_user_var::resolve_type(THD *thd) {
   return false;
 }
 
+bool Item_func_get_user_var::init_from(const Item *from,
+                                       Item_clone_context *context) {
+  if (Item_var_func::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func_get_user_var *>(from);
+  m_cached_result_type = item->m_cached_result_type;
+  // The cloned item should only read the var, so here just pointer is enough
+  var_entry = item->var_entry;
+  context->rebind_user_var(this);
+  return false;
+}
+
 bool Item_func_get_user_var::propagate_type(THD *,
                                             const Type_properties &type) {
   /*
@@ -6987,6 +7011,23 @@ bool Item_func_get_system_var::resolve_type(THD *) {
       my_error(ER_VAR_CANT_BE_READ, MYF(0), var->name.str);
       return true;
   }
+  return false;
+}
+
+bool Item_func_get_system_var::init_from(const Item *from,
+                                         Item_clone_context *context) {
+  if (Item_var_func::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func_get_system_var *>(from);
+  var = item->var;
+  var_type = item->var_type;
+  orig_var_type = item->orig_var_type;
+  component = item->component;
+  cached_llval = item->cached_llval;
+  cached_dval = item->cached_dval;
+  if (cached_strval.clone_from(item->cached_strval)) return true;
+  cached_null_value = item->cached_null_value;
+  used_query_id = item->used_query_id;
+  cache_present = item->cache_present;
   return false;
 }
 
@@ -9760,21 +9801,24 @@ longlong Item_func_internal_is_enabled_role::val_int() {
   return 0;
 }
 
-bool Item_func::init_from(const Item *from_item, Item_clone_context *context) {
-  if (Item_result_field::init_from(from_item, context)) return true;
-  const Item_func *item = down_cast<const Item_func *>(from_item);
+bool Item_func::init_base_from(const Item *from, Item_clone_context *context) {
+  if (Item_result_field::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func *>(from);
   null_on_null = item->null_on_null;
   allowed_arg_cols = item->allowed_arg_cols;
   used_tables_cache = item->used_tables_cache;
   not_null_tables_cache = item->not_null_tables_cache;
-  arg_count = item->arg_count;
-  for (uint i = 0; i < arg_count; i++) {
-    Item_clone_context::Func_set_arg func_set_arg{i, false};
-    if (context->set_cloned_func_arg(this,
-                                     pointer_cast<uchar *>(&func_set_arg)))
-      return true;
-    if (!func_set_arg.is_set && !(args[i] = item->args[i]->clone(context)))
-      return true;
+  if (arg_count < item->arg_count &&
+      alloc_args(context->mem_root(), item->arg_count))
+    return true;
+  return false;
+}
+
+bool Item_func::init_from(const Item *from, Item_clone_context *context) {
+  if (init_base_from(from, context)) return true;
+  auto *item = down_cast<const Item_func *>(from);
+  for (uint i = 0; i < arg_count; ++i) {
+    if (!(args[i] = item->args[i]->clone(context))) return true;
     used_tables_cache |= args[i]->used_tables();
   }
   return false;
