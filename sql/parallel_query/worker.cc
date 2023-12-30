@@ -1,4 +1,5 @@
 #include "sql/parallel_query/worker.h"
+#include "sql/item.h"
 #include "sql/mysqld.h"
 #include "sql/parallel_query/message_queue.h"
 #include "sql/parallel_query/planner.h"
@@ -10,7 +11,6 @@
 #include "sql/sql_optimizer.h"
 #include "sql/sql_tmp_table.h"
 #include "sql/transaction.h"
-#include "sql/item.h"
 
 // A helper function of worker thread enter entry
 static void *launch_worker_thread_handle(void *arg) {
@@ -75,15 +75,26 @@ class Query_result_to_collector : public Query_result_interceptor {
                     nullptr, false))
       return true;
 
-    RowExchangeResult res = m_row_exchange_writer->Write(
-        m_table->record[0], (size_t)m_table->s->reclength);
+    auto res = m_row_exchange_writer->Write(m_table->record[0],
+                                            (size_t)m_table->s->reclength);
 
-    assert(res != RowExchangeResult::WOULD_BLOCK &&
-           res != RowExchangeResult::DETACHED);
+    assert(res != RowExchange::Result::ERROR &&
+           res != RowExchange::Result::END);
 
-    if (unlikely(res != RowExchangeResult::SUCCESS)) return true;
+    if (unlikely(res != RowExchange::Result::SUCCESS)) return true;
 
     thd->inc_sent_row_count(1);
+
+    DBUG_EXECUTE_IF("pq_simulate_one_worker_error", {
+      bool simulate_one_worker_error_reported{false};
+      if (!simulate_one_worker_error_reported &&
+          thd->get_sent_row_count() == 10) {
+        my_error(ER_DA_OOM, MYF(0));
+        simulate_one_worker_error_reported = true;
+        return true;
+      }
+    });
+
     return false;
   }
 
@@ -116,24 +127,24 @@ bool Worker::Init() {
 
 int Worker::Start() {
   my_thread_handle th;
-  mysql_mutex_lock(m_state_lock);
-  m_state = State::Starting;
-  mysql_mutex_unlock(m_state_lock);
+  SetState(State::Starting);
   int res = mysql_thread_create(PSI_INSTRUMENT_ME, &th, &connection_attrib,
                                 launch_worker_thread_handle, (void *)this);
-  if (res != 0) {
-    mysql_mutex_lock(m_state_lock);
-    m_state = State::StartFailed;
-    mysql_mutex_unlock(m_state_lock);
-  }
+  if (res != 0) SetState(State::StartFailed);
 
   return res;
 }
 
-bool Worker::IsRunning() {
-  mysql_mutex_assert_owner(m_state_lock);
-
-  return m_state == State::Started || m_state == State::Starting;
+bool Worker::IsRunning(bool need_state_lock) {
+  if (need_state_lock)
+    mysql_mutex_lock(m_state_lock);
+  else {
+    mysql_mutex_assert_owner(m_state_lock);
+  }
+  bool is_running = (m_state == State::Started || m_state == State::Cleaning ||
+                     m_state == State::Starting);
+  if (need_state_lock) mysql_mutex_unlock(m_state_lock);
+  return is_running;
 }
 
 bool Worker::IsStartFailed() const {
@@ -143,10 +154,22 @@ bool Worker::IsStartFailed() const {
   return res;
 }
 
+void Worker::SetState(Worker::State state) {
+  mysql_mutex_lock(m_state_lock);
+  m_state = state;
+  if (state == State::Finished) mysql_cond_broadcast(m_state_cond);
+  mysql_mutex_unlock(m_state_lock);
+}
+
 void Worker::Terminate() {
   THD *thd = &m_thd;
 
   if (m_terminate_requested || thd->killed) return;
+
+  mysql_mutex_lock(m_state_lock);
+  bool need_send_kill = IsRunning(false) && m_state != State::Cleaning;
+  mysql_mutex_unlock(m_state_lock);
+  if (!need_send_kill) return;
 
   mysql_mutex_lock(&thd->LOCK_thd_data);
   thd->awake(THD::KILL_QUERY);
@@ -175,9 +198,7 @@ void Worker::InitExecThdFromLeader() {
 }
 
 void Worker::ThreadMainEntry() {
-  mysql_mutex_lock(m_state_lock);
-  m_state = State::Started;
-  mysql_mutex_unlock(m_state_lock);
+  SetState(State::Started);
 
   THD *thd = &m_thd;
 
@@ -202,10 +223,7 @@ void Worker::ThreadMainEntry() {
 
   THD_CHECK_SENTRY(thd);
 
-  mysql_mutex_lock(m_state_lock);
-  m_state = State::Finished;
-  mysql_cond_broadcast(m_state_cond);
-  mysql_mutex_unlock(m_state_lock);
+  SetState(State::Finished);
 
   my_thread_end();
   my_thread_exit(nullptr);
@@ -297,6 +315,7 @@ void Worker::Cleanup() {
   THD *thd = &m_thd;
   LEX *lex = thd->lex;
   Query_expression *unit = lex->unit;
+  SetState(State::Cleaning);
 
   THD_STAGE_INFO(thd, stage_end);
 
@@ -334,6 +353,8 @@ void Worker::Cleanup() {
 }
 
 Diagnostics_area *Worker::stmt_da(ha_rows *found_rows, ha_rows *examined_rows) {
+  assert(!IsRunning(true));
+
   if (m_state != State::Finished) return nullptr;
 
   THD *thd = &m_thd;
@@ -342,11 +363,14 @@ Diagnostics_area *Worker::stmt_da(ha_rows *found_rows, ha_rows *examined_rows) {
   *examined_rows = thd->get_examined_row_count();
 
   Diagnostics_area *da = thd->get_stmt_da();
-  if (da->current_statement_cond_count() == 0) return nullptr;
-  if (da->is_error() && ((m_terminate_requested &&
-                          da->mysql_errno() == ER_QUERY_INTERRUPTED)))
+  // The INTERRUPT is sent by leader to end workers
+  // XXX should we copy other sql conditions to leader?
+  if (m_terminate_requested && da->is_error() &&
+      da->mysql_errno() == ER_QUERY_INTERRUPTED)
     return nullptr;
 
+  if (!da->is_error() && da->current_statement_cond_count() == 0)
+    return nullptr;
   return da;
 }
 }  // namespace pq

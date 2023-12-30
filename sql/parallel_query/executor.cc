@@ -10,10 +10,8 @@
 
 namespace pq {
 Collector::Collector(uint num_workers, PartialPlan *partial_plan)
-      : m_partial_plan(partial_plan),
-        m_workers(num_workers) {
-  mysql_mutex_init(PSI_INSTRUMENT_ME, &m_worker_state_lock,
-                   MY_MUTEX_INIT_FAST);
+    : m_partial_plan(partial_plan), m_workers(num_workers) {
+  mysql_mutex_init(PSI_INSTRUMENT_ME, &m_worker_state_lock, MY_MUTEX_INIT_FAST);
   mysql_cond_init(PSI_INSTRUMENT_ME, &m_worker_state_cond);
 }
 
@@ -75,15 +73,17 @@ bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order) {
 }
 
 bool Collector::CreateRowExchange(MEM_ROOT *mem_root) {
-  if (!(m_row_exchange = new (mem_root)
-            RowExchange(m_workers.size(), RowExchange::Type::RECEIVER)))
+  if (!(m_row_exchange = new (mem_root) RowExchange(m_workers.size())))
     return true;
 
+  auto worker_exit_handler = [this](uint worker) {
+    return HandleWorkerExited(worker);
+  };
   m_row_exchange_reader =
-      m_merge_sort
-          ? new (mem_root)
-                RowExchangeMergeSortReader(m_row_exchange, m_merge_sort)
-          : new (mem_root) RowExchangeReader(m_row_exchange);
+      m_merge_sort ? new (mem_root) RowExchangeMergeSortReader(
+                         m_row_exchange, m_merge_sort, worker_exit_handler)
+                   : new (mem_root)
+                         RowExchangeReader(m_row_exchange, worker_exit_handler);
 
   if (!m_row_exchange_reader) return true;
 
@@ -150,15 +150,15 @@ bool Collector::LaunchWorkers(bool &has_failed_worker) {
   return all_start_error;
 }
 
-void Collector::TerminateWorkers(THD *) {
+void Collector::TerminateWorkers() {
   for (auto *worker : m_workers) worker->Terminate();
-  mysql_mutex_lock(&m_worker_state_lock);
 
   // Wait all workers to exit.
+  mysql_mutex_lock(&m_worker_state_lock);
   while (true) {
     uint left_workers = m_workers.size();
     for (auto *worker : m_workers) {
-      if (!worker->IsRunning()) --left_workers;
+      if (!worker->IsRunning(false)) --left_workers;
     }
     if (left_workers == 0) break;
     mysql_cond_wait(&m_worker_state_cond, &m_worker_state_lock);
@@ -167,24 +167,39 @@ void Collector::TerminateWorkers(THD *) {
   mysql_mutex_unlock(&m_worker_state_lock);
 }
 
+bool Collector::HandleWorkerExited(uint windex) {
+  assert(windex < m_workers.size());
+  auto *worker = m_workers[windex];
+
+  return worker->is_error();
+}
+
 int Collector::Read(THD *thd, uchar *buf, ulong reclength) {
   uchar *dataptr;
-  RowExchangeResult res = m_row_exchange_reader->Read(thd, &dataptr);
+  auto res = m_row_exchange_reader->Read(thd, &dataptr);
   switch (res) {
-    case RowExchangeResult::SUCCESS:
+    case RowExchange::Result::SUCCESS:
       memcpy(buf, dataptr, reclength);
       return 0;
-    case RowExchangeResult::OOM:
+    case RowExchange::Result::OOM:
       return HA_ERR_OUT_OF_MEM;
-    case RowExchangeResult::KILLED:
+    case RowExchange::Result::KILLED:
       return HA_ERR_QUERY_INTERRUPTED;
-    case RowExchangeResult::END:
+    case RowExchange::Result::END:
       return HA_ERR_END_OF_FILE;
-    case RowExchangeResult::NONE:
-    case RowExchangeResult::DETACHED:
-    case RowExchangeResult::WOULD_BLOCK:
-    case RowExchangeResult::ERROR:
-      assert(0);
+    case RowExchange::Result::ERROR:
+#ifndef NDEBUG
+    {
+      bool found = false;
+      for (auto *worker : m_workers) {
+        if (worker->is_error()) {
+          found = true;
+        }
+      }
+      assert(found);
+    }
+#endif
+      return -1;
   }
 
   return 0;
@@ -217,7 +232,7 @@ Diagnostics_area *Collector::combine_workers_stmt_da(THD *thd,
 }
 
 void Collector::End(THD *thd, ha_rows *found_rows) {
-  TerminateWorkers(thd);
+  TerminateWorkers();
   Diagnostics_area *combined_da = combine_workers_stmt_da(thd, found_rows);
   if (!combined_da) return;
 

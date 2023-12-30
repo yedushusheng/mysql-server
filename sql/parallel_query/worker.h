@@ -15,7 +15,11 @@ class PartialPlan;
 */
 class Worker {
  public:
-  enum class State { None, Starting, Started, Finished, StartFailed };
+  /// state "Cleaning" is for ER_QUERY_INTERRUPTED reported by workers, some
+  /// mtr test case uses this e.g. "bug30769515_QUERY_INTERRUPTED" in
+  /// QUICK_GROUP_MIN_MAX_SELECT::get_next(). When a worker is in Cleaning
+  /// state, Terminate() skips to send termination request to it.
+  enum class State { None, Starting, Started, Cleaning, Finished, StartFailed };
   Worker(THD *thd, uint worker_id, PartialPlan *plan, mysql_mutex_t *state_lock,
          mysql_cond_t *state_cond);
   THD *thd() { return &m_thd; }
@@ -23,25 +27,29 @@ class Worker {
   bool Init();
   int Start();
   bool IsStartFailed() const;
-  bool IsRunning();
+  bool IsRunning(bool need_state_lock);
   void Terminate();
   void ThreadMainEntry();
   bool PrepareQueryPlan();
   void ExecuteQuery();
   void Cleanup();
+  bool is_error() { return m_thd.is_error(); }
 
   pq::MessageQueue *MessageQueue() const { return m_message_queue; }
   Diagnostics_area *stmt_da(ha_rows *found_rows, ha_rows *examined_rows);
 
  private:
   void InitExecThdFromLeader();
+  /// Set worker state to @param state and broadcast "state cond" if
+  /// State::Finished.
+  void SetState(State state);
   THD *m_leader_thd;
   THD m_thd;  // Current worker's THD
   uint m_id;
   PartialPlan *m_query_plan;
 
   /// Communication facilities with leader
-  RowExchange m_row_exchange{1, RowExchange::Type::SENDER};
+  RowExchange m_row_exchange{1};
   pq::MessageQueue *m_message_queue;
   RowExchangeWriter m_row_exchange_writer;
 
