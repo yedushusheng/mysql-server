@@ -9,6 +9,7 @@ class AccessPath;
 namespace pq {
 class PartialPlan;
 class Worker;
+struct ORDER;
 
 class Collector {
  public:
@@ -22,14 +23,19 @@ class Collector {
   AccessPath *PartialRootAccessPath() const;
   JOIN *PartialJoin() const;
   uint NumWorkers() const { return m_workers.size(); }
+  bool CreateMergeSort(JOIN *join, ORDER *merge_order);
+  Filesort *MergeSort() const { return m_merge_sort; }
+
  private:
-  bool LaunchWorkers();
+  bool CreateRowExchange(MEM_ROOT *mem_root);
+  bool LaunchWorkers(bool &has_failed_worker);
   void TerminateWorkers(THD *thd);
   Diagnostics_area *combine_workers_stmt_da(THD *thd, ha_rows *found_rows);
-  TABLE *m_table{nullptr};
   PartialPlan *m_partial_plan;
-  RowExchange m_row_exchange;
-  RowExchangeReader m_row_exchange_reader;
+  TABLE *m_table{nullptr};
+  Filesort *m_merge_sort{nullptr};
+  RowExchange *m_row_exchange{nullptr};
+  RowExchangeReader *m_row_exchange_reader{nullptr};
   std::vector<Worker *> m_workers;
   mysql_mutex_t m_worker_state_lock;
   mysql_cond_t m_worker_state_cond;

@@ -108,7 +108,7 @@ bool Worker::Init() {
       m_message_queue->Init(m_leader_thd) ||
       m_row_exchange.Init(m_leader_thd->mem_root,
                           [this](uint) { return m_message_queue; }) ||
-      m_row_exchange_writer.Init(m_leader_thd))
+      m_row_exchange_writer.Init(m_leader_thd, nullptr))
     return true;
 
   return false;
@@ -134,6 +134,13 @@ bool Worker::IsRunning() {
   mysql_mutex_assert_owner(m_state_lock);
 
   return m_state == State::Started || m_state == State::Starting;
+}
+
+bool Worker::IsStartFailed() const {
+  mysql_mutex_lock(m_state_lock);
+  bool res = (m_state == State::StartFailed);
+  mysql_mutex_unlock(m_state_lock);
+  return res;
 }
 
 void Worker::Terminate() {

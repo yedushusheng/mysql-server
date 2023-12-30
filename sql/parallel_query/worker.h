@@ -22,6 +22,7 @@ class Worker {
   THD *leader_thd() const { return m_leader_thd; }
   bool Init();
   int Start();
+  bool IsStartFailed() const;
   bool IsRunning();
   void Terminate();
   void ThreadMainEntry();

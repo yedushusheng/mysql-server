@@ -1,8 +1,12 @@
 #ifndef PARALLEL_QUERY_ROW_EXCHANGE_H
 #define PARALLEL_QUERY_ROW_EXCHANGE_H
-#include "sql/parallel_query/message_queue.h"
+
 #include <functional>
-class MEM_ROOT;
+#include "sql/parallel_query/message_queue.h"
+#include "sql/parallel_query/merge_sort.h"
+
+class Filesort;
+struct MY_BITMAP;
 namespace pq {
   using RowExchangeResult = MessageQueueResult;
 
@@ -31,9 +35,10 @@ class RowExchangeContainer {
   RowExchangeContainer(RowExchange *row_exchange)
       : m_row_exchange(row_exchange) {}
   RowExchangeContainer(const RowExchangeContainer &) = delete;
-  ~RowExchangeContainer();
+  virtual ~RowExchangeContainer();
 
-  bool Init(THD *thd);
+  //bool Init(THD *thd);
+  virtual bool Init(THD *thd, MY_BITMAP *closed_queues);
 
  protected:
   bool IsQueueClosed(uint queue) {
@@ -44,16 +49,24 @@ class RowExchangeContainer {
   MessageQueueHandle **m_message_queue_handles{nullptr};
 };
 
+/// Normal collect rows from multiple workers for normal gather operator.
 class RowExchangeReader : public RowExchangeContainer {
  public:
   RowExchangeReader(RowExchange *row_exchange)
       : RowExchangeContainer(row_exchange),
         m_left_queues(row_exchange->NumQueues()) {}
 
-  RowExchangeResult Read(THD *thd, uchar **buf, uint &detached);
+  virtual RowExchangeResult Read(THD *thd, uchar **buf);
 
- private:
+ protected:
   uint m_left_queues;
+ private:
+  void AdvanceQueue() {
+    uint queues = m_row_exchange->NumQueues();
+    do {
+      if (++m_next_queue >= queues) m_next_queue = 0;
+    } while (IsQueueClosed(m_next_queue));
+  }
   uint m_next_queue{0};
 };
 

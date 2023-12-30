@@ -478,6 +478,7 @@ bool PartialAccessPathRewriter::rewrite_sort(AccessPath *in, AccessPath *out) {
   auto &sort_in = in->sort();
   // Rewrite orignal filesort since its underlying table changed.
   Filesort *filesort = sort_in.filesort;
+  merge_sort = sort_in.filesort->src_order;
   // XXX It's not safe, because leader may changed, we should clone it to
   // template first when parallelizing plan.
   ORDER *new_order = clone_order_list(

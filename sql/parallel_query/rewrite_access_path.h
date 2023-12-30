@@ -9,6 +9,7 @@ class Item_clone_context;
 class JOIN;
 class AccessPath;
 class TABLE;
+struct ORDER;
 
 namespace pq {
 /**
@@ -75,8 +76,10 @@ class AccessPathParallelizer : public AccessPathRewriter {
 
   bool end_of_out_path() override { return m_collector_path_pos != nullptr; }
   bool do_parallelize(AccessPath **in);
+  ORDER *MergeSort() const { return merge_sort; }
 
  private:
+  ORDER *merge_sort{nullptr};
   void set_collector_path_pos(AccessPath **path);
   AccessPath **collector_path_pos() const { return m_collector_path_pos; }
 
