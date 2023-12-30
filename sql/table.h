@@ -1776,6 +1776,7 @@ struct TABLE {
   /* If true, all partitions have been pruned away */
   bool all_partitions_pruned_away{false};
   MDL_ticket *mdl_ticket{nullptr};
+  parallel_scan_handle_t parallel_scan_handle{nullptr};
 
  private:
   /// Cost model object for operations on this table
@@ -3450,7 +3451,7 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
   */
   Table_function *table_function{nullptr};
   ulong m_id{(ulong)this};
-  
+
  private:
   /**
      This field is set to non-null for derived tables and views. It points
