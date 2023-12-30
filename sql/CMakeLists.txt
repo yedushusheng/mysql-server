@@ -577,6 +577,7 @@ SET(SQL_SHARED_SOURCES
   uniques.cc
   xa.cc
   parallel_query/message_queue.cc
+  parallel_query/merge_sort.cc
   parallel_query/row_exchange.cc
   parallel_query/planner.cc
   parallel_query/executor.cc

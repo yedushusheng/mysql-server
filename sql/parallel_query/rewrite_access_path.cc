@@ -365,6 +365,7 @@ bool AccessPathParallelizer::rewrite_filter(AccessPath *in, AccessPath *) {
 bool AccessPathParallelizer::rewrite_sort(AccessPath *in, AccessPath *out) {
   auto &sort_in = in->sort();
   Filesort *filesort = sort_in.filesort;
+  merge_sort = sort_in.filesort->src_order;
   if (out) {
     auto &sort_out = out->sort();
     sort_out.filesort->src_order = clone_order_list(

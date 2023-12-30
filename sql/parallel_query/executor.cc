@@ -1,4 +1,5 @@
 #include "sql/parallel_query/executor.h"
+#include "sql/filesort.h"
 #include "sql/parallel_query/planner.h"
 #include "sql/parallel_query/worker.h"
 #include "sql/sql_class.h"
@@ -10,8 +11,6 @@
 namespace pq {
 Collector::Collector(uint num_workers, PartialPlan *partial_plan)
       : m_partial_plan(partial_plan),
-        m_row_exchange(num_workers, RowExchange::Type::RECEIVER),
-        m_row_exchange_reader(&m_row_exchange),
         m_workers(num_workers) {
   mysql_mutex_init(PSI_INSTRUMENT_ME, &m_worker_state_lock,
                    MY_MUTEX_INIT_FAST);
@@ -24,6 +23,13 @@ Collector::~Collector() {
     free_tmp_table(m_table);
   }
   for (auto *worker : m_workers) destroy(worker);
+  // tmp_buffer in Sort_param needs to destroy because it may contain alloced
+  // memory.
+  destroy(m_merge_sort);
+
+  destroy(m_merge_sort);
+  destroy(m_row_exchange_reader);
+  destroy(m_row_exchange);
 
   mysql_mutex_destroy(&m_worker_state_lock);
   mysql_cond_destroy(&m_worker_state_cond);
@@ -54,6 +60,36 @@ bool Collector::CreateCollectorTable() {
   return false;
 }
 
+bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order) {
+  THD *thd = join->thd;
+  // Merge sort always reads collector table.
+  assert(join->current_ref_item_slice == REF_SLICE_SAVED_BASE);
+  if (!(m_merge_sort = new (thd->mem_root)
+            Filesort(thd, {m_table}, /*keep_buffers=*/false, merge_order,
+                     HA_POS_ERROR, /*force_stable_sort=*/false,
+                     /*remove_duplicates=*/false,
+                     /*force_sort_positions=*/true, /*unwrap_rollup=*/false)))
+    return true;
+
+  return false;
+}
+
+bool Collector::CreateRowExchange(MEM_ROOT *mem_root) {
+  if (!(m_row_exchange = new (mem_root)
+            RowExchange(m_workers.size(), RowExchange::Type::RECEIVER)))
+    return true;
+
+  m_row_exchange_reader =
+      m_merge_sort
+          ? new (mem_root)
+                RowExchangeMergeSortReader(m_row_exchange, m_merge_sort)
+          : new (mem_root) RowExchangeReader(m_row_exchange);
+
+  if (!m_row_exchange_reader) return true;
+
+  return false;
+}
+
 bool Collector::Init(THD *thd) {
   uint i = 0;
   for (auto *&worker : m_workers) {
@@ -62,19 +98,38 @@ bool Collector::Init(THD *thd) {
     if (!worker || worker->Init()) return true;
   }
 
-  if (m_row_exchange.Init(thd->mem_root, [this](uint index) {
+  if (CreateRowExchange(thd->mem_root)) return true;
+
+  if (m_row_exchange->Init(thd->mem_root, [this](uint index) {
         return m_workers[index]->MessageQueue();
       }))
     return true;
 
-  if (m_row_exchange_reader.Init(thd)) return true;
+  bool has_failed_worker;
+  if (LaunchWorkers(has_failed_worker)) return true;
 
-  return LaunchWorkers();
+  MY_BITMAP closed_queues;
+  if (has_failed_worker) {
+    if (bitmap_init(&closed_queues, nullptr, NumWorkers())) return true;
+    // Close the queues which workers are launched failed.
+    i = 0;
+    for (auto *worker : m_workers) {
+      if (worker->IsStartFailed()) bitmap_set_bit(&closed_queues, i++);
+    }
+  }
+  // Initialize row exchange reader after workers are started. The reader with
+  // merge sort do a block read in Init().
+  bool res = m_row_exchange_reader->Init(
+      thd, has_failed_worker ? &closed_queues : nullptr);
+
+  if (has_failed_worker) bitmap_free(&closed_queues);
+  return res;
 }
 
-bool Collector::LaunchWorkers() {
+bool Collector::LaunchWorkers(bool &has_failed_worker) {
   bool all_start_error = true;
   int error = 0;
+  has_failed_worker = false;
   for (auto *worker : m_workers) {
     int res = worker->Start();
     if (!all_start_error) continue;
@@ -84,6 +139,8 @@ bool Collector::LaunchWorkers() {
     else
       error = res;
   }
+  has_failed_worker = (error != 0);
+
   if (all_start_error) {
     char errbuf[MYSQL_ERRMSG_SIZE];
       my_error(ER_STARTING_PARALLEL_QUERY_THREAD, MYF(0), error,
@@ -112,14 +169,7 @@ void Collector::TerminateWorkers(THD *) {
 
 int Collector::Read(THD *thd, uchar *buf, ulong reclength) {
   uchar *dataptr;
-  uint detached_queue;
-  RowExchangeResult res =
-      m_row_exchange_reader.Read(thd, &dataptr, detached_queue);
-  while (res == RowExchangeResult::DETACHED) {
-    // XXX Check detached queue error
-    res = m_row_exchange_reader.Read(thd, &dataptr, detached_queue);
-  }
-
+  RowExchangeResult res = m_row_exchange_reader->Read(thd, &dataptr);
   switch (res) {
     case RowExchangeResult::SUCCESS:
       memcpy(buf, dataptr, reclength);
