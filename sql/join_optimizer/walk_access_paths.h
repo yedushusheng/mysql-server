@@ -81,6 +81,7 @@ void WalkAccessPaths(AccessPath *path, const JOIN *join,
     case AccessPath::FOLLOW_TAIL:
     case AccessPath::INDEX_RANGE_SCAN:
     case AccessPath::DYNAMIC_INDEX_RANGE_SCAN:
+    case AccessPath::PARALLEL_COLLECTOR_SCAN:
     case AccessPath::TABLE_VALUE_CONSTRUCTOR:
     case AccessPath::FAKE_SINGLE_ROW:
     case AccessPath::ZERO_ROWS:
@@ -139,6 +140,8 @@ void WalkAccessPaths(AccessPath *path, const JOIN *join,
       WalkAccessPaths(path->limit_offset().child, join, cross_query_blocks,
                       std::forward<Func &&>(func), post_order_traversal);
       break;
+          case AccessPath::PARALLEL_COLLECTOR_SCAN:
+            return func(path->parallel_collector_scan().table);      
     case AccessPath::STREAM:
       if (cross_query_blocks || path->stream().join == join) {
         WalkAccessPaths(path->stream().child, join, cross_query_blocks,

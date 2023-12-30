@@ -120,7 +120,7 @@ class MemMessageQueue : public MessageQueue {
 
 class MessageQueueHandle {
  public:
-  MessageQueueHandle(MessageQueue *smq, THD *thd_arg);
+  MessageQueueHandle(MessageQueue *smq, THD *thd);
   MessageQueueHandle(const MessageQueueHandle &) = delete;
   virtual ~MessageQueueHandle(){}
   virtual MessageQueueResult Send(std::size_t nbytes, const void *data,
@@ -135,7 +135,7 @@ class MessageQueueHandle {
 
  protected:
   MessageQueue *m_queue;
-  THD *thd;
+  THD *m_thd;
 
   /// The flag is set which means sender/receiver does not send/receive messages
   /// any more.
@@ -146,7 +146,7 @@ class MessageQueueHandle {
 
 class MemMessageQueueHandle : public MessageQueueHandle {
  public:
-  MemMessageQueueHandle(MessageQueue *smq, THD *thd_arg);
+  MemMessageQueueHandle(MessageQueue *smq, THD *thd);
   MessageQueueResult Send(std::size_t nbytes, const void *data,
                           bool nowait) override;
   MessageQueueResult Receive(std::size_t *nbytesp, void **datap,

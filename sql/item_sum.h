@@ -462,6 +462,12 @@ class Item_sum : public Item_result_field, public Func_args_handle {
     ROLLUP_SUM_SWITCHER_FUNC
   };
 
+  enum Sumfuncstage {
+    NORMAL_STAGE,
+    TRANSITION_STAGE,
+    COMBINE_STAGE
+  };
+
   /**
     @note most member variables below serve only for grouped aggregate
     functions.
@@ -504,8 +510,12 @@ class Item_sum : public Item_result_field, public Func_args_handle {
   */
   bool forced_const;
   static ulonglong ram_limitation(THD *thd);
+  Sumfuncstage m_sum_stage{NORMAL_STAGE};
+  bool collect_item_sum_processor(uchar *) override;
 
  public:
+  Sumfuncstage sum_stage() const { return m_sum_stage; }
+  void set_sum_stage(Sumfuncstage stage) { m_sum_stage = stage; }
   void mark_as_sum_func();
   void mark_as_sum_func(SELECT_LEX *);
 
@@ -687,6 +697,11 @@ class Item_sum : public Item_result_field, public Func_args_handle {
     force_copy_fields = false;
   }
 
+  bool walk(Item_processor processor, enum_walk walk, uchar *arg) override {
+    if (walk & enum_walk::ELIMINATE_SUM) return false;
+    return Item_func::walk(processor, walk, arg);
+  }
+
   /**
     Called to initialize the aggregator.
   */
@@ -783,7 +798,7 @@ class Item_sum : public Item_result_field, public Func_args_handle {
     to evaluate LEAD.
   */
   virtual bool needs_card() const { return false; }
-
+  bool init_from(const Item *item, Item_clone_context *context) override;
   /**
     Common initial actions for window functions. For non-buffered processing
     ("on-the-fly"), check partition change and possible reset partition
@@ -982,6 +997,12 @@ class Item_sum_num : public Item_sum {
   bool get_time(MYSQL_TIME *ltime) override {
     return get_time_from_numeric(ltime); /* Decimal or real */
   }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (super::init_from(from, context)) return true;
+    const Item_sum_num *item = down_cast<const Item_sum_num *>(from);
+    is_evaluated = item->is_evaluated;
+    return false;
+  }
   void reset_field() override;
 };
 
@@ -1060,6 +1081,11 @@ class Item_sum_sum : public Item_sum_num {
   void update_field() override;
   void no_rows_in_result() override {}
   const char *func_name() const override { return "sum"; }
+  bool init_from(const Item *from, Item_clone_context *context) override;
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_sum_sum(context->thd(),
+                            const_cast<Item_sum_sum *>(this));
+  }  
   Item *copy_or_same(THD *thd) override;
 };
 
@@ -1110,6 +1136,16 @@ class Item_sum_count : public Item_sum_int {
   void reset_field() override;
   void update_field() override;
   const char *func_name() const override { return "count"; }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (Item_sum_int::init_from(from, context)) return true;
+    const Item_sum_count *item = down_cast<const Item_sum_count *>(from);
+    count = item->count;
+    return false;
+  }
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_sum_count(context->thd(),
+                            const_cast<Item_sum_count *>(this));
+  }  
   Item *copy_or_same(THD *thd) override;
 };
 

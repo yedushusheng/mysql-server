@@ -772,6 +772,57 @@ class Item_tree_walker {
   const Item *stopped_at_item;
 };
 
+enum class Item_parallel_safe { Safe, Unsafe, Restrict };
+class Item_clone_context {
+ public:
+  enum Fix_func_type {
+    FIELD_FIX_FUNC = 0,
+    FUNC_SET_ARG_FUNC,
+    SUM_FIX_FUNC,
+    REF_FIX_FUNC
+  };
+  struct Func_set_arg {
+    uint arg_index;
+    bool is_set;
+  };
+  Item_clone_context(THD *thd, Query_block *query_block)
+      : m_thd(thd), m_target_query_block(query_block) {}
+  THD *thd() const { return m_thd; }
+  MEM_ROOT *mem_root() const;
+  Query_block *target_query_block() const { return m_target_query_block; }
+
+  void set_fix_func(Fix_func_type func_type,
+                    std::function<bool(Item *, uchar *)> fix_func) {
+    m_fix_funcs[func_type] = fix_func;
+  }
+
+  bool fix_cloned_field(Item *item, uchar *data) {
+    if (m_fix_funcs[FIELD_FIX_FUNC])
+      return m_fix_funcs[FIELD_FIX_FUNC](item, data);
+    return false;
+  }
+  bool set_cloned_func_arg(Item *item, uchar *data) {
+    if (m_fix_funcs[FUNC_SET_ARG_FUNC])
+      return m_fix_funcs[FUNC_SET_ARG_FUNC](item, data);
+    return false;
+  }
+
+  bool fix_cloned_sum(Item *item, uchar *data) {
+    if (m_fix_funcs[SUM_FIX_FUNC]) return m_fix_funcs[SUM_FIX_FUNC](item, data);
+    return false;
+  }
+
+  bool fix_cloned_ref(Item *item, uchar *data) {
+    assert(m_fix_funcs[REF_FIX_FUNC]);
+    return m_fix_funcs[REF_FIX_FUNC](item, data);
+  }
+ private:
+  THD *m_thd;
+  Query_block *m_target_query_block;
+  std::function<bool(Item *, uchar *)> m_fix_funcs[4] = {nullptr, nullptr,
+                                                         nullptr, nullptr};
+};
+
 /** NOTE:约束条件是指WHERE或JOIN/ON或HAVING子句中的谓词表达式,
  * 其分为两种：一种是限制条件,用来过滤单表的元组;
  * 另一种是连接条件,满足连接条件的元组才会连接,连接条件表达式一般包括两个或两个以上关系的变量.
@@ -1071,6 +1122,12 @@ class Item : public Parse_tree_node {
     *res = this;
     return !is_parser_item;
   }
+
+  virtual Item *new_item(Item_clone_context *) const {
+    assert(0);
+    return nullptr;
+  }
+  virtual bool init_from(const Item *item, Item_clone_context *context);
 
   /*
     Checks if the function should return binary result based on the items
@@ -2097,6 +2154,10 @@ class Item : public Parse_tree_node {
       @retval nullptr  if this is not const
   */
   virtual Item *clone_item() const { return nullptr; }
+  Item *clone(Item_clone_context *context) const;
+  virtual Item_parallel_safe parallel_safe() {
+    return Item_parallel_safe::Safe;
+  }  
   virtual cond_result eq_cmp_result() const { return COND_OK; }
   inline uint float_length(uint decimals_par) const {
     return decimals != DECIMAL_NOT_SPECIFIED ? (DBL_DIG + 2 + decimals_par)
@@ -2404,7 +2465,7 @@ class Item : public Parse_tree_node {
   }
 
   virtual bool collect_item_field_processor(uchar *) { return false; }
-
+  virtual bool collect_item_sum_processor(uchar *) { return false; }
   class Collect_item_fields : public Item_tree_walker {
    public:
     List<Item_field> *m_item_fields;
@@ -3056,7 +3117,19 @@ class Item : public Parse_tree_node {
   void set_aggregation() { m_accum_properties |= PROP_AGGREGATION; }
 
   /// Reset the "has aggregation" property
-  void reset_aggregation() { m_accum_properties &= ~PROP_AGGREGATION; }
+  //void reset_aggregation() { m_accum_properties &= ~PROP_AGGREGATION; }
+
+  void reset_aggregation() {
+    m_aggregation_was_set = m_accum_properties & PROP_AGGREGATION;
+    m_accum_properties &= ~PROP_AGGREGATION;
+  }
+
+  void restore_aggregation() {
+    if (!m_aggregation_was_set) return;
+    assert(!(m_accum_properties & PROP_AGGREGATION));
+    m_accum_properties |= PROP_AGGREGATION;
+    m_aggregation_was_set = false;
+  }
 
   /// @return true if this item or any of its decendents is a window func.
   bool has_wf() const { return m_accum_properties & PROP_WINDOW_FUNCTION; }
@@ -3306,7 +3379,13 @@ class Item : public Parse_tree_node {
   static constexpr uint8 PROP_GROUPING_FUNC = 0x20;
   uint8 m_accum_properties;
 
+  bool m_aggregation_was_set{false};
+  ulong m_id{(ulong)this};
+
  public:
+  ulong id() const { return m_id; }
+  void set_id(ulong id) { m_id = id; }
+  bool is_identical(const Item *item) const { return m_id == item->m_id; }
   /**
      Noop in Item for items that are not subclasses of Item_ident.
      Overridden in Item_ident where it sets the
@@ -3849,6 +3928,7 @@ class Item_ident : public Item {
   */
   void print(const THD *thd, String *str, enum_query_type query_type,
              const char *db_name_arg, const char *table_name_arg) const;
+	bool init_from(const Item *from, Item_clone_context *context) override;
 
  public:
   ///< Argument object to change_context_processor
@@ -4193,7 +4273,13 @@ class Item_field : public Item_ident {
 
   bool replace_field_processor(uchar *arg) override;
   bool strip_db_table_name_processor(uchar *) override;
-
+  bool init_from(const Item *from, Item_clone_context *context) override;
+  Item *new_item(Item_clone_context *context) const override {
+    auto *item = new Item_field(context->thd(), const_cast<Item_field *>(this));
+    // Avoid use original field
+    item->field = nullptr;
+    return item;
+  }
   /**
     Checks if the current object represents an asterisk select list item
 
@@ -4298,6 +4384,7 @@ class Item_null : public Item_basic_constant {
   bool send(Protocol *protocol, String *str) override;
   Item_result result_type() const override { return STRING_RESULT; }
   Item *clone_item() const override { return new Item_null(item_name); }
+  Item *new_item(Item_clone_context *) const override { return clone_item(); }
   bool is_null() override { return true; }
 
   void print(const THD *, String *str,
@@ -4549,6 +4636,7 @@ class Item_param final : public Item, private Settable_routine_parameter {
   */
   Item *safe_charset_converter(THD *thd, const CHARSET_INFO *tocs) override;
   Item *clone_item() const override;
+  Item *new_item(Item_clone_context *) const override { return clone_item(); }
   /*
     Implement by-value equality evaluation if parameter value
     is set and is a basic constant (integer, real or string).
@@ -4701,6 +4789,7 @@ class Item_int : public Item_num {
   }
   bool get_time(MYSQL_TIME *ltime) override { return get_time_from_int(ltime); }
   Item *clone_item() const override { return new Item_int(this); }
+  Item *new_item(Item_clone_context *) const override { return clone_item(); }
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
   Item_num *neg() override {
@@ -4838,6 +4927,7 @@ class Item_decimal : public Item_num {
   Item *clone_item() const override {
     return new Item_decimal(item_name, &decimal_value, decimals, max_length);
   }
+  Item *new_item(Item_clone_context *) const override { return clone_item(); }
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
   Item_num *neg() override {
@@ -4925,6 +5015,7 @@ class Item_float : public Item_num {
   Item *clone_item() const override {
     return new Item_float(item_name, value, decimals, max_length);
   }
+  Item *new_item(Item_clone_context *) const override { return clone_item(); }
   Item_num *neg() override {
     value = -value;
     return this;
@@ -5087,6 +5178,7 @@ class Item_string : public Item_basic_constant {
     return new Item_string(static_cast<Name_string>(item_name), str_value.ptr(),
                            str_value.length(), collation.collation);
   }
+  Item *new_item(Item_clone_context *) const override { return clone_item(); }
   Item *safe_charset_converter(THD *thd, const CHARSET_INFO *tocs) override;
   Item *charset_converter(THD *thd, const CHARSET_INFO *tocs, bool lossless);
   inline void append(char *str, size_t length) {
@@ -5255,6 +5347,7 @@ class Item_hex_string : public Item_basic_constant {
   Item *clone_item() const override {
     return new Item_hex_string(str_value.ptr(), max_length);
   }
+  Item *new_item(Item_clone_context *) const override { return clone_item(); }
   String *val_str(String *) override {
     DBUG_ASSERT(fixed);
     return &str_value;
@@ -5463,6 +5556,12 @@ class Item_ref : public Item_ident {
   void fix_after_pullout(SELECT_LEX *parent_select,
                          SELECT_LEX *removed_select) override;
   void save_org_in_field(Field *field) override;
+  Item *new_item(Item_clone_context *context) const override {
+    Item_ref *item = new Item_ref(context->thd(), const_cast<Item_ref *>(this));
+    item->ref = nullptr;
+    return item;
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;  
   Item_result result_type() const override { return (*ref)->result_type(); }
   Field *get_tmp_table_field() override {
     return result_field ? result_field : (*ref)->get_tmp_table_field();
@@ -6794,6 +6893,7 @@ class Item_json final : public Item_basic_constant {
   bool get_date(MYSQL_TIME *ltime, my_time_flags_t) override;
   bool get_time(MYSQL_TIME *ltime) override;
   Item *clone_item() const override;
+  Item *new_item(Item_clone_context *) const override { return clone_item(); }
 };
 
 extern Cached_item *new_Cached_item(THD *thd, Item *item);

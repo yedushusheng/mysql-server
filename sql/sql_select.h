@@ -915,6 +915,8 @@ bool const_expression_in_where(Item *cond, Item *comp_item,
                                Item **const_item = nullptr);
 bool test_if_subpart(ORDER *a, ORDER *b);
 void calc_group_buffer(JOIN *join, ORDER *group);
+void calc_group_buffer(bool &grouped, Temp_table_param &tmp_table_param,
+                       ORDER *group);
 bool make_join_readinfo(JOIN *join, uint no_jbuf_after);
 bool create_ref_for_key(JOIN *join, JOIN_TAB *j, Key_use *org_keyuse,
                         table_map used_tables);

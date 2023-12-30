@@ -35,6 +35,7 @@
 #include "sql/sql_optimizer.h"
 #include "sql/table.h"
 #include "sql/timing_iterator.h"
+#include "sql/parallel_query/executor.h"
 
 #include <vector>
 
@@ -417,6 +418,12 @@ unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
       const auto &param = path->dynamic_index_range_scan();
       iterator = NewIterator<DynamicRangeIterator>(
           thd, param.table, param.qep_tab, examined_rows);
+      break;
+    }
+    case AccessPath::PARALLEL_COLLECTOR_SCAN: {
+      const auto &param = path->parallel_collector_scan();
+      iterator =
+          NewIterator<CollectorIterator>(thd, param.collector, examined_rows);
       break;
     }
     case AccessPath::TABLE_VALUE_CONSTRUCTOR: {

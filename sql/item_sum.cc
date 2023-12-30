@@ -83,6 +83,59 @@
 using std::max;
 using std::min;
 
+bool Item_sum::init_from(const Item *from, Item_clone_context *context) {
+  if (Item_func::init_base_from(from, context)) return true;
+  auto *item = down_cast<const Item_sum *>(from);
+  auto **from_args = item->orig_args ? item->orig_args : item->args;
+  for (uint i = 0; i < arg_count; ++i) {
+    Item *new_arg = context->replace_sum_arg(this, from_args[i]);
+    args[i] = new_arg ? new_arg : from_args[i]->clone(context);
+    if (!args[i]) return true;
+    used_tables_cache |= args[i]->used_tables();
+  }
+
+  THD *thd = context->thd();
+  m_window_resolved = item->m_window_resolved;
+  force_copy_fields = item->force_copy_fields;
+  with_distinct = item->with_distinct;
+  max_aggr_level = item->max_aggr_level;
+  max_sum_func_level = item->max_sum_func_level;
+  allow_group_via_temp_table = item->allow_group_via_temp_table;
+  save_deny_window_func = item->save_deny_window_func;
+  arg_count = item->arg_count;
+  used_tables_cache = item->used_tables_cache;
+  forced_const = item->forced_const;
+  m_sum_stage = item->m_sum_stage;
+
+  // aggr may have been initialized in the constructor.
+  if (!aggr && item->aggr && set_aggregator(item->aggr->Aggrtype()))
+    return true;
+  // XXX make sure in_sum_func is correct
+  in_sum_func = item->in_sum_func ?
+      thd->lex->in_sum_func : nullptr;
+
+  thd->lex->in_sum_func = this;
+  base_query_block = context->query_block();
+
+  if (!m_window) aggr_query_block = context->query_block();
+  // We don't support window parallel yet, so a window function is evaluated on
+  // leader only.
+  m_window = item->m_window;
+
+  return false;
+}
+
+bool Item_sum::collect_item_sum_processor(uchar *arg) {
+    mem_root_deque<Item *> *item_list =
+      reinterpret_cast<mem_root_deque<Item *> *>(arg);
+  for (Item *curr_item : *item_list) {
+    if (curr_item->eq(this, true)) return false; /* Already in the set. */
+  }
+  item_list->push_back(this);
+
+  return false;
+}
+
 bool Item_sum::itemize(Parse_context *pc, Item **res) {
   if (skip_itemize(res)) return false;
   if (super::itemize(pc, res)) return true;
@@ -1841,6 +1894,19 @@ Item_sum_sum::Item_sum_sum(THD *thd, Item_sum_sum *item)
     sum = item->sum;
 }
 
+bool Item_sum_sum::init_from(const Item *from, Item_clone_context *context) {
+  if (Item_sum_num::init_from(from, context)) return true;
+  const Item_sum_sum *item = down_cast<const Item_sum_sum *>(from);
+  hybrid_type = item->hybrid_type;
+  sum = item->sum;
+  dec_buffs[0] = item->dec_buffs[0];
+  dec_buffs[1] = item->dec_buffs[1];
+  curr_dec_buff = item->curr_dec_buff;
+  m_count = item->m_count;
+  m_frame_null_count = item->m_frame_null_count;
+  return false;
+}
+
 Item *Item_sum_sum::copy_or_same(THD *thd) {
   DBUG_TRACE;
   Item *result =
@@ -2166,7 +2232,10 @@ void Item_sum_count::clear() { count = 0; }
 bool Item_sum_count::add() {
   DBUG_ASSERT(!m_is_window_function);
   if (aggr->arg_is_null(false)) return false;
-  count++;
+  if (m_sum_stage == COMBINE_STAGE)
+    count += args[0]->val_int();
+  else
+    count++;
   return false;
 }
 
@@ -3344,7 +3413,10 @@ void Item_sum_count::reset_field() {
   longlong nr = 0;
   DBUG_ASSERT(aggr->Aggrtype() != Aggregator::DISTINCT_AGGREGATOR);
 
-  if (!args[0]->maybe_null || !args[0]->is_null()) nr = 1;
+  if (m_sum_stage == COMBINE_STAGE)
+    nr = args[0]->is_null() ? 0 : args[0]->get_tmp_table_field()->val_int();
+  else if (!args[0]->is_nullable() || !args[0]->is_null())
+    nr = 1;
   int8store(result_field->field_ptr(), nr);
 }
 
@@ -3444,7 +3516,11 @@ void Item_sum_count::update_field() {
   uchar *res = result_field->field_ptr();
 
   nr = sint8korr(res);
-  if (!args[0]->maybe_null || !args[0]->is_null()) nr++;
+  if (m_sum_stage == COMBINE_STAGE) {
+    assert(args[0]->get_tmp_table_field());
+    if (!args[0]->is_null()) nr += args[0]->get_tmp_table_field()->val_int();
+  } else if (!args[0]->is_nullable() || !args[0]->is_null())
+    nr++;  
   int8store(res, nr);
 }
 

@@ -414,6 +414,9 @@ class PTI_count_sym : public Item_sum_count {
   PTI_count_sym(const POS &pos, PT_window *w)
       : super(pos, (Item *)nullptr, w) {}
 
+  Item *new_item(Item_clone_context *) const override {
+    return new PTI_count_sym(POS(), m_window);
+  }
   bool itemize(Parse_context *pc, Item **res) override;
 };
 

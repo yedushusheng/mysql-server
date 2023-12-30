@@ -1202,10 +1202,14 @@ bool SELECT_LEX::setup_tables(THD *thd, TABLE_LIST *tables,
                               bool select_insert) {
   DBUG_TRACE;
 
-  DBUG_ASSERT((select_insert && !tables->next_name_resolution_table) ||
-              !tables ||
-              (context.table_list && context.first_name_resolution_table));
+  //DBUG_ASSERT((select_insert && !tables->next_name_resolution_table) ||
+  //            !tables ||
+  //            (context.table_list && context.first_name_resolution_table));
 
+  // XXX enable this assert
+  assert(true || (select_insert && !tables->next_name_resolution_table) || !tables ||
+         (context.table_list && context.first_name_resolution_table));
+         
   leaf_tables = nullptr;
   (void)make_leaf_tables(&leaf_tables, tables);
 

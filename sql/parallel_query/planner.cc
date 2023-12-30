@@ -1,0 +1,612 @@
+#include "sql/parallel_query/planner.h"
+
+#include "scope_guard.h"
+#include "sql/filesort.h"
+#include "sql/item.h"
+#include "sql/item_sum.h"
+#include "sql/join_optimizer/access_path.h"
+#include "sql/join_optimizer/walk_access_paths.h"
+#include "sql/parallel_query/executor.h"
+#include "sql/parallel_query/rewrite_access_path.h"
+#include "sql/sql_join_buffer.h"
+#include "sql/sql_optimizer.h"
+#include "sql/sql_tmp_table.h"
+
+namespace pq {
+void ChooseParallelPlan(JOIN *join) {
+  THD *thd = join->thd;
+  if (thd->variables.max_parallel_degree == 0) return;
+  // We just support single table scan without ORDER BY, GROUP BY, AGGREGATION.
+  if (join->const_tables > 0 || join->primary_tables != 1) return;
+  if (!join->m_windows.is_empty() ||
+      join->rollup_state != JOIN::RollupState::NONE) return;
+  join->parallel_plan =
+      new (thd->mem_root) ParallelPlan(thd->mem_root, join->query_block);
+}
+
+Query_expression *PartialPlan::QueryExpression() const {
+  return m_query_block->master_query_expression();
+}
+
+JOIN *PartialPlan::Join() const { return m_query_block->join; }
+
+ParallelPlan::ParallelPlan(MEM_ROOT *mem_root, Query_block *query_block)
+    : m_fields(mem_root), m_source_query_block(query_block) {}
+
+JOIN *ParallelPlan::PartialJoin() const {
+  return m_partial_plan.Join();
+}
+
+JOIN *ParallelPlan::SourceJoin() const {
+  return m_source_query_block->join;
+}
+
+THD *ParallelPlan::thd() const {
+  JOIN *join = m_source_query_block->join;
+  assert(join);
+  return join->thd;
+}
+
+bool ParallelPlan::AddPartialLeafTables() {
+  Query_block *source = m_source_query_block;
+  Query_block *partial_query_block = PartialQueryBlock();
+  TABLE_LIST **last_table = &partial_query_block->leaf_tables;
+
+  for (TABLE_LIST *tl = source->leaf_tables; tl; tl = tl->next_leaf) {
+    assert(!tl->table->const_table);
+    TABLE_LIST *table = tl->clone(thd()->mem_root);
+    if (!table) return true;
+    assert(table->tableno() == tl->tableno());
+    *last_table = table;
+    last_table = &table->next_leaf;
+  }
+  return false;
+}
+
+static bool is_item_field_in_fields(Item_field *item_field,
+                                    const mem_root_deque<Item *> &fields) {
+  for (auto *item : fields) {
+    if (item->type() != Item::FIELD_ITEM) continue;
+    if (down_cast<Item_field *>(item)->field == item_field->field) return true;
+  }
+  return false;
+}
+
+bool ParallelPlan::GenPartialFields(Item_clone_context *context,
+                                    FieldsPushdownDesc *fields_pushdown_desc) {
+  Query_block *source = SourceQueryBlock();
+  Query_block *partial_query_block = PartialQueryBlock();
+
+  context->set_fix_func(Item_clone_context::SUM_FIX_FUNC,
+                        [](Item *item, uchar *) {
+                          Item_sum *item_sum = down_cast<Item_sum *>(item);
+                          item_sum->set_sum_stage(Item_sum::TRANSITION_STAGE);
+                          // XXX don't show Sum(Sum(a)) for leader's aggregation
+                          // in EXPLAIN
+                          Item *arg = item_sum->get_arg(0);
+                          item_sum->item_name = arg->item_name;
+                          return false;
+                        });
+
+  context->set_fix_func(
+      Item_clone_context::FIELD_FIX_FUNC,
+      [partial_query_block](Item *item, uchar *) {
+        Item_field *item_field = down_cast<Item_field *>(item);
+        item_field->table_ref = partial_query_block->find_identical_table_with(
+            item_field->table_ref);
+        TABLE *table = item_field->table_ref->table;
+        item_field->field = table->field[item_field->field_index];
+        return false;
+      });
+
+  for (uint i = 0; i < source->fields.size(); i++) {
+    Item *item = source->fields[i];
+    Item *new_item;
+    // if ONLY_FULL_GROUP_BY is turned off, the functions contains aggregation
+    // may include some item fields.
+    // XXX check whether all sums is safe to push down.
+    bool pushdown =
+        item->parallel_safe() == Item_parallel_safe::Safe &&
+        !(item->has_aggregation() && item->type() != Item::SUM_FUNC_ITEM);
+
+    if (pushdown) {
+      if (!(new_item = item->clone(context)) ||
+          partial_query_block->add_item_to_list(new_item))
+        return true;
+      if (fields_pushdown_desc->push_back(item->type() != Item::SUM_FUNC_ITEM
+                                              ? FieldPushdownDesc::Replace
+                                              : FieldPushdownDesc::Clone))
+        return true;
+    } else {
+      FieldPushdownDesc pushdown_desc(FieldPushdownDesc::Clone);
+      mem_root_deque<Item_field *> field_list(thd()->mem_root);
+      enum_walk walk{enum_walk::PREFIX | enum_walk::ELIMINATE_SUM};
+      item->walk(&Item::collect_item_field_processor, walk,
+                 pointer_cast<uchar *>(&field_list));
+      for (auto *item_field : field_list) {
+        if (is_item_field_in_fields(item_field, partial_query_block->fields))
+          continue;
+        if (!(new_item = item_field->clone(context)) ||
+            partial_query_block->add_item_to_list(new_item))
+          return true;
+      }
+      if (fields_pushdown_desc->push_back(pushdown_desc)) return true;
+    }
+  }
+
+  return false;
+}
+
+bool ParallelPlan::setup_partial_base_ref_items() {
+  Query_block *partial_query_block = PartialQueryBlock();
+  uint len = partial_query_block->fields.size();
+  Item **arr = static_cast<Item **>(thd()->alloc(sizeof(Item *) * len));
+  if (!arr) return true;
+  partial_query_block->base_ref_items = Ref_item_array(arr, len);
+  PartialJoin()->refresh_base_slice();
+  return false;
+}
+
+bool ParallelPlan::ClonePartialOrders() {
+  auto *query_block = PartialQueryBlock();
+  auto *join = query_block->join;
+  auto *source_query_block = SourceQueryBlock();
+  auto *source_join = source_query_block->join;
+
+  // group list is cloned in access path parallelizer
+
+  join->grouped = source_join->grouped;
+  join->need_tmp_before_win = source_join->need_tmp_before_win;
+
+  join->simple_group = source_join->simple_group;
+
+  join->simple_order = source_join->simple_order;
+
+  return false;
+}
+
+bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
+  Query_block *source_query_block = SourceQueryBlock();
+  JOIN *source_join = SourceJoin();
+  Query_block *partial_query_block = PartialQueryBlock();
+  THD *thd = source_join->thd;
+  TABLE *collector_table = m_collector->CollectorTable();
+  auto &partial_fields = partial_query_block->fields;
+  Item_clone_context clone_context(thd, source_query_block);
+
+  // XXXXXX change source plan
+  Item_sum **sum_funcs = source_join->sum_funcs;
+  clone_context.set_fix_func(
+      Item_clone_context::SUM_FIX_FUNC, [sum_funcs](Item *item, uchar *) {
+        Item_sum *item_sum = down_cast<Item_sum *>(item);
+        item_sum->set_sum_stage(Item_sum::COMBINE_STAGE);
+        for (auto **sum_func_ptr = sum_funcs; *sum_func_ptr; sum_func_ptr++) {
+          if (!item_sum->is_identical(*sum_func_ptr)) continue;
+          *sum_func_ptr = item_sum;
+        }
+        return false;
+      });
+
+  clone_context.set_fix_func(
+      Item_clone_context::FUNC_SET_ARG_FUNC,
+      [thd, collector_table, &partial_fields](Item *item, uchar *data) {
+        if (item->type() != Item::SUM_FUNC_ITEM) return false;
+        Item_func *item_func = down_cast<Item_func *>(item);
+        Item_clone_context::Func_set_arg *func_set_arg =
+            pointer_cast<Item_clone_context::Func_set_arg *>(data);
+        assert(func_set_arg->arg_index == 0);
+        // Find table field no for pushed down item sum
+        for (uint i = 0; i < partial_fields.size(); i++) {
+          auto *pitem = partial_fields[i];
+          if (item->is_identical(pitem)) {
+            Item_field *item_field = new Item_field(collector_table->field[i]);
+            Item *arg = item_func->arguments()[0];
+            // Arg could be nullptr, e.g. PTI_count_sym
+            if (arg) item_field->set_id(arg->id());
+            item_func->set_arg_resolve(thd, 0, item_field);
+            func_set_arg->is_set = true;
+            break;
+          }
+        }
+        assert(func_set_arg->is_set);
+        return false;
+      });
+
+  clone_context.set_fix_func(
+      Item_clone_context::FIELD_FIX_FUNC,
+      [collector_table, &partial_fields](Item *item, uchar *) {
+        Item_field *item_field = down_cast<Item_field *>(item);
+        // Find table field no for pushed down item sum
+        for (uint i = 0; i < partial_fields.size(); i++) {
+          auto *pitem = partial_fields[i];
+          if (item->is_identical(pitem)) {
+            item_field->table_ref = nullptr;
+            item_field->field_index = i;
+            item_field->field = collector_table->field[i];
+            break;
+          }
+        }
+        return false;
+      });
+
+  clone_context.set_fix_func(
+      Item_clone_context::REF_FIX_FUNC,
+      [&source_query_block](Item *item, uchar *arg) {
+        Item_ref *ref_item = down_cast<Item_ref *>(item);
+        for (uint i = 0; i < source_query_block->fields.size(); i++) {
+          if (!source_query_block->base_ref_items[i]) break;
+          if (source_query_block->base_ref_items[i]->is_identical(
+                  pointer_cast<Item *>(arg))) {
+            ref_item->ref = &source_query_block->base_ref_items[i];
+            break;
+          }
+        }
+        assert(ref_item->ref);
+        return false;
+      });
+
+  // Process original fields
+  for (uint i = 0; i < source_query_block->fields.size(); i++) {
+    FieldPushdownDesc &desc = (*fields_pushdown_desc)[i];
+    Item *item = source_query_block->fields[i];
+    Item *pitem = nullptr;
+    if (desc.pushdown_action == FieldPushdownDesc::Replace) {
+      for (uint j = 0; j < partial_fields.size(); j++) {
+        if (item->is_identical(partial_fields[j])) {
+          Field *field = collector_table->field[j];
+          if (!(pitem = new Item_field(field))) return true;
+          pitem->set_id(item->id());
+          pitem->hidden = item->hidden;
+          break;
+        }
+      }
+      assert(pitem);
+    } else {
+      assert(desc.pushdown_action == FieldPushdownDesc::Clone);
+      if (!(pitem = item->clone(&clone_context))) return true;
+    }
+    if (m_fields.push_back(pitem)) return true;
+
+    // XXXXXX change source plan
+    bool found [[maybe_unused]] = false;
+    for (size_t j = 0; j < source_query_block->fields.size(); j++) {
+      if (source_query_block->base_ref_items[j]->is_identical(pitem)) {
+        source_query_block->base_ref_items[j] = pitem;
+#ifndef NDEBUG
+        found = true;
+#endif
+        break;
+      }
+    }
+    assert(found);
+  }
+
+  return false;
+}
+
+bool ParallelPlan::Generate() {
+  JOIN *source_join = SourceJoin();
+  THD *thd = source_join->thd;
+  MEM_ROOT *mem_root = thd->mem_root;
+  Query_block *source_query_block = source_join->query_block;
+  LEX *lex_saved = thd->lex;
+  auto lex_restore_guard =
+      create_scope_guard([&thd, lex_saved]() { thd->lex = lex_saved; });
+
+  if (!(thd->lex = new (mem_root) st_lex_local)) return true;
+
+  lex_start(thd);
+
+  thd->lex->sql_command = lex_saved->sql_command;
+  thd->lex->set_ignore(lex_saved->is_ignore());
+  Query_expression *unit = thd->lex->unit;
+  unit->set_prepared();
+  unit->set_optimized();
+  Query_block *partial_query_block = thd->lex->query_block;
+  m_partial_plan.SetQueryBlock(partial_query_block);
+  partial_query_block->select_number = source_query_block->select_number;
+  // Generate JOIN for partial query block
+  JOIN *join;
+  if (!(join = new (mem_root) JOIN(thd, partial_query_block))) return true;
+  partial_query_block->join = join;
+  join->set_executed();
+  join->primary_tables = source_join->primary_tables;
+  join->const_tables = source_join->const_tables;
+  join->tables = source_join->tables;
+
+  if (AddPartialLeafTables()) return true;
+
+  Item_clone_context partial_clone_context(thd, partial_query_block);
+  FieldsPushdownDesc fields_pushdown_desc(mem_root);
+
+  if(GenPartialFields(&partial_clone_context, &fields_pushdown_desc))
+    return true;
+
+  // XXX Set JOIN::select_distinct and JOIN::select_count
+  // XXX collect pushed down fields from fields, table_ref, conditions and
+  // having
+
+  join->implicit_grouping = source_join->implicit_grouping;
+
+  // XXX Don't need where_cond, Explain need this?
+  join->where_cond = nullptr;
+
+  // XXX group by and order by generating
+  if (setup_partial_base_ref_items()) return true;
+
+  if (ClonePartialOrders()) return true;
+
+  count_field_types(partial_query_block, &join->tmp_table_param,
+                    partial_query_block->fields, false, false);
+  if (join->alloc_func_list() ||
+      join->make_sum_func_list(partial_query_block->fields, false))
+    return true;
+
+  if (CreateCollector(thd)) return true;
+
+  if (GenFinalFields(&fields_pushdown_desc)) return true;
+
+  // XXXXXX change source plan
+  source_join->fields = &m_fields;
+  source_join->tmp_fields[0] = m_fields;
+  source_join->ref_items[REF_SLICE_ACTIVE] = source_query_block->base_ref_items;
+  if (!source_join->ref_items[REF_SLICE_SAVED_BASE].is_null())
+    source_join->copy_ref_item_slice(REF_SLICE_SAVED_BASE, REF_SLICE_ACTIVE);
+  if (GenerateAccessPath(&partial_clone_context)) return true;
+  return false;
+}
+
+bool ParallelPlan::CreateCollector(THD *thd) {
+  if (!(m_collector = new (thd->mem_root)
+            Collector(thd->variables.max_parallel_degree, &m_partial_plan)) ||
+      m_collector->CreateCollectorTable()) {
+    destroy(m_collector);
+    m_collector = nullptr;
+    return true;
+  }
+
+  return false;
+}
+
+void ParallelPlan::EndCollector(THD *thd, ha_rows *found_rows) {
+  m_collector->End(thd, found_rows);
+}
+void ParallelPlan::DestroyCollector() {
+  if (!m_collector) return;
+  destroy(m_collector);
+  m_collector = nullptr;
+}
+
+AccessPath *ParallelPlan::CreateCollectorAccessPath(THD *thd) {
+  return NewParallelCollectorAccessPath(thd, m_collector,
+                                        m_collector->CollectorTable(), true);
+}
+
+bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
+  JOIN *source_join = SourceJoin();
+  JOIN *partial_join = PartialJoin();
+  THD *thd = source_join->thd;
+  AccessPath *access_path = source_join->root_access_path();
+  AccessPath *out_access_path;
+  assert(access_path);
+  AccessPathParallelizer context;
+  context.mem_root = thd->mem_root;
+  context.replacement_access_path = CreateCollectorAccessPath(thd);
+  context.clone_context = clone_context;
+  context.join_in = source_join;
+  context.join_out = partial_join;
+  if (context.do_parallelize(&access_path)) return true;
+  out_access_path = context.out_path;
+  if (source_join->root_access_path() != access_path) {
+    CopyBasicProperties(*out_access_path, context.replacement_access_path);
+    source_join->set_root_access_path(access_path);
+  }
+  partial_join->set_root_access_path(out_access_path);
+  return false;
+}
+
+bool add_tables_to_query_block(THD *thd, Query_block *query_block,
+                               TABLE_LIST *tables) {
+  for (TABLE_LIST *tl = tables; tl; tl = tl->next_leaf) {
+    assert(!tl->is_view_or_derived());
+
+    ulong table_options = 0;
+    if (!tl->table_name) table_options |= TL_OPTION_ALIAS;
+    if (tl->updating) table_options |= TL_OPTION_UPDATING;
+    // XXX Don't need ignore_leaves, index_hints, option?
+
+    LEX_CSTRING db_name{tl->db, tl->db_length};
+    LEX_CSTRING table_name{tl->table_name, tl->table_name_length};
+    Table_ident table_ident(db_name, table_name);
+    TABLE_LIST *added;
+    if (!(added = query_block->add_table_to_list(
+              thd, &table_ident, tl->alias, table_options,
+              tl->lock_descriptor().type, tl->mdl_request.type)))
+      return true;
+
+    added->grant = tl->grant;
+  }
+
+  return false;
+}
+
+}  // namespace pq
+
+bool Query_expression::clone_from(THD *thd, Query_expression *from,
+                                  Item_clone_context *context) {
+  uncacheable = from->uncacheable;
+  m_reject_multiple_rows = from->m_reject_multiple_rows;
+  assert(from->is_prepared());
+  set_prepared();
+
+  assert(!from->is_executed());
+  assert(!from->fake_query_block);
+  assert(!from->first_query_block()->next_query_block());
+
+  for (Query_block *block = first_query_block(),
+                   *from_block = from->first_query_block();
+       block && from_block; block = block->next_query_block(),
+                   from_block = from_block->next_query_block()) {
+    if (block->clone_from(thd, from_block, context)) return true;
+  }
+
+  types = first_query_block()->fields;
+
+  if (!from->is_optimized()) return false;
+
+  create_access_paths(thd);
+
+  set_optimized();
+
+  JOIN *join = first_query_block()->join;
+
+  m_root_iterator = CreateIteratorFromAccessPath(
+      thd, m_root_access_path, join, /*eligible_for_batch_mode=*/true);
+
+  return false;
+}
+
+bool Query_block::clone_from(THD *thd, Query_block *from,
+                             Item_clone_context *context) {
+  uncacheable = from->uncacheable;
+  select_number = from->select_number;
+
+  // Item_field clone depends on this
+  if (setup_tables(thd, get_table_list(), false)) return true;
+
+  // Clone table attributes from @from tables
+  for (TABLE_LIST *tl = leaf_tables, *ftl = from->leaf_tables;
+       tl && ftl; tl = tl->next_leaf, ftl = ftl->next_leaf) {
+    tl->m_id = ftl->m_id;
+    TABLE *table = tl->table;
+    TABLE *ftable = ftl->table;
+
+    assert(table);
+
+    // record of const table has be filled during query optimization.
+    if (ftable->const_table) {
+      table->const_table = true;
+      memcpy(table->record[0], ftable->record[0], ftable->s->reclength);
+    }
+    if (ftable->is_nullable()) table->set_nullable();
+    if (ftable->has_null_row()) table->set_null_row();
+
+    // XXX Tranditional explain needs these
+    table->covering_keys = ftable->covering_keys;
+    table->reginfo.not_exists_optimize = ftable->reginfo.not_exists_optimize;
+    if (ftable->part_info) {
+      bitmap_clear_all(&table->part_info->read_partitions);
+      bitmap_copy(&table->part_info->read_partitions,
+                  &ftable->part_info->read_partitions);
+    }
+    // XXX The materialized derived table clone
+  }
+
+  // create_intermediate_table() reads this
+  with_sum_func = from->with_sum_func;
+
+  // XXX clone olap, m_windows
+  JOIN *from_join = from->join;
+  if (from_join && !(join = new (thd->mem_root) JOIN(thd, this))) return true;
+
+  // clone fields
+  uint n_elems = from->fields.size();
+  Item **array =
+      static_cast<Item **>(thd->stmt_arena->alloc(sizeof(Item *) * n_elems));
+  if (!array) return true;
+  base_ref_items = Ref_item_array(array, n_elems);
+  uint i = 0;
+  for (auto *item : from->fields) {
+    Item *new_item = item->clone(context);
+    if (!new_item || fields.push_back(new_item))
+      return true;
+    base_ref_items[i++] = new_item;
+
+    select_list_tables |= new_item->used_tables();
+  }
+  cond_value = from->cond_value;
+  having_value = from->having_value;
+  // Clone join
+  if (join && join->clone_from(from->join, context)) {
+      assert(thd->is_error() || thd->killed);
+
+      return true;
+    }
+
+  return false;
+}
+
+bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
+  zero_result_cause = from->zero_result_cause;
+  select_count = from->select_count;
+
+  assert(!from->plan_is_const() && !from->where_cond);
+  where_cond = nullptr;
+
+  assert(from->order.empty());
+
+  group_list =
+      from->group_list.clone({thd->mem_root, &query_block->base_ref_items,
+                              from->fields->size(), nullptr});
+
+  grouped = from->grouped;
+  need_tmp_before_win = from->need_tmp_before_win;
+  implicit_grouping = from->implicit_grouping;
+  simple_group = from->simple_group;
+
+  simple_order = from->simple_order;
+  select_distinct = from->select_distinct;
+  m_ordered_index_usage = from->m_ordered_index_usage;
+  skip_sort_order = from->skip_sort_order;
+  m_windows_sort = from->m_windows_sort;
+
+  m_select_limit = from->m_select_limit;
+  calc_found_rows = from->calc_found_rows;
+
+  assert(m_windows.elements == 0);
+
+  // XXX Other members of tmp_table_param
+  tmp_table_param.precomputed_group_by =
+      from->tmp_table_param.precomputed_group_by;
+  tmp_table_param.force_copy_fields = from->tmp_table_param.force_copy_fields;
+  tmp_table_param.func_count = from->tmp_table_param.func_count;
+  tmp_table_param.allow_group_via_temp_table =
+      from->tmp_table_param.allow_group_via_temp_table;
+  tmp_table_param.sum_func_count = from->tmp_table_param.sum_func_count;
+
+  assert(query_block->olap ==  UNSPECIFIED_OLAP_TYPE);
+  if (alloc_func_list()) return true;
+
+  set_optimized();
+  tables_list = query_block->leaf_tables;
+  if (alloc_indirection_slices()) return true;
+
+  tmp_fields[0] = *fields;
+  ref_items[REF_SLICE_ACTIVE] = query_block->base_ref_items;
+
+  best_read = from->best_read;
+  sort_cost = from->sort_cost;
+  windowing_cost = from->windowing_cost;
+
+  assert(zero_result_cause == nullptr && tables_list);
+
+  calc_group_buffer(this, group_list.order);
+  send_group_parts = tmp_table_param.group_parts;
+  if (make_sum_func_list(*fields, true)) return true;
+  AccessPath *from_access_path = from->root_access_path();
+  assert(!m_root_access_path);
+  pq::PartialAccessPathRewriter apctx;
+  apctx.mem_root = thd->mem_root;
+  apctx.target_table = query_block->leaf_tables->table;
+  apctx.clone_context = context;
+  apctx.join_in = from;
+  apctx.join_out = this;
+  if (apctx.clone_and_rewrite(&from_access_path)) return true;
+  m_root_access_path = apctx.out_path;
+
+  if (thd->is_error()) return true;
+
+  set_plan_state(PLAN_READY);
+
+  return false;
+}
