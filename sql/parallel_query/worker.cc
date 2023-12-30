@@ -219,6 +219,9 @@ void Worker::ThreadMainEntry() {
   THD_STAGE_INFO(thd, stage_starting);
   thd->tx_isolation = leader_thd()->tx_isolation;
 
+  // Clone snapshot always return false, currently
+  ha_clone_consistent_snapshot(&m_thd, m_leader_thd);
+
   ExecuteQuery();
 
   THD_CHECK_SENTRY(thd);
@@ -304,8 +307,6 @@ void Worker::ExecuteQuery() {
   }
 
   Query_expression *unit = thd->lex->unit;
-  // XXX transaction read view clone
-  // XXX explain analyze support
   unit->execute(thd);
 
   Cleanup();

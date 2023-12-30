@@ -22,7 +22,6 @@ constexpr uint default_max_parallel_degree = 0;
 
 class PartialPlan {
  public:
-
   Query_block *QueryBlock() const { return m_query_block; }
   void SetQueryBlock(Query_block *query_block) { m_query_block = query_block; }
   Query_expression *QueryExpression() const;
@@ -45,23 +44,27 @@ using FieldsPushdownDesc = mem_root_deque<FieldPushdownDesc>;
 class ParallelPlan {
  public:
   ParallelPlan(MEM_ROOT *mem_root, Query_block *query_block);
-  bool Generate();
+  bool Generate(bool &fallback);
   void EndCollector(THD *thd, ha_rows *found_rows);
   void DestroyCollector();
-  AccessPath *CreateCollectorAccessPath(THD *thd);
-  JOIN *PartialJoin() const;
-  Query_block *PartialQueryBlock() const { return m_partial_plan.QueryBlock(); }
-  Query_block *SourceQueryBlock() const { return m_source_query_block; }
-  JOIN *SourceJoin() const;
   bool GenerateAccessPath(Item_clone_context *clone_context);
+
  private:
   THD *thd() const;
+  Query_block *SourceQueryBlock() const { return m_source_query_block; }
+  Query_block *PartialQueryBlock() const { return m_partial_plan.QueryBlock(); }
+  JOIN *SourceJoin() const;
+  JOIN *PartialJoin() const;
+
+  AccessPath *CreateCollectorAccessPath(THD *thd);
   bool AddPartialLeafTables();
   bool ResolvePushdownFields(FieldsPushdownDesc *fields_pushdown_desc);
   bool GenPartialFields(Item_clone_context *context,
                         FieldsPushdownDesc *fields_pushdown_desc);
   bool GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc);
   bool setup_partial_base_ref_items();
+  bool GeneratePartialPlan(Item_clone_context **partial_clone_context,
+                           FieldsPushdownDesc *fields_pushdown_desc);
   // Clone ORDER for group list and order by
   bool ClonePartialOrders();
   bool CreateCollector(THD *thd);
@@ -73,7 +76,7 @@ class ParallelPlan {
   Query_block *m_source_query_block;
 };
 
-void ChooseParallelPlan(JOIN *join);
+bool GenerateParallelPlan(JOIN *join);
 bool add_tables_to_query_block(THD *thd, Query_block *query_block,
                                TABLE_LIST *tables);
 }  // namespace pq

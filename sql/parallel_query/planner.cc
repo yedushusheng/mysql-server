@@ -13,15 +13,31 @@
 #include "sql/sql_tmp_table.h"
 
 namespace pq {
-void ChooseParallelPlan(JOIN *join) {
+
+static ParallelPlan *ChooseParallelPlan(JOIN *join) {
   THD *thd = join->thd;
-  if (thd->variables.max_parallel_degree == 0) return;
-  // We just support single table scan without ORDER BY, GROUP BY, AGGREGATION.
-  if (join->const_tables > 0 || join->primary_tables != 1) return;
+
+  if (thd->variables.max_parallel_degree == 0) return nullptr;
+  // We just support single table
+  if (join->const_tables > 0 || join->primary_tables != 1) return nullptr;
+  // Don't support window function and rollup yet
   if (!join->m_windows.is_empty() ||
-      join->rollup_state != JOIN::RollupState::NONE) return;
-  join->parallel_plan =
-      new (thd->mem_root) ParallelPlan(thd->mem_root, join->query_block);
+      join->rollup_state != JOIN::RollupState::NONE) return nullptr;
+  // Only support table scan and index scan
+  QEP_TAB *tab = &join->qep_tab[0];
+  if (tab->type() != JT_ALL && tab->type() != JT_INDEX_SCAN) return nullptr;
+
+  return new (thd->mem_root) ParallelPlan(thd->mem_root, join->query_block);
+}
+
+bool GenerateParallelPlan(JOIN *join) {
+  ParallelPlan *parallel_plan = ChooseParallelPlan(join);
+  if (!parallel_plan) return false;
+  bool fallback;
+  if (parallel_plan->Generate(fallback)) return true;
+
+  if (!fallback) join->parallel_plan = parallel_plan;
+  return false;
 }
 
 Query_expression *PartialPlan::QueryExpression() const {
@@ -284,22 +300,22 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
   return false;
 }
 
-bool ParallelPlan::Generate() {
+bool ParallelPlan::GeneratePartialPlan(
+    Item_clone_context **partial_clone_context,
+    FieldsPushdownDesc *fields_pushdown_desc) {
   JOIN *source_join = SourceJoin();
+  Query_block *source_query_block = source_join->query_block;
   THD *thd = source_join->thd;
   MEM_ROOT *mem_root = thd->mem_root;
-  Query_block *source_query_block = source_join->query_block;
+  Query_expression *unit;
   LEX *lex_saved = thd->lex;
   auto lex_restore_guard =
       create_scope_guard([&thd, lex_saved]() { thd->lex = lex_saved; });
-
   if (!(thd->lex = new (mem_root) st_lex_local)) return true;
-
   lex_start(thd);
-
   thd->lex->sql_command = lex_saved->sql_command;
   thd->lex->set_ignore(lex_saved->is_ignore());
-  Query_expression *unit = thd->lex->unit;
+  unit = thd->lex->unit;
   unit->set_prepared();
   unit->set_optimized();
   Query_block *partial_query_block = thd->lex->query_block;
@@ -316,10 +332,11 @@ bool ParallelPlan::Generate() {
 
   if (AddPartialLeafTables()) return true;
 
-  Item_clone_context partial_clone_context(thd, partial_query_block);
-  FieldsPushdownDesc fields_pushdown_desc(mem_root);
+  if (!(*partial_clone_context =
+            new (mem_root) Item_clone_context(thd, partial_query_block)))
+    return true;
 
-  if(GenPartialFields(&partial_clone_context, &fields_pushdown_desc))
+  if (GenPartialFields(*partial_clone_context, fields_pushdown_desc))
     return true;
 
   // XXX Set JOIN::select_distinct and JOIN::select_count
@@ -344,15 +361,38 @@ bool ParallelPlan::Generate() {
 
   if (CreateCollector(thd)) return true;
 
+  // We don't support blob type in row exchange
+  TABLE *table = m_collector->CollectorTable();
+  if (table->s->blob_fields > 0) return true;
+
+  return false;
+}
+
+bool ParallelPlan::Generate(bool &fallback) {
+  JOIN *source_join = SourceJoin();
+  THD *thd = source_join->thd;
+  MEM_ROOT *mem_root = thd->mem_root;
+  Query_block *source_query_block = source_join->query_block;
+  Item_clone_context *partial_clone_context;
+  FieldsPushdownDesc fields_pushdown_desc(mem_root);
+  fallback = false;
+  if (GeneratePartialPlan(&partial_clone_context, &fields_pushdown_desc)) {
+    DestroyCollector();
+    fallback = true;
+    return false;
+  }
+
   if (GenFinalFields(&fields_pushdown_desc)) return true;
 
   // XXXXXX change source plan
   source_join->fields = &m_fields;
-  source_join->tmp_fields[0] = m_fields;
+  source_join->tmp_fields[REF_SLICE_ACTIVE] = m_fields;
   source_join->ref_items[REF_SLICE_ACTIVE] = source_query_block->base_ref_items;
   if (!source_join->ref_items[REF_SLICE_SAVED_BASE].is_null())
     source_join->copy_ref_item_slice(REF_SLICE_SAVED_BASE, REF_SLICE_ACTIVE);
-  if (GenerateAccessPath(&partial_clone_context)) return true;
+
+  if (GenerateAccessPath(partial_clone_context)) return true;
+
   return false;
 }
 
@@ -386,25 +426,27 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   JOIN *source_join = SourceJoin();
   JOIN *partial_join = PartialJoin();
   THD *thd = source_join->thd;
-  AccessPath *access_path = source_join->root_access_path();
-  AccessPath *out_access_path;
-  assert(access_path);
-  AccessPathParallelizer context;
-  context.mem_root = thd->mem_root;
-  context.replacement_access_path = CreateCollectorAccessPath(thd);
-  context.clone_context = clone_context;
-  context.join_in = source_join;
-  context.join_out = partial_join;
-  if (context.do_parallelize(&access_path)) return true;
-  out_access_path = context.out_path;
-  if (source_join->root_access_path() != access_path) {
-    CopyBasicProperties(*out_access_path, context.replacement_access_path);
-    source_join->set_root_access_path(access_path);
+  AccessPath *partial_path;
+  AccessPath *parallelized_path;
+  AccessPathParallelizer rewriter(clone_context, source_join, partial_join);
+
+  assert(source_join->root_access_path());
+  rewriter.set_collector_access_path(CreateCollectorAccessPath(thd));
+
+  if (!(parallelized_path =
+            rewriter.parallelize_access_path(source_join->root_access_path())))
+    return true;
+  partial_path = rewriter.out_path();
+  if (source_join->root_access_path() != parallelized_path) {
+    CopyBasicProperties(*partial_path, rewriter.collector_access_path());
+    source_join->set_root_access_path(parallelized_path);
   }
-  if (context.MergeSort() &&
-      m_collector->CreateMergeSort(source_join, context.MergeSort()))
-    return true;  
-  partial_join->set_root_access_path(out_access_path);
+
+  if (rewriter.MergeSort() &&
+      m_collector->CreateMergeSort(source_join, rewriter.MergeSort()))
+    return true;
+
+  partial_join->set_root_access_path(partial_path);
   return false;
 }
 
@@ -596,16 +638,13 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
   calc_group_buffer(this, group_list.order);
   send_group_parts = tmp_table_param.group_parts;
   if (make_sum_func_list(*fields, true)) return true;
-  AccessPath *from_access_path = from->root_access_path();
-  assert(!m_root_access_path);
-  pq::PartialAccessPathRewriter apctx;
-  apctx.mem_root = thd->mem_root;
-  apctx.target_table = query_block->leaf_tables->table;
-  apctx.clone_context = context;
-  apctx.join_in = from;
-  apctx.join_out = this;
-  if (apctx.clone_and_rewrite(&from_access_path)) return true;
-  m_root_access_path = apctx.out_path;
+
+  assert(from->root_access_path());
+
+  pq::PartialAccessPathRewriter aprewriter(context, from, this);
+
+  if (aprewriter.clone_and_rewrite(from->root_access_path())) return true;
+  m_root_access_path = aprewriter.out_path();
 
   if (thd->is_error()) return true;
 

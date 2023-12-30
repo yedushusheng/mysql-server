@@ -3725,7 +3725,15 @@ void JOIN::join_free() {
   }
 }
 
-static void cleanup_table(TABLE *table) {
+static void cleanup_table(TABLE *table, bool end_parallel_scan = false) {
+  if (table->parallel_scan_handle) {
+    if (end_parallel_scan)
+      table->file->end_parallel_scan(table->parallel_scan_handle);
+    else
+      table->file->detach_parallel_scan(table->parallel_scan_handle);
+    table->parallel_scan_handle = nullptr;
+  }
+
   if (table->is_created()) {
     table->file->ha_index_or_rnd_end();
   }
@@ -3759,11 +3767,13 @@ void JOIN::cleanup() {
         table = (join_tab ? &join_tab[i] : best_ref[i])->table();
       }
       if (!table) continue;
-      cleanup_table(table);
+      //cleanup_table(table);
+      cleanup_table(table, !thd->lex->is_partial_plan);
     }
   } else if (thd->lex->using_hypergraph_optimizer || thd->lex->is_partial_plan) {
     for (TABLE_LIST *tl = select_lex->leaf_tables; tl; tl = tl->next_leaf) {
-      cleanup_table(tl->table);
+      //cleanup_table(tl->table);
+      cleanup_table(tl->table, !thd->lex->is_partial_plan);
     }
     //for (JOIN::TemporaryTableToCleanup cleanup : temp_tables) {
     //  cleanup_table(cleanup.table);

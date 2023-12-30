@@ -965,9 +965,8 @@ bool JOIN::optimize() {
   // fail:
   if (thd->is_error()) return true;
 
-  pq::ChooseParallelPlan(this);
-  if (parallel_plan && (parallel_plan->Generate())) return true;
-  
+  if (pq::GenerateParallelPlan(this)) return true;
+
   // Make plan visible for EXPLAIN
   set_plan_state(PLAN_READY);
 
