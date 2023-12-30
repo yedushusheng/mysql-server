@@ -3599,6 +3599,16 @@ class Handler_share {
   virtual ~Handler_share() {}
 };
 
+typedef void *parallel_scan_handle_t;
+
+struct parallel_scan_desc_t {
+  uint keynr;          // Key number for parallel scan
+  key_range *min_key;  // Min key of range scan
+  key_range *max_key;  // Max key of range scan
+  uint16_t key_used;   // part of keys used by parallel scan
+  bool is_asc;         // Ascending or descending order
+};
+
 /**
   Wrapper for struct ft_hints.
 */
@@ -5564,6 +5574,29 @@ class handler {
     in_range_check_pushed_down = false;
   }
 
+  virtual int init_parallel_scan(
+      parallel_scan_handle_t *handle MY_ATTRIBUTE((unused)),
+      ulong *nranges MY_ATTRIBUTE((unused)),
+      parallel_scan_desc_t *scan_desc MY_ATTRIBUTE((unused))) {
+    return HA_ERR_UNSUPPORTED;
+  }
+
+  virtual int attach_parallel_scan(
+      parallel_scan_handle_t scan_handle MY_ATTRIBUTE((unused))) {
+    return HA_ERR_UNSUPPORTED;
+  }
+
+  virtual void detach_parallel_scan(
+      parallel_scan_handle_t scan_handle MY_ATTRIBUTE((unused))) {}
+
+  virtual void end_parallel_scan(
+      parallel_scan_handle_t scan_handle MY_ATTRIBUTE((unused))) {}
+
+  virtual int restart_parallel_scan(
+      parallel_scan_handle_t scan_handle MY_ATTRIBUTE((unused))) {
+    return HA_ERR_UNSUPPORTED;
+  }
+  
   /**
     Reports number of tables included in pushed join which this
     handler instance is part of. ==0 -> Not pushed
