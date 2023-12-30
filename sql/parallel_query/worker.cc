@@ -240,8 +240,10 @@ void Worker::ThreadMainEntry() {
 
 class PartialItemCloneContext : public Item_clone_context {
  public:
-  PartialItemCloneContext(THD *thd, Query_block *query_block, THD *leader_thd)
-      : Item_clone_context(thd, query_block), m_leader_thd(leader_thd) {}
+  PartialItemCloneContext(THD *thd, Query_block *query_block,
+                          ItemRefCloneResolver *ref_resolver, THD *leader_thd)
+      : Item_clone_context(thd, query_block, ref_resolver),
+        m_leader_thd(leader_thd) {}
 
   using Item_clone_context::Item_clone_context;
   void rebind_field(Item_field *item_field,
@@ -262,6 +264,14 @@ class PartialItemCloneContext : public Item_clone_context {
         orig_field->table->pos_in_table_list);
     assert(table_ref);
     item_hybrid->set_field(table_ref->table->field[orig_field->field_index()]);
+  }
+
+  bool resolve_view_ref(Item_view_ref *item,
+                        const Item_view_ref *from) override {
+    if (!(item->ref = (Item **)new (mem_root()) Item *) ||
+        !(*item->ref = (*from->ref)->clone(this)))
+      return true;
+    return false;
   }
 
   void rebind_user_var(Item_func_get_user_var *item) override {
@@ -320,9 +330,13 @@ bool Worker::PrepareQueryPlan() {
 
   Query_expression *unit = lex->unit,
                    *from_unit = m_query_plan->QueryExpression();
-
-  PartialItemCloneContext clone_context(thd, query_block, m_leader_thd);
+  ItemRefCloneResolver ref_clone_resolver(thd->mem_root, query_block);
+  PartialItemCloneContext clone_context(thd, query_block, &ref_clone_resolver,
+                                        m_leader_thd);
   if (unit->clone_from(thd, from_unit, &clone_context)) return true;
+
+  clone_context.final_resolve_refs();
+
   if (query_block->change_query_result(thd, query_result, nullptr)) return true;
 
   unit->set_query_result(query_result);

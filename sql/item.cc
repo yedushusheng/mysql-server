@@ -870,9 +870,11 @@ bool Item_field::collect_item_field_processor(uchar *arg) {
   return false;
 }
 
+
 bool Item_field::init_from(const Item *from, Item_clone_context *context) {
   if (super::init_from(from, context)) return true;
-  const Item_field *item = down_cast<const Item_field *>(from);
+  auto *item = down_cast<const Item_field *>(from);
+
   have_privileges = item->have_privileges;
   any_privileges = item->any_privileges;
   can_use_prefix_key = item->can_use_prefix_key;
@@ -8127,9 +8129,10 @@ void Item_ref::fix_after_pullout(SELECT_LEX *parent_select,
 
 bool Item_ref::init_from(const Item *from, Item_clone_context *context) {
   if (Item_ident::init_from(from, context)) return true;
-  const Item_ref *from_ref = down_cast<const Item_ref *>(from);
+  if (ref_type() == VIEW_REF) return false;
+  auto *from_ref = down_cast<const Item_ref *>(from);
   assert(from_ref->ref);
-  context->repoint_ref(this, from_ref);
+  if (context->resolve_ref(this, from_ref)) return true;
   return false;
 }
 
@@ -8233,6 +8236,17 @@ bool Item_view_ref::collect_item_field_or_view_ref_processor(uchar *arg) {
   if (context->select_lex == info->m_transformed_block)
     info->m_item_fields_or_view_refs->push_back(this);
   info->stop_at(this);
+  return false;
+}
+
+bool Item_view_ref::init_from(const Item *from, Item_clone_context *context) {
+  if (super::init_from(from, context)) return true;
+  auto *from_ref = down_cast<const Item_view_ref *>(from);
+  assert(from_ref->ref);
+  // XXX don't support multi-table yet.
+  assert(!from_ref->first_inner_table);
+  if (context->resolve_view_ref(this, from_ref)) return true;
+  assert(ref);
   return false;
 }
 

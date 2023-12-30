@@ -2,23 +2,27 @@
 #define PARALLEL_QUERY_PLANNER_H
 #include "my_base.h"
 #include "mem_root_deque.h"
+#include "sql/item.h"
 
-class Query_expression;
-class Query_block;
-class JOIN;
-class THD;
 class QEP_TAB;
-class TABLE;
-class TABLE_LIST;
 struct AccessPath;
-class Item;
-class Item_clone_context;
 
 namespace pq {
 class Collector;
 
 constexpr uint max_parallel_degree_limit = 128;
 constexpr uint default_max_parallel_degree = 0;
+
+class ItemRefCloneResolver : public Item_ref_clone_resolver {
+ public:
+  ItemRefCloneResolver(MEM_ROOT *mem_root, Query_block *query_block);
+  bool resolve(Item_ref *item, const Item_ref *from) override;
+  void final_resolve() override;
+
+ private:
+  mem_root_deque<std::pair<Item_ref *, const Item_ref *>> m_refs_to_resolve;
+  Query_block *m_query_block;
+};
 
 class PartialPlan {
  public:

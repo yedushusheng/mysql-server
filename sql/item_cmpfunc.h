@@ -174,6 +174,8 @@ class Arg_comparator {
 
   bool set_cmp_func(Item_result_field *owner_arg, Item **left, Item **right,
                     bool set_null_arg);
+  bool clone(Item_clone_context *context, const Arg_comparator &cmp,
+             Item_result_field *owner_arg, Item **left_arg, Item **right_arg);                    
   /**
      Comparison function are expected to operate on arguments having the
      same data types. Since MySQL has very loosened up rules, it accepts
@@ -646,7 +648,7 @@ class Item_bool_func2 : public Item_bool_func { /* Bool with 2 string args */
     if (Item_bool_func::init_from(from, context)) return true;
     const Item_bool_func2 *item = down_cast<const Item_bool_func2 *>(from);
     abort_on_null = item->abort_on_null;
-    set_cmp_func();
+    if (cmp.clone(context, item->cmp, this, args, args + 1)) return true;
 
     return false;
   }

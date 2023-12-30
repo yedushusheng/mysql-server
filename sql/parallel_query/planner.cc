@@ -14,10 +14,16 @@
 #include "sql/sql_tmp_table.h"
 
 namespace pq {
-
-static bool IsItemParallelSafe(const Item *item) {
+static bool ItemRefuseParallel(const Item *item, const char **cause) {
   assert(item);
-  return item->parallel_safe() == Item_parallel_safe::Safe;
+  *cause = nullptr;
+  if (item->parallel_safe() != Item_parallel_safe::Safe) return true;
+  // Some Item_refs in refer to outer table's field, we don't support that yet.
+  if (item->used_tables() & OUTER_REF_TABLE_BIT) {
+    *cause = "item_refer_to_outer_query_field";
+    return true;
+  }
+  return false;
 }
 
 static void ChooseParallelPlan(JOIN *join) {
@@ -44,10 +50,18 @@ static void ChooseParallelPlan(JOIN *join) {
   }
 
   // Block plan which does't support yet
+
   if (join->zero_result_cause) {
     cause = "plan_with_zero_result";
     return;
   }
+
+  // Need special parallel scan support
+  if (join->select_count) {
+    cause = "plan_with_select_count";
+    return;
+  }
+
   // We just support single table
   if (join->const_tables > 0 || join->primary_tables != 1) {
     cause = "not_single_table_or_just_const_tables";
@@ -75,19 +89,23 @@ static void ChooseParallelPlan(JOIN *join) {
     cause = "include_system_tables";
     return;
   }
-
+  const char *item_refuse_cause;
   // Block parallel query based on item expressions
   for (Item *item : join->query_block->fields) {
-    if (IsItemParallelSafe(item)) continue;
-    cause = "include_unsafe_items_in_fields";
+    if (!ItemRefuseParallel(item, &item_refuse_cause)) continue;
+    cause = item_refuse_cause ? item_refuse_cause
+                              : "include_unsafe_items_in_fields";
     return;
   }
-  if (qt->condition() && !IsItemParallelSafe(qt->condition())) {
-    cause = "filter_has_unsafe_condition";
+  if (qt->condition() &&
+      ItemRefuseParallel(qt->condition(), &item_refuse_cause)) {
+    cause =
+        item_refuse_cause ? item_refuse_cause : "filter_has_unsafe_condition";
     return;
   }
-  if (join->having_cond && !IsItemParallelSafe(join->having_cond)) {
-    cause = "having_is_unsafe";
+  if (join->having_cond &&
+      ItemRefuseParallel(join->having_cond, &item_refuse_cause)) {
+    cause = item_refuse_cause ? item_refuse_cause : "having_is_unsafe";
     return;
   }
 
@@ -114,6 +132,33 @@ bool GenerateParallelPlan(JOIN *join) {
 
   if (fallback) join->parallel_plan = nullptr;
   return false;
+}
+
+ItemRefCloneResolver::ItemRefCloneResolver(MEM_ROOT *mem_root,
+                                           Query_block *query_block)
+    : m_refs_to_resolve(mem_root), m_query_block(query_block) {}
+
+bool ItemRefCloneResolver::resolve(Item_ref *item, const Item_ref *from) {
+  assert(from->ref);
+  item->context = &m_query_block->context;
+  return m_refs_to_resolve.push_back({item, from});
+}
+
+void ItemRefCloneResolver::final_resolve() {
+  auto &base_ref_items = m_query_block->base_ref_items;
+  for (auto &ref : m_refs_to_resolve) {
+    auto *item_ref = ref.first;
+    auto *from = ref.second;
+    for (uint i = 0; i < m_query_block->fields.size(); i++) {
+      auto *item = base_ref_items[i];
+      if (item->is_identical(*from->ref)) {
+        item_ref->ref = &base_ref_items[i];
+        break;
+      }
+    }
+
+    assert(item_ref->ref);
+  }
 }
 
 Query_expression *PartialPlan::QueryExpression() const {
@@ -181,6 +226,12 @@ class PartialItemGenContext : public Item_clone_context {
                            const Item_sum_hybrid_field *from_item) override {
     item_hybrid->set_field(from_item->get_field());
   }
+  bool resolve_view_ref(Item_view_ref *item,
+                        const Item_view_ref *from) override {
+    // The ref point to another query lex, so it's safe
+    item->ref = from->ref;
+    return false;
+  }
 };
 
 bool ParallelPlan::GenPartialFields(Item_clone_context *context,
@@ -189,14 +240,14 @@ bool ParallelPlan::GenPartialFields(Item_clone_context *context,
   Query_block *partial_query_block = PartialQueryBlock();
 
   for (uint i = 0; i < source->fields.size(); i++) {
-    Item *item = source->fields[i];
-    Item *new_item;
+    Item *new_item, *item = source->fields[i];
     // if ONLY_FULL_GROUP_BY is turned off, the functions contains aggregation
     // may include some item fields.
     // XXX check whether all sums is safe to push down.
+    assert(item->parallel_safe() == Item_parallel_safe::Safe);
     bool pushdown =
-        item->parallel_safe() == Item_parallel_safe::Safe &&
-        !(item->has_aggregation() && item->type() != Item::SUM_FUNC_ITEM);
+        !(item->has_aggregation() && item->type() != Item::SUM_FUNC_ITEM) &&
+        !item->const_item();
 
     if (pushdown) {
       if (!(new_item = item->clone(context))) return true;
@@ -264,9 +315,10 @@ bool ParallelPlan::ClonePartialOrders() {
 class OriginItemRewriteContext : public Item_clone_context {
  public:
   OriginItemRewriteContext(THD *thd, Query_block *query_block,
+                           ItemRefCloneResolver *ref_resolver,
                            TABLE *collector_table,
                            mem_root_deque<Item *> &partial_fields)
-      : Item_clone_context(thd, query_block),
+      : Item_clone_context(thd, query_block, ref_resolver),
         m_collector_table(collector_table),
         m_partial_fields(partial_fields) {}
 
@@ -312,18 +364,12 @@ class OriginItemRewriteContext : public Item_clone_context {
     return nullptr;
   }
 
-  void repoint_ref(Item_ref *item_ref, const Item_ref *from) override {
-    assert(from->ref);
-    auto &base_ref_items = m_query_block->base_ref_items;
-    for (uint i = 0; i < m_query_block->fields.size(); i++) {
-      auto *item = base_ref_items[i];
-      if (!item) break;
-      if (item->is_identical(*from->ref)) {
-        item_ref->ref = &base_ref_items[i];
-        break;
-      }
-    }
-    assert(item_ref->ref);
+  bool resolve_view_ref(Item_view_ref *item,
+                        const Item_view_ref *from) override {
+    // all Item_view_ref should be pushed down except const_item
+    assert(from->const_item());
+    item->ref = from->ref;
+    return false;
   }
 
  private:
@@ -341,7 +387,8 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
   Opt_trace_object trace_wrapper(&thd->opt_trace);
   Opt_trace_object trace(&thd->opt_trace, "final_plan");
 
-  OriginItemRewriteContext clone_context(thd, source_query_block,
+  ItemRefCloneResolver ref_resolver(thd->mem_root, source_query_block);
+  OriginItemRewriteContext clone_context(thd, source_query_block, &ref_resolver,
                                          collector_table, partial_fields);
   // Process original fields
   for (uint i = 0; i < source_query_block->fields.size(); i++) {
@@ -389,6 +436,10 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
     assert(found);
   }
 
+  // Make all cloned ref point to correct item.
+  clone_context.final_resolve_refs();
+
+
   return false;
 }
 
@@ -427,8 +478,10 @@ bool ParallelPlan::GeneratePartialPlan(
 
   if (AddPartialLeafTables()) return true;
 
-  if (!(*partial_clone_context =
-            new (mem_root) PartialItemGenContext(thd, partial_query_block)))
+  auto *ref_clone_resolver =
+      new (mem_root) ItemRefCloneResolver(mem_root, partial_query_block);
+  if (!(*partial_clone_context = new (mem_root) PartialItemGenContext(
+            thd, partial_query_block, ref_clone_resolver)))
     return true;
 
   if (GenPartialFields(*partial_clone_context, fields_pushdown_desc))
@@ -468,6 +521,7 @@ bool ParallelPlan::GeneratePartialPlan(
 bool ParallelPlan::Generate(bool &fallback) {
   JOIN *source_join = SourceJoin();
   THD *thd = source_join->thd;
+  LEX *lex = thd->lex;
   MEM_ROOT *mem_root = thd->mem_root;
   Query_block *source_query_block = source_join->query_block;
   Item_clone_context *partial_clone_context;
@@ -480,7 +534,7 @@ bool ParallelPlan::Generate(bool &fallback) {
 
   fallback = false;
   if (GeneratePartialPlan(&partial_clone_context, &fields_pushdown_desc)) {
-    DestroyCollector();
+    destroy(m_collector);
     Opt_trace_object trace_fallback(trace);
     trace_fallback.add("fallback", true);
     fallback = true;
@@ -497,6 +551,8 @@ bool ParallelPlan::Generate(bool &fallback) {
     source_join->copy_ref_item_slice(REF_SLICE_SAVED_BASE, REF_SLICE_ACTIVE);
 
   if (GenerateAccessPath(partial_clone_context)) return true;
+
+  partial_clone_context->final_resolve_refs();
 
   return false;
 }
