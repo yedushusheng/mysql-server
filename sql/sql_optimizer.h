@@ -297,6 +297,10 @@ class JOIN {
   // Only used for the hypergraph optimizer, for the same reason as above.
   Prealloced_array<AccessPath *, 1> sorting_paths{PSI_NOT_INSTRUMENTED};
 
+  // Similarly, ranges that need to be cleaned up after the query. Only used for
+  // the parallel query, for the same reason as above.
+  Prealloced_array<QUICK_SELECT_I *, 1> quick_selects_to_cleanup{
+      PSI_NOT_INSTRUMENTED};
   /**
     Before plan has been created, "tables" denote number of input tables in the
     query block and "primary_tables" is equal to "tables".

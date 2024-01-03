@@ -4,6 +4,7 @@
 #include "sql/filesort.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
+#include "sql/opt_range.h"
 #include "sql/parallel_query/planner.h"
 #include "sql/sql_optimizer.h"
 #include "sql/sql_tmp_table.h"
@@ -82,6 +83,7 @@ bool AccessPathRewriter::do_rewrite(AccessPath *path) {
   switch (path->type) {
     case AccessPath::TABLE_SCAN:
     case AccessPath::INDEX_SCAN:
+    case AccessPath::INDEX_RANGE_SCAN:
     case AccessPath::PARALLEL_COLLECTOR_SCAN:
       break;
     case AccessPath::FILTER:
@@ -131,6 +133,13 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *path) {
       assert(!end_of_out_path());
       out = accesspath_dup(path, mem_root());
       if (rewrite_index_scan(path, out)) return true;
+      m_out_path = out;
+      break;
+    }
+    case AccessPath::INDEX_RANGE_SCAN: {
+      assert(!end_of_out_path());
+      out = accesspath_dup(path, mem_root());
+      if (rewrite_index_range_scan(path, out)) return true;
       m_out_path = out;
       break;
     }
@@ -229,11 +238,20 @@ void AccessPathParallelizer::set_collector_path_pos(AccessPath **path) {
 void AccessPathParallelizer::set_table_parallel_scan(TABLE *table, uint keynr,
                                                      bool reverse) {
   key_range *min_key = nullptr, *max_key = nullptr;
-  bool is_asc = reverse;
+  bool is_asc = !reverse;
   uint16_t key_used = UINT16_MAX;
   parallel_scan_desc_t scan_desc = {keynr, min_key, max_key, key_used, is_asc};
 
   m_partial_plan->SetTablesParallelScan(table, scan_desc);
+}
+
+void AccessPathParallelizer::set_table_parallel_scan(QUICK_SELECT_I *quick) {
+  key_range *min_key, *max_key;
+  bool is_asc = !quick->reverse_sorted();
+  uint16_t key_used = quick->scan_range_keyused(mem_root(), &min_key, &max_key);
+
+  parallel_scan_desc_t scan_desc = {quick->index, min_key, max_key, key_used, is_asc};
+  m_partial_plan->SetTablesParallelScan(quick->head, scan_desc);
 }
 
 bool AccessPathParallelizer::rewrite_table_scan(AccessPath *in, AccessPath *out
@@ -259,6 +277,17 @@ bool AccessPathParallelizer::rewrite_index_scan(AccessPath *in, AccessPath *out
                             : m_join_in->group_list_planned.order);
   }
   set_table_parallel_scan(table, index_scan.idx, index_scan.reverse);
+
+  return false;
+}
+
+bool AccessPathParallelizer::rewrite_index_range_scan(AccessPath *in, AccessPath *out) {
+  assert(out);
+  auto &index_range_scan = in->index_range_scan();
+  auto *quick = index_range_scan.quick;
+  assert(quick->head == index_range_scan.table);
+
+  set_table_parallel_scan(quick);
 
   return false;
 }
@@ -599,14 +628,38 @@ TABLE *PartialAccessPathRewriter::find_leaf_table(TABLE *) const {
   auto *table_list = query_block->leaf_tables;
 
   assert(!table_list->next_leaf);
+  assert(table_list->table);
 
   return table_list->table;
+}
+
+/// XXX TDSQL seems that pushed_cond also is used in LIMIT pushdown, so
+/// should it also be cloned.
+static bool clone_hander_pushed_cond(Item_clone_context *context, uint keyno,
+                                  const TABLE *from, TABLE *table) {
+  Item *cond, *from_cond = from->file->pushed_idx_cond;
+  if (from_cond) {
+    assert(keyno < MAX_KEY);
+    if (!(cond = from_cond->clone(context))) return true;
+
+    auto *remained_cond [[maybe_unused]] =
+        table->file->idx_cond_push(keyno, cond);
+    assert(remained_cond == nullptr);
+  }
+
+  return false;
 }
 
 bool PartialAccessPathRewriter::rewrite_table_scan(AccessPath *,
                                                    AccessPath *out) {
   auto &out_table_scan = out->table_scan();
-  TABLE *table = find_leaf_table(out_table_scan.table);
+  auto *orig_table = out_table_scan.table;
+  TABLE *table = find_leaf_table(orig_table);
+
+  if (clone_hander_pushed_cond(m_item_clone_context, MAX_KEY, orig_table,
+                               table))
+    return true;
+
   out_table_scan.table = table;
 
   set_sorting_info({table, REF_SLICE_SAVED_BASE});
@@ -616,8 +669,34 @@ bool PartialAccessPathRewriter::rewrite_table_scan(AccessPath *,
 bool PartialAccessPathRewriter::rewrite_index_scan(AccessPath *,
                                                    AccessPath *out) {
   auto &out_index_scan = out->index_scan();
+  auto *orig_table = out_index_scan.table;
   TABLE *table = find_leaf_table(out_index_scan.table);
+  if (clone_hander_pushed_cond(m_item_clone_context, out_index_scan.idx,
+                            orig_table, table))
+    return true;
+
   out_index_scan.table = table;
+
+  set_sorting_info({table, REF_SLICE_SAVED_BASE});
+  return false;
+}
+
+bool PartialAccessPathRewriter::rewrite_index_range_scan(AccessPath *,
+                                                         AccessPath *out) {
+  auto &index_range_scan = out->index_range_scan();
+  auto *orig_table = index_range_scan.table;
+  auto *join = m_join_out;
+  auto *table = find_leaf_table(orig_table);
+  auto *quick = index_range_scan.quick->clone(join, table);
+
+  if (clone_hander_pushed_cond(m_item_clone_context, quick->index, orig_table,
+                            table))
+    return true;
+
+  if (!quick || join->quick_selects_to_cleanup.push_back(quick)) return true;
+
+  index_range_scan.table = table;
+  index_range_scan.quick = quick;
 
   set_sorting_info({table, REF_SLICE_SAVED_BASE});
   return false;

@@ -1777,6 +1777,11 @@ static bool imerge_list_or_tree(RANGE_OPT_PARAM *param, List<SEL_IMERGE> *im1,
 QUICK_SELECT_I::QUICK_SELECT_I()
     : max_used_key_length(0), used_key_parts(0), forced_by_hint(false) {}
 
+QUICK_SELECT_I *QUICK_SELECT_I::QUICK_SELECT_I::clone(JOIN *, TABLE *) {
+  assert(false);
+  return nullptr;
+}
+
 void QUICK_SELECT_I::trace_quick_description(Opt_trace_context *trace) {
   Opt_trace_object range_trace(trace, "range_details");
 
@@ -1827,6 +1832,53 @@ QUICK_RANGE_SELECT::QUICK_RANGE_SELECT(THD *thd, TABLE *table, uint key_nr,
     *create_error = true;
   } else
     bitmap_init(&column_bitmap, bitmap, head->s->fields);
+}
+
+QUICK_SELECT_I *QUICK_RANGE_SELECT::clone(JOIN *join, TABLE *table) {
+  bool create_err = false;
+  THD *thd = join->thd;
+  auto *saved_mem_root = thd->mem_root;
+
+  auto *quick = new QUICK_RANGE_SELECT(thd, table, index, false, thd->mem_root,
+                                       &create_err);
+  thd->mem_root = saved_mem_root;
+
+  if (create_err || quick->init_from(this) || quick->init()) {
+    delete quick;
+    return nullptr;
+  }
+
+  return quick;
+}
+
+uint16_t QUICK_RANGE_SELECT::scan_range_keyused(MEM_ROOT *mem_root,
+                                                key_range **min_key,
+                                                key_range **max_key) {
+  *min_key = *max_key = nullptr;
+  if (ranges.empty()) return UINT16_MAX;
+
+  auto *first_range = ranges.front(), *last_range = ranges.back();
+
+  if (first_range->flag & DESC_FLAG && last_range->flag & DESC_FLAG) {
+    QUICK_RANGE *tmp = first_range;
+    first_range = last_range;
+    last_range = tmp;
+  }
+  if (!(first_range->flag & NO_MIN_RANGE)) {
+    *min_key = new (mem_root) key_range;
+    first_range->make_min_endpoint(*min_key);
+  }
+
+  if (!(last_range->flag & NO_MAX_RANGE)) {
+    *max_key = new (mem_root) key_range;
+    last_range->make_max_endpoint(*max_key);
+  }
+
+  assert(*min_key == nullptr || first_range->flag & GEOM_FLAG ||
+         (*min_key)->length != 0);
+  assert(*max_key == nullptr || last_range->flag & GEOM_FLAG ||
+         (*max_key)->length != 0);
+  return UINT16_MAX;
 }
 
 void QUICK_RANGE_SELECT::need_sorted_output() { mrr_flags |= HA_MRR_SORTED; }
@@ -11092,6 +11144,26 @@ int QUICK_RANGE_SELECT::get_next_prefix(uint prefix_length,
   }
 }
 
+QUICK_SELECT_I *QUICK_RANGE_SELECT_GEOM::clone(JOIN *join, TABLE *table) {
+  THD *thd = join->thd;
+  bool create_err = false;
+  auto *saved_mem_root = thd->mem_root;
+
+  auto *quick = new QUICK_RANGE_SELECT_GEOM(thd,
+                                            table,
+                                            index,
+                                            false, thd->mem_root,
+                                            &create_err);
+  thd->mem_root = saved_mem_root;
+
+  if (create_err || quick->init_from(this) || quick->init()) {
+    delete quick;
+    return nullptr;
+  }
+
+  return quick;
+}
+
 /* Get next for geometrical indexes */
 
 int QUICK_RANGE_SELECT_GEOM::get_next() {
@@ -11315,6 +11387,14 @@ int QUICK_SELECT_DESC::get_next() {
     }
     last_range = nullptr;  // To next range
   }
+}
+
+QUICK_SELECT_I *QUICK_SELECT_DESC::clone(JOIN *join, TABLE *table) {
+  auto *quick = QUICK_RANGE_SELECT::clone(join, table);
+  if (!quick) return nullptr;
+  auto *quick_desc = quick->make_reverse(m_used_key_parts);
+  delete quick;
+  return quick_desc;
 }
 
 /**
@@ -13132,6 +13212,8 @@ QUICK_GROUP_MIN_MAX_SELECT::QUICK_GROUP_MIN_MAX_SELECT(
   key_infix_parts = used_key_parts_arg - group_key_parts_arg;
   real_prefix_len = group_prefix_len + key_infix_len;
   group_prefix = nullptr;
+  min_max_arg_part_idx =
+      min_max_arg_part ? min_max_arg_part - index_info->key_part : 0;  
   min_max_arg_len = min_max_arg_part ? min_max_arg_part->store_length : 0;
   min_max_keypart_asc =
       min_max_arg_part ? !(min_max_arg_part->key_part_flag & HA_REVERSE_SORT)
@@ -14292,6 +14374,49 @@ void QUICK_GROUP_MIN_MAX_SELECT::add_keys_and_lengths(String *key_names,
   used_lengths->append(buf, length);
 }
 
+QUICK_SELECT_I *QUICK_GROUP_MIN_MAX_SELECT::clone(JOIN *join, TABLE *table) {
+  auto *thd = join->thd;
+  auto *saved_mem_root = thd->mem_root;
+  auto *qindex_info = table->key_info + index;
+  auto *quick = new QUICK_GROUP_MIN_MAX_SELECT(
+      table, join, have_min, have_max, have_agg_distinct,
+      min_max_arg_part ? qindex_info->key_part + min_max_arg_part_idx : nullptr,
+      group_prefix_len, group_key_parts, real_key_parts, qindex_info, index,
+      &cost_est, records, key_infix_len, nullptr, is_index_scan);
+  thd->mem_root = saved_mem_root;
+
+  quick->min_max_ranges = min_max_ranges;
+  quick->min_max_arg_len = min_max_arg_len;
+  quick->real_key_parts = real_key_parts;
+  quick->real_prefix_len = real_prefix_len;
+  quick->max_used_key_length = max_used_key_length;
+  quick->quick_prefix_query_block = nullptr;
+  if ((quick_prefix_query_block &&
+       !(quick->quick_prefix_query_block = down_cast<QUICK_RANGE_SELECT *>(
+             quick_prefix_query_block->clone(join, table)))) ||
+      quick->init()) {
+    delete quick;
+    return nullptr;
+  }
+    for (uint i = 0; i < key_infix_parts; i++) {
+      auto *range_array = key_infix_ranges[i];
+      *quick->key_infix_ranges[i] = *range_array;
+    }
+  quick->adjust_prefix_ranges();
+
+  return quick;
+}
+
+uint16_t QUICK_GROUP_MIN_MAX_SELECT::scan_range_keyused(MEM_ROOT *mem_root,
+                                                        key_range **min_key,
+                                                        key_range **max_key) {
+  if (quick_prefix_query_block)
+    quick_prefix_query_block->scan_range_keyused(mem_root, min_key, max_key);
+  else
+    *min_key = *max_key = nullptr;
+  return group_key_parts;
+}
+
 /**
   Construct a new quick select object for queries doing skip scans.
 
@@ -14840,6 +14965,75 @@ QUICK_SKIP_SCAN_SELECT::QUICK_SKIP_SCAN_SELECT(
     ::new (&alloc) MEM_ROOT;  // ensure that it's not used
 }
 
+QUICK_SELECT_I *QUICK_SKIP_SCAN_SELECT::clone(JOIN *join, TABLE *table) {
+  auto *thd = join->thd;
+  auto *saved_mem_root = thd->mem_root;
+  auto *quick = new QUICK_SKIP_SCAN_SELECT(
+      table, join, table->key_info + index, index,
+      table->key_info[index].key_part + range_key_part_idx, nullptr,
+      eq_prefix_len, eq_prefix_key_parts, used_key_parts, &cost_est, records,
+      nullptr, has_aggregate_function);
+  thd->mem_root = saved_mem_root;
+
+  quick->range_cond_flag = range_cond_flag;
+  quick->range_key_len = range_key_len;
+  auto *qalloc = &quick->alloc;
+
+  bool create_err = false;
+  if (!(range_cond_flag & NO_MIN_RANGE)) {
+    if (!(quick->min_range_key = (uchar *)qalloc->Alloc(range_key_len)) ||
+        !(quick->min_search_key = (uchar *)qalloc->Alloc(max_used_key_length)))
+      create_err = true;
+    else
+      memcpy(quick->min_range_key, min_range_key, range_key_len);
+  }
+
+  if (!(range_cond_flag & NO_MAX_RANGE)) {
+    if (!(quick->max_range_key = (uchar *)qalloc->Alloc(range_key_len)) ||
+        !(quick->max_search_key = (uchar *)qalloc->Alloc(max_used_key_length)))
+      create_err = true;
+    else
+      memcpy(quick->max_range_key, max_range_key, range_key_len);
+  }
+  if (create_err || quick->init_inner(this)) {
+    delete quick;
+    return nullptr;
+  }
+
+  return quick;
+}
+
+uint16_t QUICK_SKIP_SCAN_SELECT::scan_range_keyused(MEM_ROOT *mem_root,
+                                                    key_range **min_key,
+                                                    key_range **max_key) {
+  if (eq_prefix_key_parts == 0 || eq_prefix_len == 0) {
+    *min_key = *max_key = nullptr;
+    return UINT16_MAX;
+  }
+  auto extract_key_value = [&](ha_rkey_function key_flag) {
+    uchar *key_prefix = (uchar *)mem_root->Alloc(eq_prefix_len);
+    size_t offset = 0;
+    for (uint i = 0; i < eq_prefix_key_parts; i++) {
+      const uchar *key = eq_key_prefixes[i][0];
+      uint part_length = (index_info->key_part + i)->store_length;
+      memcpy(key_prefix + offset, key, part_length);
+      offset += part_length;
+      assert(offset <= eq_prefix_len);
+    }
+
+    key_range *key = new (mem_root) key_range();
+    key->key =key_prefix;
+    key->length = eq_prefix_len;
+    key->keypart_map = make_prev_keypart_map(eq_prefix_key_parts);
+    key->flag = key_flag;
+    return key;
+  };
+
+  *min_key = extract_key_value(HA_READ_KEY_OR_NEXT);
+  *max_key = extract_key_value(HA_READ_AFTER_KEY);
+  return UINT16_MAX;
+}
+
 /**
   Do post-constructor initialization.
 
@@ -14857,7 +15051,10 @@ QUICK_SKIP_SCAN_SELECT::QUICK_SKIP_SCAN_SELECT(
     other  Error code
 */
 
-int QUICK_SKIP_SCAN_SELECT::init() {
+int QUICK_SKIP_SCAN_SELECT::init() { return init_inner(nullptr); }
+
+int QUICK_SKIP_SCAN_SELECT::init_inner(
+    const QUICK_SKIP_SCAN_SELECT *eq_prefix_copy_from) {
   if (distinct_prefix) return 0;
 
   DBUG_ASSERT(distinct_prefix_key_parts > 0 && distinct_prefix_len > 0);
@@ -14881,20 +15078,39 @@ int QUICK_SKIP_SCAN_SELECT::init() {
               (uint *)alloc.Alloc(eq_prefix_key_parts * sizeof(uint))))
       return 1;
 
-    const SEL_ARG *cur_range = index_range_tree->root->first();
+    const SEL_ARG *cur_range =
+        eq_prefix_copy_from ? nullptr : index_range_tree->root->first();
     const SEL_ARG *first_range = nullptr;
     const SEL_ROOT *cur_root = index_range_tree;
+    assert(!eq_prefix_copy_from || !cur_root);
     for (uint i = 0; i < eq_prefix_key_parts;
-         i++, cur_range = cur_range->next_key_part->root) {
+         i++, cur_range = cur_range ? cur_range->next_key_part->root
+                                    : nullptr) {
       cur_eq_prefix[i] = 0;
-      eq_prefix_elements[i] = cur_root->elements;
-      cur_root = cur_range->next_key_part;
-      DBUG_ASSERT(eq_prefix_elements[i] > 0);
+      eq_prefix_elements[i] = cur_root
+                                  ? cur_root->elements
+                                  : eq_prefix_copy_from->eq_prefix_elements[i];
+      if (cur_range) cur_root = cur_range->next_key_part;
+      assert(eq_prefix_elements[i] > 0);
       if (!(eq_key_prefixes[i] =
                 (uchar **)alloc.Alloc(eq_prefix_elements[i] * sizeof(uchar *))))
         return 1;
 
       uint j = 0;
+      if (eq_prefix_copy_from) {
+        for (; j < eq_prefix_elements[i]; j++) {
+          KEY_PART_INFO *keypart = index_info->key_part + i;
+          size_t field_length = keypart->store_length;
+
+          if (!(eq_key_prefixes[i][j] = (uchar *)alloc.Alloc(field_length)))
+            return 1;
+
+          memcpy(eq_key_prefixes[i][j],
+                 eq_prefix_copy_from->eq_key_prefixes[i][j], field_length);
+        }
+        continue;
+      }
+
       first_range = cur_range->first();
       for (cur_range = first_range; cur_range;
            j++, cur_range = cur_range->next) {
