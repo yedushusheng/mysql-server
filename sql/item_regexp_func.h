@@ -79,6 +79,16 @@ class Item_func_regexp : public Item_func {
   Item_func_regexp(const POS &pos, PT_item_list *opt_list)
       : Item_func(pos, opt_list) {}
 
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (Item_func::init_from(from, context)) return true;
+    assert(!m_facade);
+    if (!(m_facade = make_unique_destroy_only<regexp::Regexp_facade>(
+              context->mem_root())))
+      return true;
+    return false;
+  }
+
+
   /**
     Resolves the collation to use for comparison. The type resolution is done
     in the subclass constructors.
@@ -269,6 +279,9 @@ class Item_func_regexp_instr : public Item_func_regexp {
   int retopt_arg_pos() const { return 4; }
   int match_arg_pos() const override { return 5; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_regexp_instr(POS(), nullptr);
+  }
  private:
   bool resolve_type(THD *) final;
 };
@@ -311,6 +324,9 @@ class Item_func_regexp_like : public Item_func_regexp {
   int occ_arg_pos() const override { return -1; }
   int match_arg_pos() const override { return 2; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_regexp_like(POS(), nullptr);
+  }
  private:
   bool resolve_type(THD *) final;
 };
@@ -322,6 +338,9 @@ class Item_func_regexp_replace : public Item_func_regexp {
 
   Item_result result_type() const override { return STRING_RESULT; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_regexp_replace(POS(), nullptr);
+  }
   bool resolve_type(THD *) final;
 
   Item *replacement() { return args[2]; }
@@ -361,6 +380,9 @@ class Item_func_regexp_substr : public Item_func_regexp {
 
   Item_result result_type() const override { return STRING_RESULT; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_regexp_substr(POS(), nullptr);
+  }
   bool resolve_type(THD *) final;
 
   longlong val_int() override { return convert_str_to_int(); }
@@ -398,6 +420,9 @@ class Item_func_icu_version final : public Item_static_string_func {
   explicit Item_func_icu_version(const POS &pos);
 
   bool itemize(Parse_context *pc, Item **res) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_icu_version(POS());
+  }
 };
 
 #endif  // SQL_ITEM_REGEXP_FUNC_H_

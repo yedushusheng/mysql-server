@@ -886,11 +886,10 @@ bool Item_field::init_from(const Item *from, Item_clone_context *context) {
   can_use_prefix_key = item->can_use_prefix_key;
 
   assert(item->table_ref && item->field);
-  field_index = item->field_index;
-  table_ref = item->table_ref;
 
-  if (context->fix_cloned_field(this, nullptr)) return true;
-  assert(field && table_ref != item->table_ref);
+  context->rebind_field(this, down_cast<const Item_field *>(from));
+
+  assert(field && field_index != NO_FIELD_INDEX);
 
   field->table->mark_column_used(field, context->thd()->mark_used_columns);
 
@@ -3759,6 +3758,33 @@ void Item_param::sync_clones() {
   }
 }
 
+bool Item_param::init_from(const Item *from, Item_clone_context *context) {
+  if (super::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_param *>(from);
+
+  if (str_value_ptr.clone_from(item->str_value_ptr)) return true;
+  decimal_value = item->decimal_value;
+  value = item->value;
+
+  m_type_inherited = item->m_type_inherited;
+  m_type_pinned = item->m_type_pinned;
+  m_data_type_actual = item->m_data_type_actual;
+  m_unsigned_actual = item->m_unsigned_actual;
+  m_collation_actual = item->m_collation_actual;
+  m_collation_stored = item->m_collation_stored;
+  m_result_type = item->m_result_type;
+  m_param_state = item->m_param_state;
+  m_json_as_scalar = item->m_json_as_scalar;
+  pos_in_query = item->pos_in_query;
+  set_param_func = item->set_param_func;
+
+  // parallel query don't support inside procedure
+  assert(!item->m_out_param_info);
+
+  // Don't need clone m_clones
+  return false;
+}
+
 void Item_param::set_null() {
   DBUG_TRACE;
 
@@ -6406,6 +6432,14 @@ bool Item_int::eq(const Item *arg, bool) const {
   return false;
 }
 
+bool Item_int_with_ref::init_from(const Item *from,
+                                  Item_clone_context *context) {
+  if (Item_int::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_int_with_ref *>(from);
+  if (!(ref = item->ref->clone(context))) return true;
+  return false;
+}
+
 Item *Item_int_with_ref::clone_item() const {
   DBUG_ASSERT(ref->const_item());
   /*
@@ -8114,7 +8148,9 @@ bool Item_ref::init_from(const Item *from, Item_clone_context *context) {
 
   const Item_ref *from_ref = down_cast<const Item_ref *>(from);
   assert(from_ref->ref);
-  return context->fix_cloned_ref(this, pointer_cast<uchar *>(*from_ref->ref));
+  context->repoint_ref(this, from_ref);
+
+  return false;
 }
 
 /**
@@ -8322,6 +8358,23 @@ void Item_default_value::bind_fields() {
   m_rowbuffer_saved = field->table->s->default_values;
 }
 
+bool Item_default_value::init_from(const Item *from,
+                                   Item_clone_context *context) {
+  if (super::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_default_value *>(from);
+  assert(field);
+  if (item->arg) {
+    // arg seems not be used when evalution. Since default value is not pushed
+    // down, we set arg to nullptr
+    arg = nullptr;
+    only_evaluate = true;
+    field->move_field_offset((ptrdiff_t)(item->field->table->s->default_values -
+                                         item->m_rowbuffer_saved));
+    m_rowbuffer_saved = field->table->s->default_values;
+  }
+  return false;
+}
+
 void Item_default_value::print(const THD *thd, String *str,
                                enum_query_type query_type) const {
   if (!arg) {
@@ -8335,7 +8388,7 @@ void Item_default_value::print(const THD *thd, String *str,
 
 type_conversion_status Item_default_value::save_in_field_inner(
     Field *field_arg, bool no_conversions) {
-  if (!arg) {
+  if (!arg && !only_evaluate) {
     if ((field_arg->is_flag_set(NO_DEFAULT_VALUE_FLAG) &&
          field_arg->m_default_val_expr == nullptr) &&
         field_arg->real_type() != MYSQL_TYPE_ENUM) {
@@ -8967,6 +9020,21 @@ bool Item_cache::has_value() {
   return false;
 }
 
+bool Item_cache::init_from(const Item *from, Item_clone_context *context) {
+  if (Item_basic_constant::init_from(from, context)) return true;
+
+  auto *item = down_cast<const Item_cache *>(from);
+  used_table_map = item->used_table_map;
+  cached_field = item->cached_field;
+
+  // Some literal constant when comparing uses cached value, so copy it.
+  if ((item->example && !(example = item->example->clone(context))) ||
+      copy_cached_value(item))
+    return true;
+
+  return false;
+}
+
 void Item_cache::cleanup() {
   /*
     In case the cache wraps a dynamic parameter, user variable (=> there is an
@@ -9175,6 +9243,17 @@ bool Item_cache_datetime::get_time(MYSQL_TIME *ltime) {
   return true;
 }
 
+bool Item_cache_datetime::copy_cached_value(const Item_cache *from) {
+  auto *item = down_cast<const Item_cache_datetime *>(from);
+  if (!item->value_cached) return false;
+  value_cached = true;
+  null_value = from->null_value;
+  int_value = item->int_value;
+  if (!item->str_value_cached) return false;
+  str_value_cached = true;
+  return str_value.clone_from(item->str_value);
+}
+
 double Item_cache_datetime::val_real() { return val_real_from_decimal(); }
 
 longlong Item_cache_datetime::val_time_temporal() {
@@ -9315,6 +9394,18 @@ longlong Item_cache_json::val_int() {
   if (null_value) return true;
 
   return wr.coerce_int(whence(cached_field));
+}
+
+bool Item_cache_json::copy_cached_value(const Item_cache *from) {
+  auto *item = down_cast<const Item_cache_json *>(from);
+  if (!item->value_cached) return false;
+  value_cached = true;
+  null_value = from->null_value;
+  m_is_sorted = item->m_is_sorted;
+  *m_value = *item->m_value;
+  // See Item_cache_join::store_value()
+  if (!m_value->to_dom(current_thd)) return true;
+  return false;
 }
 
 void Item_cache_json::sort() {
@@ -9483,6 +9574,17 @@ my_decimal *Item_cache_str::val_decimal(my_decimal *decimal_val) {
   return decimal_val;
 }
 
+bool Item_cache_str::copy_cached_value(const Item_cache *from) {
+  auto *item = down_cast<const Item_cache_str *>(from);
+  if (!item->value_cached) return false;
+  value_cached = true;
+  null_value = from->null_value;
+  value_buff.set(buffer, sizeof(buffer), item->value->charset());
+  if (value_buff.copy(*item->value)) return true;
+  value = &value_buff;
+  return false;
+}
+
 type_conversion_status Item_cache_str::save_in_field_inner(
     Field *field, bool no_conversions) {
   if (!value_cached && !cache_value())
@@ -9574,6 +9676,36 @@ bool Item_cache_row::null_inside() {
     } else {
       if (values[i]->update_null_value() || values[i]->null_value) return true;
     }
+  }
+  return false;
+}
+
+bool Item_cache_row::init_from(const Item *from, Item_clone_context *context) {
+  if (Item_cache::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_cache_row *>(from);
+  item_count = item->item_count;
+  if (allocate(item->cols())) return true;
+  for (uint i = 0; i < item_count; i++) {
+    if (!(values[i] = down_cast<Item_cache *>(item->values[i]->clone(context))))
+      return true;
+  }
+  if (copy_cached_value(item)) return true;
+  return false;
+}
+
+bool Item_cache_row::copy_cached_value(const Item_cache *from) {
+  auto *item = down_cast<const Item_cache_row *>(from);
+  if (!item->value_cached) return false;
+  // Base class method: Item_cache::init_from() calls this function but the
+  // values is allocated in derived class method, so just return here then
+  // call this again in derived class.
+  if (!values) return false;
+
+  value_cached = true;
+  null_value = from->null_value;
+
+  for (uint i = 0; i < item_count; i++) {
+    if (values[i]->copy_cached_value(item->values[i])) return true;
   }
   return false;
 }

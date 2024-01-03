@@ -431,6 +431,12 @@ class Item_sum : public Item_result_field, public Func_args_handle {
   */
   bool with_distinct;
 
+  /**
+    Save original arguments if arguments are changed by optimizer, see
+    calling of set_arg()
+  */
+  Item **orig_args{nullptr};
+
  public:
   bool has_force_copy_fields() const { return force_copy_fields; }
   bool has_with_distinct() const { return with_distinct; }
@@ -609,6 +615,11 @@ class Item_sum : public Item_result_field, public Func_args_handle {
   virtual void update_field() = 0;
   virtual bool keep_field_type() const { return false; }
   bool resolve_type(THD *) override;
+  Item_parallel_safe parallel_safe() const override {
+    if (with_distinct) return Item_parallel_safe::Restricted;
+    return Item_func::parallel_safe();
+  }
+  bool init_from(const Item *item, Item_clone_context *context) override;
   virtual Item *result_item(Field *field) {
     Item_field *item = new Item_field(field);
     if (item == nullptr) return nullptr;
@@ -798,8 +809,6 @@ class Item_sum : public Item_result_field, public Func_args_handle {
   */
   virtual bool needs_card() const { return false; }
 
-  bool init_from(const Item *item, Item_clone_context *context) override;
-
   /**
     Common initial actions for window functions. For non-buffered processing
     ("on-the-fly"), check partition change and possible reset partition
@@ -986,6 +995,12 @@ class Item_sum_num : public Item_sum {
     return MYSQL_TYPE_DOUBLE;
   }
   bool fix_fields(THD *, Item **) override;
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (super::init_from(from, context)) return true;
+   auto *item = down_cast<const Item_sum_num *>(from);
+    is_evaluated = item->is_evaluated;
+    return false;
+  }
   longlong val_int() override {
     DBUG_ASSERT(fixed == 1);
     return llrint_with_overflow_check(val_real()); /* Real as default */
@@ -997,12 +1012,6 @@ class Item_sum_num : public Item_sum {
   }
   bool get_time(MYSQL_TIME *ltime) override {
     return get_time_from_numeric(ltime); /* Decimal or real */
-  }
-  bool init_from(const Item *from, Item_clone_context *context) override {
-    if (super::init_from(from, context)) return true;
-    const Item_sum_num *item = down_cast<const Item_sum_num *>(from);
-    is_evaluated = item->is_evaluated;
-    return false;
   }
   void reset_field() override;
 };
@@ -1042,6 +1051,11 @@ class Item_sum_sum : public Item_sum_num {
   double sum;
   my_decimal dec_buffs[2];
   uint curr_dec_buff;
+  Item *new_item(Item_clone_context *context) const override {
+    // Don't need init_from()
+    return new Item_sum_sum(context->thd(),
+                            const_cast<Item_sum_sum *>(this));
+  }  
   bool resolve_type(THD *thd) override;
   /**
     Execution state: this is for counting rows entering and leaving the window
@@ -1082,11 +1096,6 @@ class Item_sum_sum : public Item_sum_num {
   void update_field() override;
   void no_rows_in_result() override {}
   const char *func_name() const override { return "sum"; }
-  bool init_from(const Item *from, Item_clone_context *context) override;
-  Item *new_item(Item_clone_context *context) const override {
-    return new Item_sum_sum(context->thd(),
-                            const_cast<Item_sum_sum *>(this));
-  }
 
   Item *copy_or_same(THD *thd) override;
 };
@@ -1123,6 +1132,11 @@ class Item_sum_count : public Item_sum_int {
   enum Sumfunctype sum_func() const override {
     return has_with_distinct() ? COUNT_DISTINCT_FUNC : COUNT_FUNC;
   }
+  Item *new_item(Item_clone_context *context) const override {
+    // Don't need init_from()
+    return new Item_sum_count(context->thd(),
+                            const_cast<Item_sum_count *>(this));
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1)) return true;
     maybe_null = false;
@@ -1138,16 +1152,6 @@ class Item_sum_count : public Item_sum_int {
   void reset_field() override;
   void update_field() override;
   const char *func_name() const override { return "count"; }
-  bool init_from(const Item *from, Item_clone_context *context) override {
-    if (Item_sum_int::init_from(from, context)) return true;
-    const Item_sum_count *item = down_cast<const Item_sum_count *>(from);
-    count = item->count;
-    return false;
-  }
-  Item *new_item(Item_clone_context *context) const override {
-    return new Item_sum_count(context->thd(),
-                            const_cast<Item_sum_count *>(this));
-  }
   Item *copy_or_same(THD *thd) override;
 };
 
@@ -1186,6 +1190,12 @@ class Item_sum_hybrid_field : public Item_result_field {
     func_arg->banned_function_name = func_name();
     return true;
   }
+  Field *get_field() const { return field; }
+  void set_field(Field *f) { field = f; }
+  Item_sum::Sumfuncstage sum_stage;
+  void set_sum_stage(Item_sum::Sumfuncstage stage) { sum_stage = stage; }
+  bool init_from(const Item *from, Item_clone_context *context) override;
+
 };
 
 /**
@@ -1212,16 +1222,22 @@ class Item_avg_field : public Item_sum_num_field {
  public:
   uint f_precision, f_scale, dec_bin_size;
   uint prec_increment;
+  explicit Item_avg_field(const Item_avg_field *item);
   Item_avg_field(Item_result res_type, Item_sum_avg *item);
   enum Type type() const override { return FIELD_AVG_ITEM; }
   double val_real() override;
   my_decimal *val_decimal(my_decimal *) override;
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_avg_field(this);
+  }
   bool resolve_type(THD *) override { return false; }
   const char *func_name() const override {
     DBUG_ASSERT(0);
     return "avg_field";
   }
+  type_conversion_status save_in_field_inner(Field *to,
+                                             bool no_conversions) override;
 };
 
 /// This is used in connection with an Item_sum_bit, @see Item_sum_hybrid_field
@@ -1232,10 +1248,16 @@ class Item_sum_bit_field : public Item_sum_hybrid_field {
  public:
   Item_sum_bit_field(Item_result res_type, Item_sum_bit *item,
                      ulonglong reset_bits);
+  // Constructor for item clone.
+  explicit Item_sum_bit_field(const Item_sum_bit_field *item);
+  
   longlong val_int() override;
   double val_real() override;
   my_decimal *val_decimal(my_decimal *) override;
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_sum_bit_field(this);
+  }
   bool resolve_type(THD *) override { return false; }
   bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzydate) override;
   bool get_time(MYSQL_TIME *ltime) override;
@@ -1272,6 +1294,10 @@ class Item_sum_json : public Item_sum {
  public:
   ~Item_sum_json() override;
   bool fix_fields(THD *thd, Item **pItem) override;
+  Item_parallel_safe parallel_safe() const override {
+    // Don't support json agg in partial plan yet.
+    return Item_parallel_safe::Restricted;
+  }
   enum Sumfunctype sum_func() const override { return JSON_AGG_FUNC; }
   Item_result result_type() const override { return STRING_RESULT; }
 
@@ -1307,6 +1333,7 @@ class Item_sum_json_array final : public Item_sum_json {
   void clear() override;
   bool add() override;
   Item *copy_or_same(THD *thd) override;
+  Item *new_item(Item_clone_context *) const override;
 };
 
 /// Implements aggregation of values into an object.
@@ -1343,6 +1370,7 @@ class Item_sum_json_object final : public Item_sum_json {
   void clear() override;
   bool add() override;
   Item *copy_or_same(THD *thd) override;
+  Item *new_item(Item_clone_context *) const override;
   bool check_wf_semantics1(THD *thd, SELECT_LEX *select,
                            Window_evaluation_requirements *reqs) override;
 };
@@ -1361,6 +1389,7 @@ class Item_sum_avg final : public Item_sum_sum {
   Item_sum_avg(THD *thd, Item_sum_avg *item)
       : Item_sum_sum(thd, item), prec_increment(item->prec_increment) {}
 
+  Item *new_item(Item_clone_context *context) const override;
   bool resolve_type(THD *thd) override;
   enum Sumfunctype sum_func() const override {
     return has_with_distinct() ? AVG_DISTINCT_FUNC : AVG_FUNC;
@@ -1381,11 +1410,15 @@ class Item_sum_avg final : public Item_sum_sum {
   const char *func_name() const override { return "avg"; }
   Item *copy_or_same(THD *thd) override;
   Field *create_tmp_field(bool group, TABLE *table) override;
+  type_conversion_status save_in_field_inner(Field *to,
+                                             bool no_conversions) override;
   void cleanup() override {
     m_count = 0;
     m_frame_null_count = 0;
     Item_sum_sum::cleanup();
   }
+  my_decimal *get_arg_sum_count(my_decimal *sum, longlong *count);
+  double get_arg_sum_count(longlong *count);
 };
 
 class Item_sum_variance;
@@ -1396,12 +1429,23 @@ class Item_variance_field : public Item_sum_num_field {
 
  public:
   Item_variance_field(Item_sum_variance *item);
+  explicit Item_variance_field() {}
   enum Type type() const override { return FIELD_VARIANCE_ITEM; }
   double val_real() override;
   String *val_str(String *str) override { return val_string_from_real(str); }
   my_decimal *val_decimal(my_decimal *dec_buf) override {
     return val_decimal_from_real(dec_buf);
   }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (Item_sum_num_field::init_from(from, context)) return true;
+
+    auto *item = down_cast<const Item_variance_field *>(from);
+    sample = item->sample;
+    return false;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_variance_field;
+  }  
   bool resolve_type(THD *) override { return false; }
   const char *func_name() const override {
     DBUG_ASSERT(0);
@@ -1413,6 +1457,8 @@ class Item_variance_field : public Item_sum_num_field {
     func_arg->err_code = func_arg->get_unnamed_function_error_code();
     return true;
   }
+  type_conversion_status save_in_field_inner(Field *to,
+                                             bool no_conversions) override;
 };
 
 /*
@@ -1516,6 +1562,13 @@ class Item_sum_variance : public Item_sum_num {
   Item *copy_or_same(THD *thd) override;
   Field *create_tmp_field(bool group, TABLE *table) override;
   enum Item_result result_type() const override { return REAL_RESULT; }
+  type_conversion_status save_in_field_inner(Field *to,
+                                             bool no_conversions) override;
+  Item *new_item(Item_clone_context *context) const override {
+    // Don't need init_from(), the constructor handled everything.
+    return new Item_sum_variance(context->thd(),
+                                 const_cast<Item_sum_variance *>(this));
+  }  
   void cleanup() override {
     count = 0;
     Item_sum_num::cleanup();
@@ -1529,6 +1582,7 @@ class Item_sum_std;
 class Item_std_field final : public Item_variance_field {
  public:
   Item_std_field(Item_sum_std *item);
+  explicit Item_std_field() {}
   enum Type type() const override { return FIELD_STD_ITEM; }
   double val_real() override;
   my_decimal *val_decimal(my_decimal *) override;
@@ -1537,6 +1591,9 @@ class Item_std_field final : public Item_variance_field {
     DBUG_ASSERT(0);
     return "std_field";
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_std_field;
+  }  
   bool check_function_as_value_generator(uchar *args) override {
     Check_function_as_value_generator_parameters *func_arg =
         pointer_cast<Check_function_as_value_generator_parameters *>(args);
@@ -1561,6 +1618,9 @@ class Item_sum_std : public Item_sum_variance {
   const char *func_name() const override {
     return sample ? "stddev_samp" : "std";
   }
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_sum_std(context->thd(), const_cast<Item_sum_std *>(this));
+  }  
   Item *copy_or_same(THD *thd) override;
   enum Item_result result_type() const override { return REAL_RESULT; }
 };
@@ -1697,6 +1757,7 @@ class Item_sum_hybrid : public Item_sum {
 
  public:
   bool fix_fields(THD *, Item **) override;
+  bool init_from(const Item *from, Item_clone_context *context) override;
   void clear() override;
   void split_sum_func(THD *thd, Ref_item_array ref_item_array,
                       mem_root_deque<Item *> *fields) override;
@@ -1746,7 +1807,9 @@ class Item_sum_min final : public Item_sum_hybrid {
       : Item_sum_hybrid(thd, item) {}
   enum Sumfunctype sum_func() const override { return MIN_FUNC; }
   const char *func_name() const override { return "min"; }
-
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_sum_min(context->thd(), this);
+  }
  private:
   Item_sum_min *clone_hybrid(THD *thd) const override;
 };
@@ -1759,6 +1822,9 @@ class Item_sum_max final : public Item_sum_hybrid {
   Item_sum_max(THD *thd, const Item_sum_max *item)
       : Item_sum_hybrid(thd, item) {}
   enum Sumfunctype sum_func() const override { return MAX_FUNC; }
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_sum_max(context->thd(), this);
+  }
   const char *func_name() const override { return "max"; }
 
  private:
@@ -1877,6 +1943,7 @@ class Item_sum_bit : public Item_sum {
   bool get_time(MYSQL_TIME *ltime) override;
   void reset_field() override;
   void update_field() override;
+  bool init_from(const Item *from, Item_clone_context *context) override;
   bool resolve_type(THD *) override;
   bool fix_fields(THD *thd, Item **ref) override;
   void cleanup() override {
@@ -1936,6 +2003,9 @@ class Item_sum_or final : public Item_sum_bit {
 
   Item_sum_or(THD *thd, Item_sum_or *item) : Item_sum_bit(thd, item) {}
   const char *func_name() const override { return "bit_or"; }
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_sum_or(context->thd(), const_cast<Item_sum_or *>(this));
+  }
   Item *copy_or_same(THD *thd) override;
 };
 
@@ -1946,6 +2016,9 @@ class Item_sum_and final : public Item_sum_bit {
 
   Item_sum_and(THD *thd, Item_sum_and *item) : Item_sum_bit(thd, item) {}
   const char *func_name() const override { return "bit_and"; }
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_sum_and(context->thd(), const_cast<Item_sum_and *>(this));
+  }
   Item *copy_or_same(THD *thd) override;
 };
 
@@ -1958,6 +2031,9 @@ class Item_sum_xor final : public Item_sum_bit {
 
   Item_sum_xor(THD *thd, Item_sum_xor *item) : Item_sum_bit(thd, item) {}
   const char *func_name() const override { return "bit_xor"; }
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_sum_xor(context->thd(), const_cast<Item_sum_xor *>(this));
+  }
   Item *copy_or_same(THD *thd) override;
 };
 
@@ -1995,6 +2071,10 @@ class Item_udf_sum : public Item_sum {
     if (udf.fix_fields(thd, this, this->arg_count, this->args)) return true;
 
     return check_sum_func(thd, ref);
+  }
+  Item_parallel_safe parallel_safe() const override {
+    // Don't known how to clone it yet
+    return Item_parallel_safe::Unsafe;
   }
   enum Sumfunctype sum_func() const override { return UDF_SUM_FUNC; }
 
@@ -2202,6 +2282,20 @@ class Item_func_group_concat final : public Item_sum {
   void reset_field() override { DBUG_ASSERT(0); }   // not used
   void update_field() override { DBUG_ASSERT(0); }  // not used
   bool fix_fields(THD *, Item **) override;
+    Item_parallel_safe parallel_safe() const override {
+    // Don't support yet
+    return Item_parallel_safe::Restricted;
+  }
+  Item *new_item(Item_clone_context *context) const override {
+    auto *item = new Item_func_group_concat(
+        context->thd(), const_cast<Item_func_group_concat *>(this));
+    item->table = nullptr;
+    item->original = nullptr;
+    item->tree = nullptr;
+    item->unique_filter = nullptr;
+    item->tmp_table_param = nullptr;
+    return item;
+  }
   bool setup(THD *thd) override;
   void make_unique() override;
   double val_real() override {
@@ -2279,6 +2373,11 @@ class Item_non_framing_wf : public Item_sum {
 
   bool fix_fields(THD *thd, Item **items) override;
 
+  Item_parallel_safe parallel_safe() const override {
+    // Don't support window functions yet
+    return Item_parallel_safe::Restricted;
+  }
+
   bool framing() const override { return false; }
 };
 
@@ -2309,7 +2408,9 @@ class Item_row_number : public Item_non_framing_wf {
   String *val_str(String *) override;
 
   void clear() override;
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_row_number(POS(), m_window);
+  }
   Item_result result_type() const override { return INT_RESULT; }
 
   bool check_wf_semantics1(THD *, SELECT_LEX *,
@@ -2350,6 +2451,10 @@ class Item_rank : public Item_non_framing_wf {
   enum Sumfunctype sum_func() const override {
     return m_dense ? DENSE_RANK_FUNC : RANK_FUNC;
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_rank(POS(), m_dense, m_window);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
 
   bool resolve_type(THD *thd MY_ATTRIBUTE((unused))) override {
     set_data_type_longlong();
@@ -2381,6 +2486,9 @@ class Item_cume_dist : public Item_non_framing_wf {
 
   const char *func_name() const override { return "cume_dist"; }
   enum Sumfunctype sum_func() const override { return CUME_DIST_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_cume_dist(POS(), m_window);
+  }
 
   bool resolve_type(THD *thd MY_ATTRIBUTE((unused))) override {
     set_data_type_double();
@@ -2422,7 +2530,9 @@ class Item_percent_rank : public Item_non_framing_wf {
   ~Item_percent_rank() override;
   const char *func_name() const override { return "percent_rank"; }
   enum Sumfunctype sum_func() const override { return PERCENT_RANK_FUNC; }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_percent_rank(POS(), m_window);
+  }
   bool resolve_type(THD *thd MY_ATTRIBUTE((unused))) override {
     set_data_type_double();
     return false;
@@ -2455,7 +2565,9 @@ class Item_ntile : public Item_non_framing_wf {
 
   const char *func_name() const override { return "ntile"; }
   enum Sumfunctype sum_func() const override { return NTILE_FUNC; }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_ntile(POS(), args[0], m_window);
+  }
   bool resolve_type(THD *thd) override {
     if (args[0]->propagate_type(thd, MYSQL_TYPE_LONGLONG, true)) return true;
     set_data_type_longlong();
@@ -2518,6 +2630,11 @@ class Item_lead_lag : public Item_non_framing_wf {
     return (m_is_lead ? "lead" : "lag");
   }
   enum Sumfunctype sum_func() const override { return LEAD_LAG_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_lead_lag(POS(), m_is_lead, nullptr, m_null_treatment,
+                             m_window);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
 
   bool resolve_type(THD *thd) override;
   bool fix_fields(THD *thd, Item **items) override;
@@ -2594,7 +2711,17 @@ class Item_first_last_value : public Item_sum {
   }
 
   enum Sumfunctype sum_func() const override { return FIRST_LAST_VALUE_FUNC; }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_first_last_value(POS(), m_is_first, args[0],
+                                     m_null_treatment, m_window);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (super::init_from(from, context)) return true;
+    auto *item = down_cast<const Item_first_last_value *>(from);
+    m_hybrid_type = item->m_hybrid_type;
+    if (setup_first_last()) return true;
+    return false;
+  }
   bool resolve_type(THD *thd) override;
   bool fix_fields(THD *thd, Item **items) override;
   void clear() override;
@@ -2660,7 +2787,19 @@ class Item_nth_value : public Item_sum {
 
   const char *func_name() const override { return "nth_value"; }
   enum Sumfunctype sum_func() const override { return NTH_VALUE_FUNC; }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_nth_value(POS(), nullptr, m_from_last, m_null_treatment,
+                              m_window);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (super::init_from(from, context)) return true;
+    auto *item = down_cast<const Item_nth_value *>(from);
+    m_n = item->m_n;
+    m_hybrid_type = item->m_hybrid_type;
+    m_cnt = item->m_cnt;
+    if (setup_nth()) return true;
+    return false;
+  }
   bool resolve_type(THD *thd) override;
   bool fix_fields(THD *thd, Item **items) override;
   bool setup_nth();
@@ -2720,6 +2859,12 @@ class Item_func_grouping : public Item_int_func {
   longlong val_int() override;
   bool aggregate_check_group(uchar *arg) override;
   bool fix_fields(THD *thd, Item **ref) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_grouping(POS(), nullptr);
+  }
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Restricted;
+  }
   void update_used_tables() override;
 };
 
@@ -2758,6 +2903,15 @@ class Item_rollup_sum_switcher final : public Item_sum {
   const char *func_name() const override { return "rollup_sum_switcher"; }
   table_map used_tables() const override { return master()->used_tables(); }
   Item_result result_type() const override { return master()->result_type(); }
+  Item *new_item(Item_clone_context *) const override {
+    // Item_func::init_from() will make args right.
+    List<Item> tmp_args;
+    if (tmp_args.push_back(args[0])) return nullptr;
+    return new Item_rollup_sum_switcher(&tmp_args);
+  }
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Restricted;
+  }
   bool resolve_type(THD *) override {
     set_data_type_from_item(master());
     return false;
@@ -2798,6 +2952,7 @@ class Item_rollup_sum_switcher final : public Item_sum {
     Item *ret = nullptr;
     for (int j = 0; j < m_num_levels; ++j) {
       ret = child(j)->set_arg(thd, i, new_val);
+      if (!ret) return nullptr;
     }
     return ret;  // Return the last one, arbitrarily.
   }

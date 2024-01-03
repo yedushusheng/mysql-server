@@ -512,6 +512,16 @@ void Json_path_cache::reset_cache() {
   m_paths.clear();
 }
 
+bool Json_path_cache::reset_cache(uint size) {
+  assert (size > 0);
+
+  m_arg_idx_to_vector_idx.resize(size);
+  if (m_arg_idx_to_vector_idx.size() < size) return true;
+  reset_cache();
+
+  return false;
+}
+
 /** JSON_*() support methods */
 
 void Item_json_func::cleanup() {
@@ -666,6 +676,19 @@ bool Item_func_json_schema_valid::val_bool() {
   return validation_result;
 }
 
+bool Item_func_json_schema_valid::init_from(const Item *from,
+                                            Item_clone_context *context) {
+  if (Item_bool_func::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func_json_schema_valid *>(from);
+  if (!item->m_cached_schema_validator) return false;
+  String schema_buff;
+  String *schema_string = args[0]->val_str(&schema_buff);
+  if ((m_cached_schema_validator = create_json_schema_validator(
+           context->mem_root(), schema_string->ptr(), schema_string->length(),
+           func_name())) == nullptr)
+    return true;
+  return false;
+}
 bool Item_func_json_schema_validation_report::fix_fields(THD *thd, Item **ref) {
   if (Item_json_func::fix_fields(thd, ref)) return true;
 
@@ -733,6 +756,22 @@ bool Item_func_json_schema_validation_report::val_json(Json_wrapper *wr) {
   return false;
 }
 
+bool Item_func_json_schema_validation_report::init_from(
+    const Item *from, Item_clone_context *context) {
+  if (Item_json_func::init_from(from, context)) return true;
+
+  auto *item = down_cast<const Item_func_json_schema_validation_report *>(from);
+  if (!item->m_cached_schema_validator) return false;
+
+  String schema_buff;
+  String *schema_string = args[0]->val_str(&schema_buff);
+  if ((m_cached_schema_validator = create_json_schema_validator(
+           context->mem_root(), schema_string->ptr(), schema_string->length(),
+           func_name())) == nullptr)
+    return true;
+
+  return false;
+}
 typedef Prealloced_array<size_t, 16> Sorted_index_array;
 
 /**
@@ -2796,6 +2835,21 @@ bool Item_func_json_search::fix_fields(THD *thd, Item **items) {
   return false;
 }
 
+bool Item_func_json_search::init_from(const Item *from,
+                                      Item_clone_context *context) {
+  if (Item_json_func::init_from(from, context)) return true;
+
+  auto *item = down_cast<const Item_func_json_search *>(from);
+  m_cached_ooa = item->m_cached_ooa;
+
+  if (!(m_like_node = item->m_like_node)) return false;
+  if (!(m_like_node = down_cast<Item_func_like *>(m_like_node->clone(context))))
+    return true;
+  m_source_string_item = down_cast<Item_string *>(m_like_node->arguments()[0]);
+
+  return false;
+}
+
 void Item_func_json_search::cleanup() {
   Item_json_func::cleanup();
 
@@ -3674,6 +3728,20 @@ bool Item_func_array_cast::fix_fields(THD *thd, Item **ref) {
   return Item_func::fix_fields(thd, ref);
 }
 
+bool Item_func_array_cast::init_from(const Item *from,
+                                     Item_clone_context *context) {
+  if (Item_func::init_from(from, context)) return true;
+
+  auto *item = down_cast<const Item_func_array_cast *>(from);
+  auto *thd = context->thd();
+  m_is_allowed = item->m_is_allowed;
+  Prepared_stmt_arena_holder ps_arena_holder(thd);
+  m_result_array.reset(::new (thd->mem_root) Json_array);
+  if (m_result_array == nullptr) return true;
+
+  return false;
+}
+
 /**
   Prints the target type of a cast operation (either CAST or JSON_VALUE).
 
@@ -4192,6 +4260,44 @@ Item_func_json_value::Item_func_json_value(
                                cast_type.charset);
 }
 
+Item *Item_func_json_value::new_item(Item_clone_context *) const {
+  Cast_type cast_type;
+  cast_type.target = m_cast_target;
+  cast_type.charset = collation.collation;
+  return new Item_func_json_value(POS(), args[0], args[1], cast_type,
+                                  max_length, decimals, m_on_empty, args[2],
+                                  m_on_error, args[3]);
+}
+
+bool Item_func_json_value::init_from(const Item *from,
+                                     Item_clone_context *context) {
+  if (Item_func::init_from(from, context)) return true;
+  auto *item = down_cast<const Item_func_json_value *>(from);
+  auto *thd = context->thd();
+
+  // See this->fix_fields(), there is no copy constructor, no we need reparse
+  // it.
+  assert(args[1]->basic_const_item());
+  const String *path = args[1]->val_str(nullptr);
+  assert(path != nullptr);
+  if (parse_path(*path, false, &m_path_json)) return true;
+
+  if (item->m_default_empty) {
+    assert(args[2]->basic_const_item());
+    Prepared_stmt_arena_holder ps_arena_holder(thd);
+    m_default_empty = create_json_value_default(thd, args[2]);
+    if (m_default_empty == nullptr) return true;
+  }
+
+  if (item->m_default_error) {
+    assert(args[3]->basic_const_item());
+    Prepared_stmt_arena_holder ps_arena_holder(thd);
+    m_default_error = create_json_value_default(thd, args[3]);
+    if (m_default_error == nullptr) return true;
+  }
+
+  return false;
+}
 Item_func_json_value::~Item_func_json_value() = default;
 
 enum Item_result Item_func_json_value::result_type() const {

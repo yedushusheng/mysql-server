@@ -137,6 +137,13 @@ class Json_path_cache {
     Reset the cache for re-use when a statement is re-executed.
   */
   void reset_cache();
+  /**
+     Like reset_cache(), also resize cache.
+
+     @param[in]  size    Number of arguments. If > 0, will resize the internal
+                         data member.
+   */
+  bool reset_cache(uint size);
 };
 
 /* JSON function support  */
@@ -178,6 +185,14 @@ class Item_json_func : public Item_func {
     set_data_type_json();
   }
 
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (Item_func::init_from(from, context)) return true;
+
+    // Resize cache size after the arg_count determined by base init_from()
+    if (m_path_cache.reset_cache(arg_count)) return true;
+
+    return false;
+  }
   bool resolve_type(THD *) override {
     maybe_null = true;
     return false;
@@ -316,6 +331,10 @@ class Item_func_json_valid final : public Item_int_func {
 
   longlong val_int() override;
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_json_valid(POS(), args[0]);
+  }
+
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_JSON)) return true;
     maybe_null = true;
@@ -336,6 +355,11 @@ class Item_func_json_schema_valid final : public Item_bool_func {
   bool val_bool() override;
 
   longlong val_int() override { return val_bool() ? 1 : 0; }
+
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_json_schema_valid(POS(), args[0], args[1]);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
 
   bool fix_fields(THD *, Item **) override;
 
@@ -363,6 +387,12 @@ class Item_func_json_schema_validation_report final : public Item_json_func {
   }
 
   bool val_json(Json_wrapper *wr) override;
+
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_schema_validation_report(context->thd(), POS(),
+                                                       nullptr);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
 
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_JSON)) return true;
@@ -401,6 +431,18 @@ class Item_func_json_contains final : public Item_int_func {
 
   longlong val_int() override;
 
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_contains(context->thd(), POS(), nullptr);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (Item_int_func::init_from(from, context)) return true;
+
+    // Resize cache size after the arg_count determined by base init_from()
+    if (m_path_cache.reset_cache(arg_count)) return true;
+
+    return false;
+  }
+
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_JSON)) return true;
     if (param_type_is_default(thd, 1, 3)) return true;
@@ -438,6 +480,17 @@ class Item_func_json_contains_path final : public Item_int_func {
 
   longlong val_int() override;
 
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_contains_path(context->thd(), POS(), nullptr);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (Item_int_func::init_from(from, context)) return true;
+
+    if (m_path_cache.reset_cache(arg_count)) return true;
+
+    return false;
+  }
+
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_JSON)) return true;
     if (param_type_is_default(thd, 1, -1)) return true;
@@ -464,6 +517,10 @@ class Item_func_json_type : public Item_str_func {
 
   const char *func_name() const override { return "json_type"; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_json_type(POS(), args[0]);
+  }
+
   bool resolve_type(THD *) override;
 
   String *val_str(String *) override;
@@ -479,6 +536,9 @@ class Item_typecast_json final : public Item_json_func {
   Item_typecast_json(THD *thd, const POS &pos, Item *a)
       : Item_json_func(thd, pos, a) {}
 
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_typecast_json(context->thd(), POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
     return args[0]->propagate_type(thd, MYSQL_TYPE_JSON, false, true);
@@ -506,7 +566,9 @@ class Item_func_json_length final : public Item_int_func {
 
   Item_func_json_length(THD *thd, const POS &pos, Item *a, Item *b)
       : Item_int_func(pos, a, b), m_path_cache(thd, 2) {}
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_json_length(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_JSON)) return true;
     if (param_type_is_default(thd, 1, 2)) return true;
@@ -532,6 +594,10 @@ class Item_func_json_depth final : public Item_int_func {
 
   const char *func_name() const override { return "json_depth"; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_json_depth(POS(), args[0]);
+  }
+
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_JSON)) return true;
     maybe_null = true;
@@ -555,6 +621,10 @@ class Item_func_json_keys : public Item_json_func {
       : Item_json_func(thd, pos, a, b) {}
 
   const char *func_name() const override { return "json_keys"; }
+
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_keys(context->thd(), POS(), args[0]);
+  }
 
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
@@ -580,6 +650,10 @@ class Item_func_json_extract final : public Item_json_func {
       : Item_json_func(thd, pos, a, b) {}
 
   const char *func_name() const override { return "json_extract"; }
+
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_extract(context->thd(), POS(), nullptr);
+  }
 
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
@@ -615,7 +689,9 @@ class Item_func_json_array_append : public Item_json_func {
     }
     return false;
   }
-
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_array_append(context->thd(), POS(), nullptr);
+  }
   bool val_json(Json_wrapper *wr) override;
 };
 
@@ -641,7 +717,9 @@ class Item_func_json_insert : public Item_json_func {
     }
     return false;
   }
-
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_insert(context->thd(), POS(), nullptr);
+  }
   bool val_json(Json_wrapper *wr) override;
 };
 
@@ -667,7 +745,9 @@ class Item_func_json_array_insert : public Item_json_func {
     }
     return false;
   }
-
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_array_insert(context->thd(), POS(), nullptr);
+  }
   bool val_json(Json_wrapper *wr) override;
 };
 
@@ -712,6 +792,11 @@ class Item_func_json_set : public Item_func_json_set_replace {
       : Item_func_json_set_replace(true, std::forward<Args>(parent_args)...) {}
 
   const char *func_name() const override { return "json_set"; }
+
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_set(context->thd(), POS(),
+                                  static_cast<PT_item_list *>(nullptr));
+  }
 };
 
 /**
@@ -724,6 +809,11 @@ class Item_func_json_replace : public Item_func_json_set_replace {
       : Item_func_json_set_replace(false, std::forward<Args>(parent_args)...) {}
 
   const char *func_name() const override { return "json_replace"; }
+
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_replace(context->thd(), POS(),
+                                      static_cast<PT_item_list *>(nullptr));
+  }
 };
 
 /**
@@ -736,6 +826,11 @@ class Item_func_json_array : public Item_json_func {
       : Item_json_func(std::forward<Args>(parent_args)...) {}
 
   const char *func_name() const override { return "json_array"; }
+
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_array(context->thd(), POS(),
+                                    static_cast<PT_item_list *>(nullptr));
+  }
 
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
@@ -757,6 +852,10 @@ class Item_func_json_row_object : public Item_json_func {
       : Item_json_func(thd, pos, a) {}
 
   const char *func_name() const override { return "json_object"; }
+
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_row_object(context->thd(), POS(), nullptr);
+  }
 
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
@@ -798,6 +897,12 @@ class Item_func_json_search : public Item_json_func {
   */
   bool fix_fields(THD *, Item **) override;
 
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_search(context->thd(), POS(),
+                                     static_cast<PT_item_list *>(nullptr));
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
+
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_JSON)) return true;
@@ -822,6 +927,11 @@ class Item_func_json_remove : public Item_json_func {
 
   const char *func_name() const override { return "json_remove"; }
 
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_remove(context->thd(), POS(),
+                                     static_cast<PT_item_list *>(nullptr));
+  }
+
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_JSON)) return true;
@@ -842,6 +952,11 @@ class Item_func_json_merge_preserve : public Item_json_func {
 
   const char *func_name() const override { return "json_merge_preserve"; }
 
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_merge_preserve(
+        context->thd(), POS(), static_cast<PT_item_list *>(nullptr));
+  }
+
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_JSON)) return true;
@@ -859,6 +974,9 @@ class Item_func_json_merge : public Item_func_json_merge_preserve {
  public:
   Item_func_json_merge(THD *thd, const POS &pos, PT_item_list *a);
 
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_merge(context->thd(), POS(), nullptr);
+  }
   bool is_deprecated() const override { return true; }
 };
 
@@ -871,6 +989,10 @@ class Item_func_json_merge_patch : public Item_json_func {
       : Item_json_func(thd, pos, a) {}
 
   const char *func_name() const override { return "json_merge_patch"; }
+
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_json_merge_patch(context->thd(), POS(), nullptr);
+  }
 
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
@@ -892,6 +1014,10 @@ class Item_func_json_quote : public Item_str_func {
       : Item_str_func(pos, a) {}
 
   const char *func_name() const override { return "json_quote"; }
+
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_json_quote(POS(), nullptr);
+  }
 
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1)) return true;
@@ -923,6 +1049,10 @@ class Item_func_json_unquote : public Item_str_func {
 
   const char *func_name() const override { return "json_unquote"; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_json_unquote(POS(),
+                                      static_cast<PT_item_list *>(nullptr));
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1)) return true;
     maybe_null = true;
@@ -942,6 +1072,10 @@ class Item_func_json_pretty final : public Item_str_func {
 
   const char *func_name() const override { return "json_pretty"; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_json_pretty(POS(), args[0]);
+  }
+
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_JSON)) return true;
     set_data_type_string(MAX_BLOB_WIDTH, &my_charset_utf8mb4_bin);
@@ -960,6 +1094,10 @@ class Item_func_json_storage_size final : public Item_int_func {
       : Item_int_func(pos, a) {}
   const char *func_name() const override { return "json_storage_size"; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_json_storage_size(POS(), args[0]);
+  }
+
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_JSON)) return true;
     return false;
@@ -976,6 +1114,10 @@ class Item_func_json_storage_free final : public Item_int_func {
   Item_func_json_storage_free(const POS &pos, Item *a)
       : Item_int_func(pos, a) {}
   const char *func_name() const override { return "json_storage_free"; }
+
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_json_storage_free(POS(), args[0]);
+  }
 
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_JSON)) return true;
@@ -1019,6 +1161,15 @@ class Item_func_array_cast final : public Item_func {
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
   enum Item_result result_type() const override;
+
+  Item *new_item(Item_clone_context *) const override {
+    auto *item = new Item_func_array_cast(POS(), args[0], cast_type, max_length,
+                                          decimals, collation.collation);
+    item->m_is_allowed = m_is_allowed;
+    return item;
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
+
   bool resolve_type(THD *) override;
   Field *tmp_table_field(TABLE *table) override;
   bool fix_fields(THD *thd, Item **ref) override;
@@ -1063,6 +1214,9 @@ class Item_func_json_overlaps : public Item_bool_func {
   enum Functype functype() const override { return JSON_OVERLAPS; }
   bool gc_subst_analyzer(uchar **) override { return true; }
   optimize_type select_optimize(const THD *) override { return OPTIMIZE_KEY; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_json_overlaps(POS(), args[0], args[1]);
+  }
   longlong val_int() override;
   Item *key_item() const override;
   enum_const_item_cache can_cache_json_arg(Item *arg) override {
@@ -1076,6 +1230,9 @@ class Item_func_member_of : public Item_bool_func {
       : Item_bool_func(pos, a, b) {}
   const char *func_name() const override { return "member of"; }
   enum Functype functype() const override { return MEMBER_OF_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_member_of(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 2, MYSQL_TYPE_JSON)) return true;
     args[0]->mark_json_as_scalar();
@@ -1111,6 +1268,9 @@ class Item_func_json_value final : public Item_func {
   ~Item_func_json_value() override;
   const char *func_name() const override { return "json_value"; }
   enum Item_result result_type() const override;
+  Item *new_item(Item_clone_context *) const override;
+  bool init_from(const Item *from, Item_clone_context *context) override;
+
   bool resolve_type(THD *) override;
   bool fix_fields(THD *thd, Item **ref) override;
   void print(const THD *thd, String *str,
