@@ -188,10 +188,11 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
 // MaterializeIterator instead (or perhaps better yet, on the subquery
 // iterator), so that table_iterator is always just a single basic iterator.
 static void AddTableIteratorDescription(const AccessPath *path, JOIN *join,
-                                        vector<string> *description) {
+                                        vector<string> *description,
+                                        std::string *timing_data) {
   const AccessPath *subpath = path;
   for (;;) {
-    ExplainData explain = ExplainAccessPath(subpath, join);
+    ExplainData explain = ExplainAccessPath(subpath, join, timing_data);
     for (string str : explain.description) {
       if (explain.children.size() > 1) {
         // This can happen if e.g. a filter has subqueries in it.
@@ -208,11 +209,12 @@ static void AddTableIteratorDescription(const AccessPath *path, JOIN *join,
 
 static void ExplainMaterializeAccessPath(const AccessPath *path, JOIN *join,
                                          vector<string> *description,
-                                         vector<ExplainData::Child> *children) {
+                                         vector<ExplainData::Child> *children,
+                                         std::string *timing_data) {
   MaterializePathParameters *param = path->materialize().param;
 
-  AddTableIteratorDescription(path->materialize().table_path, join,
-                              description);
+  AddTableIteratorDescription(path->materialize().table_path, join, description,
+                              timing_data);
 
   const bool is_union = param->query_blocks.size() > 1;
   string str;
@@ -732,12 +734,13 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
       children.push_back({path->stream().child});
       break;
     case AccessPath::MATERIALIZE:
-      ExplainMaterializeAccessPath(path, join, &description, &children);
+      ExplainMaterializeAccessPath(path, join, &description, &children,
+                                   timing_data);
       break;
     case AccessPath::MATERIALIZE_INFORMATION_SCHEMA_TABLE:
       AddTableIteratorDescription(
           path->materialize_information_schema_table().table_path, join,
-          &description);
+          &description, timing_data);
       description.push_back("Fill information schema table " +
                             string(path->materialize_information_schema_table()
                                        .table_list->table->alias));
@@ -909,8 +912,8 @@ string PrintQueryPlan(int level, AccessPath *path, JOIN *join,
     return ret + "<not executable by iterator executor>\n";
   }
   // Note:
-  ExplainData explain = ExplainAccessPath(path, join);
-
+  ExplainData explain = ExplainAccessPath(path, join, nullptr);
+  
   if (path->type == AccessPath::PARALLEL_COLLECTOR_SCAN) {
     auto &collector_path = path->parallel_collector_scan();
     join = collector_path.collector->PartialJoin();
