@@ -1451,6 +1451,16 @@ int ha_rocksdb::convert_record_from_storage_format(
   return m_tbl_def->ConvertRecordFromStorageFormat(table,key,value,buf,m_key_requested,m_decoders_vect,&unpack_arg);
 }
 
+// called from pushed node to decode data
+// unpack_arg is set before call us
+int ha_rocksdb::CovertRecordPush(const rocksdb::Slice *const key,
+                                 const rocksdb::Slice *const value,
+                                 uchar *const buf,
+                                 struct UnpackArg *unpack_arg) {
+  return m_tbl_def->ConvertRecordFromStorageFormat(
+      table, key, value, buf, m_key_requested, m_decoders_vect, unpack_arg);
+}
+
 int ha_rocksdb::tdsql_convert_record_from_storage_format(
     const std::string &key, const std::string &value, uchar *const buf) {
   int rc = HA_EXIT_SUCCESS;
@@ -2574,6 +2584,20 @@ static inline bool enable_pk_preload(TABLE* table) {
 
   return false;
 }
+// save pk-part from key(sk) in pk
+// return 1 if fail
+bool ha_rocksdb::GetPKFromSK(myrocks::rocksdb::Slice *key, int index,
+                             tdsql::Slice* pk) {
+  const Rdb_key_def &kd = *m_key_descr_arr[index];
+
+  uint pk_size =
+      kd.get_primary_key_tuple(table, *m_pk_descr, key, m_pk_packed_tuple);
+
+  if (pk_size == RDB_INVALID_KEY_LEN) return 1;
+
+  pk->assign((char*)m_pk_packed_tuple, pk_size);
+  return 0;
+}
 
 int ha_rocksdb::read_row_from_secondary_key(uchar *const buf,
                                             const Rdb_key_def &kd,
@@ -2973,6 +2997,7 @@ int ha_rocksdb::SetupBoundSlice(const Rdb_key_def &kd, uint packed_size,
   return HA_EXIT_SUCCESS;
 }
 
+
 // get next record from iterator, and parse into buf
 int ha_rocksdb::GetAndParseNextRecord(uchar *const buf,int index) {
 
@@ -2994,6 +3019,9 @@ int ha_rocksdb::GetAndParseNextRecord(uchar *const buf,int index) {
     lookup the primary key.
   */
   if (is_pk(index, table, m_tbl_def)) {
+    rc = read_row_from_primary_key(buf);
+  } else if (m_td_scan_it->GetPkPreloadPush()) {
+    LogDebug("pk preload is enabled,use pk to decode data");
     rc = read_row_from_primary_key(buf);
   } else {
     const Rdb_key_def &kd = *m_key_descr_arr[index];
@@ -3396,21 +3424,35 @@ int ha_rocksdb::index_next_same(uchar *buf, const uchar *key, uint) {
   DBUG_RETURN(rc);
 }
 
+void ha_rocksdb::SetPkPreloadPush(int keyno) {
+  if (!current_thd->optimizer_switch_flag(OPTIMIZER_PK_PRELOAD_PUSHDOWN) ||
+      UseOldScan(current_thd)) {
+    pk_preload_push_ = false;
+    return;
+  }
+
+  // when enable pk_preload,we will not call check_index_cond
+  // so do not enable if there is icp condition
+  if (icp_cond_remainder_) {
+    pk_preload_push_ = false;
+    return;
+  }
+
+  bool covered_lookup = table->covering_keys.is_set(keyno) &&
+                        m_key_descr_arr[keyno]->can_cover_lookup();
+  if (covered_lookup)
+    pk_preload_push_ = false;
+  else
+    pk_preload_push_ = true;
+}
+
 void ha_rocksdb::SetProjectionPush() {
 
   m_projection = 0;
 
   if (!tdsql_max_projection_pct) return;
 
-  /*disable projection for multi table sql*/
-  if (!tdsql::IsSelectSingleTable(current_thd)) {
-    return ;
-  }
-
-  if (!is_pk(tdstore_pushed_cond_idx_, table, m_tbl_def)) return;
-
   int read_set_num = 0;
-  m_projection_fields.clear();
 
   for (uint i = 0; i < table->s->fields; i++) {
     const bool field_requested =
@@ -3418,14 +3460,11 @@ void ha_rocksdb::SetProjectionPush() {
         bitmap_is_set(table->read_set, table->field[i]->field_index());
     if (field_requested) {
       read_set_num++;
-      m_projection_fields.push_back(table->field[i]->field_index());
     }
   }
 
   if (read_set_num * 100 / table->s->fields <= tdsql_max_projection_pct)
     m_projection = 1;
-  else
-    m_projection_fields.clear();
 }
 
 void PrintCondition(const char *info, Item *cond) {
@@ -3447,8 +3486,20 @@ void PrintCondition(const char *info, Item *cond) {
 // limit offset push
 void ha_rocksdb::SingleSelectPush(const QEP_TAB *qep_tab, int index) {
   THD *const thd = table->in_use;
+
+  if (!tdsql::IsSelectSingleTable(thd)) {
+    return ;
+  }
+
+  if (is_pk(index, table, m_tbl_def))
+    SetProjectionPush();
+  else
+    SetPkPreloadPush(index);
+
+  LogDebug("set projection:%d,pk_preload:%d", m_projection, pk_preload_push_);
+
   // all cond can push to tdstore or no cond for current table
-  if (!IsSelectSingleTable(thd) || !m_all_pushed) return;
+  if (!m_all_pushed) return;
 
   // count with cond, count without cond is optimized in
   // optimize_aggregated_query already
@@ -3512,6 +3563,14 @@ int ha_rocksdb::engine_push(AQP::Table_access *table_aqp) {
   if (!thd->optimizer_switch_flag(OPTIMIZER_SWITCH_ENGINE_CONDITION_PUSHDOWN))
     return 0;
 
+  if (!ReadWithoutTrans(thd)) return 0;
+
+  if (thd->locked_tables_mode) {
+    /* Under LOCK TABLES we must not use push. */
+    /* libsql will also call open_table for shared mdl, lead to deadlock*/
+    return 0;
+  }
+
   const QEP_TAB *qep_tab = table_aqp->get_qep_tab();
   Item *table_cond = table_aqp->get_condition();
 
@@ -3520,8 +3579,6 @@ int ha_rocksdb::engine_push(AQP::Table_access *table_aqp) {
 
   // see and split which part of cond can push to tdstore
   SetCondPush(table_cond, pushed_idx_cond, index);
-
-  SetProjectionPush();
 
   // for single table select,try more pushdown method
   SingleSelectPush(qep_tab, index);
@@ -3547,9 +3604,6 @@ bool ha_rocksdb::tdsql_clone_pushed(const handler *from,
     return true;
 
   tdstore_pushed_cond_idx_ = ha->tdstore_pushed_cond_idx_;
-
-  if ((m_projection = ha->m_projection))
-    m_projection_fields = ha->m_projection_fields;
 
   limit_offset_cond_pushdown = ha->limit_offset_cond_pushdown;
 
@@ -3702,8 +3756,9 @@ bool ha_rocksdb::skip_unique_check() const {
          (table->correlate_src_table && tdsql::ddl::GetDDLJob(table->in_use));
 }
 
-bool ha_rocksdb::commit_in_the_middle() {
-  return THDVAR(table->in_use, bulk_load);
+bool ha_rocksdb::commit_in_the_middle(THD *thd) {
+  return THDVAR(table->in_use, bulk_load) &&
+         thd->query_plan.get_command() == enum_sql_command::SQLCOM_LOAD;
 }
 
 /* Returns true if given index number is usable*/
@@ -5073,6 +5128,8 @@ void ha_rocksdb::need_update_table_cache(bool async) {
 int ha_rocksdb::info(uint flag) {
   DBUG_ENTER_FUNC();
 
+  THD *thd = current_thd;
+
   if (!table || !table->in_use)
     DBUG_RETURN(HA_EXIT_FAILURE);
 
@@ -5135,7 +5192,11 @@ int ha_rocksdb::info(uint flag) {
 
         need_update_table_cache(true);
       }
-      stats.records = m_table_handler->m_mtcache_count;
+      ha_rows table_rows;
+      if (!thd->variables.range_estimation_by_histogram ||
+          estimate_table_rows_by_histogram(&table_rows))
+        table_rows = m_table_handler->m_mtcache_count;
+      stats.records = table_rows;
       stats.data_file_length = m_table_handler->m_mtcache_size;
 
       if (rocksdb_debug_optimizer_n_rows > 0)
@@ -6236,9 +6297,16 @@ int ha_rocksdb::BuildPushDownPb(uint keyno) {
     return 0;
   }
 
-  if (!tdstore_pushed_cond_ && !m_projection) {
-    LogDebug("no conditon,no projection,no need to push");
+  if (!tdstore_pushed_cond_ && !m_projection && !pk_preload_push_) {
+    LogDebug("no conditon,no projection,no pk_preload_push,no need to push");
     return 0;
+  }
+
+  if ((table->s->primary_key != MAX_KEY && keyno >= table->s->keys) ||
+      (keyno >= m_tbl_def->m_key_count)) {
+    LogError("keyno is not valid:%u,s->keys:%u,m_tbl_def->m_key_count:%u",
+             keyno, table->s->keys, m_tbl_def->m_key_count);
+    return TDSQL_EXIT_FAILURE;
   }
 
   Tdstore_cond_traverse_context ctx;
@@ -6250,8 +6318,17 @@ int ha_rocksdb::BuildPushDownPb(uint keyno) {
   tdstore_pushed_cond_pb_->set_push_down_version(CUR_PUSH_DOWN_VERSION);
   tdstore_pushed_cond_pb_->set_enable_projection(m_projection);
   tdstore_pushed_cond_pb_->set_sql_mode(current_thd->variables.sql_mode);
+
+  tdstore_pushed_cond_pb_->set_enable_pk_preload(pk_preload_push_);
+
+  if (pk_preload_push_) {
+    tdsql::Transaction *tx = current_thd->get_tdsql_trans();
+    tdstore_pushed_cond_pb_->set_trans_id(tx->get_trans_id());
+    tdstore_pushed_cond_pb_->set_begin_ts(tx->get_begin_ts());
+  }
+
   // 1) push field info to tdstore,need this to parse the key part of record
-  FillKeyInfo(table, m_tbl_def, keyno, tdstore_pushed_cond_pb_);
+  FillTableInfo(table, tdstore_pushed_cond_pb_->mutable_table_info(), keyno);
 
   // 2) push cond to tdstore
   if (tdstore_pushed_cond_) {
@@ -6270,18 +6347,8 @@ int ha_rocksdb::BuildPushDownPb(uint keyno) {
     }
   }
 
-  // if use projection,use readset to determine the fields we need
-  if (m_projection) {
-    ctx.value_fields = std::move(m_projection_fields);
-  }
-
-  // 3) push value related field info to tdstore,need this to parse the value
-  // part of record
-  if (!ctx.value_fields.empty()) {
-    FillValueInfo(table, m_tbl_def, ctx.value_fields, tdstore_pushed_cond_pb_);
-  }
-
   return 0;
+
 }
 
 /**
@@ -7654,6 +7721,9 @@ int ha_rocksdb::flush_cache_key(tdsql::Transaction* tx) {
   if (tx->get_batch_record_count() >= THDVAR(table->in_use, bulk_load_size) ||
       tx->batch_cache_size_exceed()) {
     rc = tx->flush_batch_record();
+    if (commit_in_the_middle(table->in_use)) {
+      rc = tx->commit();
+    }
   }
   return rc;
 }
@@ -7874,19 +7944,11 @@ std::string ha_rocksdb::partition_tindex_ids_to_string() {
   dbg_assert_part_elem(table);
 #endif
 
-  std::string indexes_tindex_id_str;
-  size_t cnt = 0;
-  size_t map_sz = m_part_elem->partition_index_tindex_id_map.size();
-  for (const auto& p : m_part_elem->partition_index_tindex_id_map) {
-    indexes_tindex_id_str.append(std::to_string(p.second))
-        .append((++cnt) < map_sz ? "," : "");
-  }
-
   char buff[256];
   snprintf(buff, sizeof(buff),
-           "<[tindex_id:%u][hidden_pk_autoinc_tindex_id:%u][indexes:<%s>]>",
+           "<[tindex_id:%u][hidden_pk_autoinc_tindex_id:%u][indexes:%s]>",
            m_part_elem->tindex_id, m_part_elem->hidden_pk_autoinc_tindex_id,
-           indexes_tindex_id_str.c_str());
+           m_part_elem->partition_index_tindex_id_array.ToString().c_str());
 
   return buff;
 }
@@ -8431,6 +8493,8 @@ int ha_rocksdb::get_row_count_from_key(ha_rows* num_rows, uint index) {
   }
   assert(tx);
 
+  pk_preload_push_ = false;
+
   ret = BuildPushDownPb(index);
 
   if (ret) return ret;
@@ -8560,12 +8624,10 @@ void ha_rocksdb::dbg_assert_part_elem(const TABLE* table) const {
               table->part_info->get_part_elem_by_pos(m_part_pos));
   assert(m_part_elem->tindex_id != tdsql::kInvalidIndexId);
   if (table->s->keys) {
-    assert(!m_part_elem->partition_index_tindex_id_map.empty());
+    assert(!m_part_elem->partition_index_tindex_id_array.Empty());
   }
 
-  for (const auto& p : m_part_elem->partition_index_tindex_id_map) {
-    assert(p.second != tdsql::kInvalidIndexId);
-  }
+  assert(m_part_elem->partition_index_tindex_id_array.Valid());
 }
 #endif
 
@@ -8621,28 +8683,15 @@ int ha_rocksdb::ValidateSchemaStatusBeforePutRecord(
   return TDSQL_EXIT_SUCCESS;
 }
 
-int ha_rocksdb::init_parallel_scan(parallel_scan_handle_t *handle,
-                                   ulong *nranges,
-                                   parallel_scan_desc_t *scan_desc) {
-  *handle = nullptr;
-  // Get a snapshot.
-  int ret = TDSQL_EXIT_SUCCESS;
-  tdsql::Transaction *main_txn = tdsql::get_or_create_tx(table->in_use, ret);
-  if (ret != TDSQL_EXIT_SUCCESS) {
-    // TODO: a meaningful retval
-    return ret;
-  }
-  assert(main_txn);
-  assert(main_txn->get_trans_id());
+int ha_rocksdb::GetParallelScanRegionList(parallel_scan_desc_t *scan_desc,
+                                          RegionList *rgns) {
+  uint32_t keynr = scan_desc->keynr != MAX_KEY
+                       ? scan_desc->keynr
+                       : pk_index(table, m_tbl_def);  // hidden pk;
+  const Rdb_key_def &kd = *m_key_descr_arr[keynr];
 
   // parallel_scan_desc_t denotes the scanned range in SQL layer format
   // and a conversion to storage format is necessary.
-  uint32_t keynr = scan_desc->keynr;
-  if (keynr == MAX_KEY) {
-    keynr = pk_index(table, m_tbl_def);  // hidden pk.
-  }
-  const Rdb_key_def &kd = *m_key_descr_arr[keynr];
-
   // Support TABLE_SCAN and INDEX_SCAN only.
   // Empty min_key and max_key imply TABLE_SCAN and INDEX_SCAN.
   // TODO: Support RANGE_SCAN.
@@ -8680,22 +8729,45 @@ int ha_rocksdb::init_parallel_scan(parallel_scan_handle_t *handle,
       m_scan_it_lower_bound_slice.ToString(false /*hex*/));
   assert(rgn_mgr);
 
-  RegionList rgns;
-  ret = rgn_mgr->GetMultiRegion(
+  int ret = rgn_mgr->GetMultiRegion(
       m_scan_it_lower_bound_slice.ToString(false /*hex*/),
-      m_scan_it_upper_bound_slice.ToString(false /*hex*/), &rgns);
+      m_scan_it_upper_bound_slice.ToString(false /*hex*/), rgns);
   if (ret != TDSQL_EXIT_SUCCESS) {
     LogError(
         "[init_parallel_scan failed][GetMultiRegion failed]"
         "[lower_bound:%s][upper_bound:%s]",
         m_scan_it_lower_bound_slice.ToString(true /*hex*/).data(),
         m_scan_it_upper_bound_slice.ToString(true /*hex*/).data());
-    return ret;
   }
 
-  // Take the concurrency of DDL and parallel query into consideration.
+  return ret;
+}
+
+int ha_rocksdb::init_parallel_scan(parallel_scan_handle_t *handle,
+                                   ulong *nranges,
+                                   parallel_scan_desc_t *scan_desc) {
+  *handle = nullptr;
+  // Get a snapshot.
+  int ret = TDSQL_EXIT_SUCCESS;
+  tdsql::Transaction *main_txn = tdsql::get_or_create_tx(table->in_use, ret);
+  if (ret != TDSQL_EXIT_SUCCESS) {
+    // TODO: a meaningful retval
+    return ret;
+  }
+  assert(main_txn);
+  assert(main_txn->get_trans_id());
+
+  uint32_t keynr = scan_desc->keynr != MAX_KEY
+                       ? scan_desc->keynr
+                       : pk_index(table, m_tbl_def);  // hidden pk;
+  const Rdb_key_def &kd = *m_key_descr_arr[keynr];
+
+  RegionList rgns;
+  if ((ret = GetParallelScanRegionList(scan_desc, &rgns)) != TDSQL_EXIT_SUCCESS)
+    return ret;
+
   main_txn->set_table(table);
-  assert(!tdsql::ddl::GetDDLJob(table->in_use) && !table->correlate_src_table);
+
   if (IsUnReadable((Schema_Status)(table->schema_status))) {
     LogError(
         "[init_parallel_scan failed][IsUnReadable][HA_ERR_TABLE_DEF_CHANGED]"
@@ -8722,7 +8794,10 @@ int ha_rocksdb::init_parallel_scan(parallel_scan_handle_t *handle,
       m_scan_it_lower_bound_slice, m_scan_it_upper_bound_slice,
       kd.get_index_number(),
       is_pk(keynr, table, m_tbl_def) ? table->schema_version
-                                     : table->key_info[keynr].schema_version);
+                                     : table->key_info[keynr].schema_version,
+      ParallelScanTableSchemaInfo{table->s->db, table->s->table_name,
+                                  table->tindex_id, table->schema_version,
+                                  table->schema_status});
   if (!parallel_scan) {
     LogError("[init_parallel_scan failed][OOM]");
     return HA_ERR_OUT_OF_MEM;
@@ -8744,6 +8819,16 @@ int ha_rocksdb::attach_parallel_scan(parallel_scan_handle_t scan_handle) {
   assert(scan_handle);
   assert(!m_parallel_scan_handle);
   m_parallel_scan_handle = static_cast<MyRocksParallelScan *>(scan_handle);
+
+  if ((static_cast<MyRocksParallelScan *>(scan_handle))
+          ->CheckWorkerTable(table)) {
+    LogError(
+        "[attach_parallel_scan failed]"
+        "[MyRocksParallelScan::CheckWorkerTable failed][table:%s.%s]",
+        table->s->db.str, table->s->table_name.str);
+    return HA_ERR_TABLE_DEF_CHANGED;
+  }
+
 #ifndef NDEBUG
   return m_parallel_scan_handle->WorkerHandlerAttach();
 #endif
@@ -8780,6 +8865,20 @@ void ha_rocksdb::end_parallel_scan(
 int ha_rocksdb::restart_parallel_scan(
     parallel_scan_handle_t scan_handle MY_ATTRIBUTE((__unused__))) {
   return HA_ERR_UNSUPPORTED;
+}
+
+int ha_rocksdb::estimate_parallel_scan_ranges(parallel_scan_desc_t *scan_desc,
+                                              ulong *nranges, ha_rows *nrows) {
+  int ret;
+  RegionList rgns;
+  if ((ret = GetParallelScanRegionList(scan_desc, &rgns)) != TDSQL_EXIT_SUCCESS)
+    return ret;
+
+  // Now one range each TDStore Region
+  *nrows = 1;
+  if ((*nranges = rgns.size()) > 0) *nrows = stats.records / *nranges;
+
+  return ret;
 }
 
 std::string rdb_corruption_marker_file_name() {

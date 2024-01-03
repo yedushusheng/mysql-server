@@ -94,6 +94,7 @@ class Cost_model_server;
 
 namespace pq {
 class ParallelPlan;
+class PartialPlan;
 }
 
 struct SARGABLE_PARAM {

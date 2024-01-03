@@ -61,7 +61,7 @@ class Collector {
   mysql_cond_t m_worker_state_cond;
   bool is_ended{false};
 };
-
+std::string ExplainTableParallelScan(JOIN *join, TABLE *table);
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
 }  // namespace pq
 

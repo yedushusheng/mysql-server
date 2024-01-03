@@ -576,9 +576,10 @@ class ha_rocksdb : public my_core::handler {
 
   bool m_projection = false;
 
+  bool pk_preload_push_{false};
+
   //build pushed condition may not used due to other reason
   bool m_really_push = false;
-  std::vector<uint> m_projection_fields;
 
   Item *icp_cond_tdstore_{nullptr};
   Item *icp_cond_remainder_{nullptr};
@@ -768,7 +769,7 @@ class ha_rocksdb : public my_core::handler {
   bool can_use_single_delete(const uint &index) const
       MY_ATTRIBUTE((__warn_unused_result__));
   bool skip_unique_check() const MY_ATTRIBUTE((__warn_unused_result__));
-  bool commit_in_the_middle() MY_ATTRIBUTE((__warn_unused_result__));
+  bool commit_in_the_middle(THD *thd) MY_ATTRIBUTE((__warn_unused_result__));
 
   void update_row_stats(const operation_type &type);
 
@@ -942,6 +943,10 @@ public:
                    const dd::Table *from_table_def,
                    dd::Table *to_table_def) override
       MY_ATTRIBUTE((__warn_unused_result__));
+
+  int CovertRecordPush(const rocksdb::Slice *const key,
+                       const rocksdb::Slice *const value, uchar *const buf,
+                       struct UnpackArg *unpack_arg);
 
   int convert_record_from_storage_format(const rocksdb::Slice *const key,
                                          const rocksdb::Slice *const value,
@@ -1130,8 +1135,8 @@ public:
       tdstore_pushed_cond_ = NULL;
       m_all_pushed = false;
       m_projection = false;
+      pk_preload_push_ = false;
       m_really_push = 0;
-      m_projection_fields.clear();
       handler::cancel_pushed_cond();
       limit_offset_cond_pushdown.Reset();
   }
@@ -1275,6 +1280,8 @@ public:
       MY_ATTRIBUTE((__warn_unused_result__));
 
  public:
+  bool GetPKFromSK(myrocks::rocksdb::Slice *key, int index, tdsql::Slice *pk);
+
   bool projection_is_pushed() override { return m_projection; }
 
   Item *tdsql_push_cond() override { return tdstore_pushed_cond_; }
@@ -1335,6 +1342,8 @@ public:
 
   int rnd_next(uchar *const buf) override
       MY_ATTRIBUTE((__warn_unused_result__));
+
+  void SetPkPreloadPush(int keyno);
 
   int GetAndParseNextRecord(uchar *const buf, int indext);
   int rnd_pos(uchar *const buf, uchar *const pos) override
@@ -1677,6 +1686,9 @@ public:
 
   int restart_parallel_scan(parallel_scan_handle_t scan_handle) override;
 
+  int estimate_parallel_scan_ranges(parallel_scan_desc_t *scan_desc,
+                                    ulong *nranges, ha_rows *nrows) override;
+
   bool parallel_scan_attached() const {
     return m_parallel_scan_handle != nullptr;
   }
@@ -1692,7 +1704,9 @@ public:
   MyRocksParallelScanJob *parallel_scan_job() { return m_parallel_scan_job; }
 
  private:
-  MyRocksParallelScan* m_parallel_scan_handle{nullptr};
+  int GetParallelScanRegionList(parallel_scan_desc_t *scan_desc,
+                                RegionList *rgns);
+  MyRocksParallelScan *m_parallel_scan_handle{nullptr};
   // The running parallel scan job.
   MyRocksParallelScanJob* m_parallel_scan_job{nullptr};
 };
