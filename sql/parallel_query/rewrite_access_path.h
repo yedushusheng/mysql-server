@@ -9,6 +9,52 @@ class JOIN;
 class RowIterator;
 
 namespace pq {
+class PartialPlan;
+
+struct AccessPathChanges {
+  AccessPath *access_path;
+  union {
+    // materialize, temptable_aggregate and stream;
+    struct {
+      TABLE *table;
+      Temp_table_param *temp_table_param;
+    } recreated_temp_table;
+    struct {
+      TABLE *table;
+    } table_path;
+    struct {
+      JOIN *join;
+    } aggregate;
+  } u;
+  void restore();
+};
+
+class AccessPathChangesStore {
+ public:
+  AccessPathChangesStore(JOIN *join)
+      : m_join(join) {}
+  ~AccessPathChangesStore() { restore_changes(); }
+  void register_changes(AccessPathChanges &&changes) {
+    m_changes.push_back(changes);
+  }
+  void set_root_path(AccessPath *path) { m_access_path = path; }
+  void register_collector_path(AccessPath **path) {
+    m_collector_path_pos = path;
+    m_access_path = *path;
+  }
+  void clear() {
+    m_changes.clear();
+    m_access_path = nullptr;
+  }
+
+ private:
+  void restore_changes();
+  std::vector<AccessPathChanges> m_changes;
+  AccessPath **m_collector_path_pos{nullptr};
+  AccessPath *m_access_path{nullptr};
+  JOIN *m_join;
+};
+
 /**
    A access path rewriter to decompose access path tree into parallel plan: a
    plan evaluated on leader and the partial plan which is evaluated on workers.
@@ -71,8 +117,8 @@ class AccessPathRewriter {
 class AccessPathParallelizer : public AccessPathRewriter {
  public:
   AccessPathParallelizer(Item_clone_context *item_clone_context, JOIN *join_in,
-                         JOIN *join_out)
-      : AccessPathRewriter(item_clone_context, join_in, join_out) {}
+                         PartialPlan *partial_plan,
+                         AccessPathChangesStore *path_changes_store);
   AccessPath *parallelize_access_path(AccessPath *in);
   ORDER *MergeSort() const { return merge_sort; }
   void set_collector_access_path(AccessPath *path) {
@@ -82,11 +128,12 @@ class AccessPathParallelizer : public AccessPathRewriter {
   void set_fake_timing_iterator(RowIterator *iterator) {
     m_fake_timing_iterator = iterator;
   }
+  bool has_pushed_limit_offset() const { return m_pushed_limit_offset; }
 
  private:
   bool end_of_out_path() override { return m_collector_path_pos != nullptr; }
   void set_collector_path_pos(AccessPath **path);
-  bool init_table_parallel_scan(TABLE *table, uint keynr, bool reverse);
+  void set_table_parallel_scan(TABLE *table, uint keynr, bool reverse);
   AccessPath **collector_path_pos() const { return m_collector_path_pos; }
 
   // Rewrite routines for each access path
@@ -103,10 +150,13 @@ class AccessPathParallelizer : public AccessPathRewriter {
 
   void post_rewrite_out_path(AccessPath *out) override;
 
+  PartialPlan *m_partial_plan;
   AccessPath *m_collector_access_path{nullptr};
   AccessPath **m_collector_path_pos{nullptr};
   ORDER *merge_sort{nullptr};
   RowIterator *m_fake_timing_iterator{nullptr};
+  bool m_pushed_limit_offset{false};
+  AccessPathChangesStore *m_path_changes_store;
 };
 
 class PartialAccessPathRewriter : public AccessPathRewriter {

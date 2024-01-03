@@ -310,6 +310,26 @@ class PartialItemCloneContext : public Item_clone_context {
   THD *m_leader_thd;
 };
 
+bool Worker::AttachTablesParallelScan() {
+  auto &psinfo = m_query_plan->TablesParallelScan();
+  THD *thd = &m_thd;
+  auto *query_block = thd->lex->query_block;
+  auto *leaf_tables = query_block->leaf_tables;
+
+  // Currently, only support one table
+  assert(leaf_tables && !leaf_tables->next_leaf);
+  TABLE *table = leaf_tables->table;
+  table->parallel_scan_handle = psinfo.table->parallel_scan_handle;
+  int res;
+  if ((res = table->file->attach_parallel_scan(table->parallel_scan_handle)) !=
+      0) {
+    table->file->print_error(res, MYF(0));
+    return true;
+  }
+
+  return false;
+}
+
 bool Worker::PrepareQueryPlan() {
   THD *thd = &m_thd;
   LEX *lex = thd->lex, *orig_lex = m_leader_thd->lex;
@@ -368,6 +388,10 @@ bool Worker::PrepareQueryPlan() {
 
   thd->lex->set_current_query_block(query_block);
   thd->query_plan.set_query_plan(lex->sql_command, lex, false);
+
+  // Now attach tables' parallel scan
+  if (AttachTablesParallelScan()) return true;
+
   return false;
 }
 

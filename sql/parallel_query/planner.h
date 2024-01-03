@@ -9,6 +9,7 @@ struct AccessPath;
 
 namespace pq {
 class Collector;
+class AccessPathChangesStore;
 
 constexpr uint max_parallel_degree_limit = 128;
 constexpr uint default_max_parallel_degree = 0;
@@ -24,15 +25,57 @@ class ItemRefCloneResolver : public Item_ref_clone_resolver {
   Query_block *m_query_block;
 };
 
+struct ParallelScanInfo {
+  TABLE *table;
+  parallel_scan_desc_t scan_desc;
+};
+
+/**
+   Currently, partial plan executor only depends on access path (No JOIN is
+   created).
+*/
 class PartialPlan {
  public:
   Query_block *QueryBlock() const { return m_query_block; }
   void SetQueryBlock(Query_block *query_block) { m_query_block = query_block; }
   Query_expression *QueryExpression() const;
   JOIN *Join() const;
+  void SetTablesParallelScan(TABLE *table, const parallel_scan_desc_t &psdesc);
+  ParallelScanInfo &TablesParallelScan() { return m_parallel_scan_info; }
 
  private:
   Query_block *m_query_block;
+  ParallelScanInfo m_parallel_scan_info;
+};
+
+class SourcePlanChangedStore {
+ public:
+  SourcePlanChangedStore(JOIN *join) : m_join(join) {}
+  ~SourcePlanChangedStore();
+
+  bool save_base_ref_items();
+  bool save_sum_funcs();
+  bool save_fields_and_ref_items();
+  AccessPathChangesStore *create_access_path_changes();
+
+  /**
+    Just need restore query block if parallel query finish otherwise JOIN needs
+    to be restored.
+  */
+  void reset_restore_for_join();
+
+ private:
+  MEM_ROOT *mem_root();
+
+  Item **m_base_ref_items{nullptr};
+  Item_sum **m_sum_funcs{nullptr};
+  size_t m_sum_funcs_length;
+  mem_root_deque<Item *> *m_fields{nullptr};
+  Ref_item_array *m_ref_items;
+  mem_root_deque<Item *> *m_tmp_fields;
+  AccessPathChangesStore *m_access_path_changes{nullptr};
+
+  JOIN *m_join;
 };
 
 class FieldPushdownDesc {
@@ -47,16 +90,16 @@ using FieldsPushdownDesc = mem_root_deque<FieldPushdownDesc>;
 
 class ParallelPlan {
  public:
-  ParallelPlan(MEM_ROOT *mem_root, Query_block *query_block);
-  bool Generate(bool &fallback);
+  ParallelPlan(JOIN *join);
+  ~ParallelPlan();
+  bool Generate();
   void ResetCollector();
   void EndCollector(THD *thd, ha_rows *found_rows);
-  void DestroyCollector(THD *thd);
   bool GenerateAccessPath(Item_clone_context *clone_context);
 
  private:
   THD *thd() const;
-  Query_block *SourceQueryBlock() const { return m_source_query_block; }
+  Query_block *SourceQueryBlock() const;
   Query_block *PartialQueryBlock() const { return m_partial_plan.QueryBlock(); }
   JOIN *SourceJoin() const;
   JOIN *PartialJoin() const;
@@ -73,12 +116,17 @@ class ParallelPlan {
   // Clone ORDER for group list and order by
   bool ClonePartialOrders();
   bool CreateCollector(THD *thd);
+  void DestroyCollector(THD *thd);
 
+  JOIN *m_join;
   mem_root_deque<Item *> m_fields;  // The new item fields create by parallel plan
   Collector *m_collector{nullptr};
   // The query plan template for workers, workers clone plan from this.
   PartialPlan m_partial_plan;
-  Query_block *m_source_query_block;
+  SourcePlanChangedStore m_source_plan_changed;
+  // If there is LIMIT OFFSET and it is pushed to workers, collecting found
+  // rows from workers when workers end.
+  bool m_need_collect_found_rows{false};
 };
 
 bool GenerateParallelPlan(JOIN *join);

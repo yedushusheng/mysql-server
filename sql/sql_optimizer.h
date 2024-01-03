@@ -708,8 +708,9 @@ class JOIN {
   bool with_json_agg;
 
   pq::ParallelPlan *parallel_plan{nullptr};
-  void end_parallel_plan();
-  
+  void end_parallel_plan(bool fill_send_records);
+  void destroy_parallel_plan();
+
   /// True if plan is const, ie it will return zero or one rows.
   bool plan_is_const() const { return const_tables == primary_tables; }
 

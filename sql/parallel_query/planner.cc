@@ -1,6 +1,7 @@
 #include "sql/parallel_query/planner.h"
 
 #include "scope_guard.h"
+#include "sql/error_handler.h"
 #include "sql/filesort.h"
 #include "sql/item.h"
 #include "sql/item_sum.h"
@@ -30,7 +31,7 @@ static void ChooseParallelPlan(JOIN *join) {
   THD *thd = join->thd;
   Opt_trace_context *const trace = &thd->opt_trace;
   Opt_trace_object wrapper(trace);
-  Opt_trace_object trace_choosing(trace, "considering");
+          Opt_trace_object trace_choosing(trace, "considering");
   bool chosen = false;
   const char *cause = nullptr;
   auto trace_set_guard =
@@ -122,9 +123,20 @@ static void ChooseParallelPlan(JOIN *join) {
   }
 
   chosen = true;
-  join->parallel_plan =
-      new (thd->mem_root) ParallelPlan(thd->mem_root, join->query_block);
+  join->parallel_plan = new (thd->mem_root) ParallelPlan(join);
 }
+
+class ParallelPlanGenErrorIgnoreHandler : public Internal_error_handler {
+ public:
+  bool handle_condition(THD *, uint, const char *,
+                        Sql_condition::enum_severity_level *,
+                        const char *msg) override {
+    err_msg = msg;
+    return true;
+  }
+  bool is_error() { return err_msg.size() > 0; }
+  std::string err_msg;
+};
 
 bool GenerateParallelPlan(JOIN *join) {
   THD *thd = join->thd;
@@ -134,15 +146,32 @@ bool GenerateParallelPlan(JOIN *join) {
   Opt_trace_array trace_steps(trace, "steps");
 
   ChooseParallelPlan(join);
-  if (thd->is_error()) return true;
 
   ParallelPlan *parallel_plan = join->parallel_plan;
 
-  if (!parallel_plan) return false;
-  bool fallback;
-  if (parallel_plan->Generate(fallback)) return true;
+  if (parallel_plan) {
+    assert(!thd->is_error());
+    Opt_trace_context *const trace_gen = &thd->opt_trace;
+    Opt_trace_object trace_gen_wrapper(trace_gen);
+    Opt_trace_object trace_generating(trace, "generating");
+    Opt_trace_array trace_gen_steps(trace, "steps");
 
-  if (fallback) join->parallel_plan = nullptr;
+    ParallelPlanGenErrorIgnoreHandler pqplan_gen_error_handler;
+    thd->push_internal_handler(&pqplan_gen_error_handler);
+    if (parallel_plan->Generate()) {
+      Opt_trace_object trace_falback_wrapper(&thd->opt_trace);
+      Opt_trace_object trace_fallback(&thd->opt_trace,
+                                      "fallback_to_serial_plan");
+      if (pqplan_gen_error_handler.is_error())
+        trace_fallback.add_alnum("cause",
+                                 pqplan_gen_error_handler.err_msg.c_str());
+      trace_fallback.add("fallback", true);
+
+      join->destroy_parallel_plan();
+    }
+    thd->pop_internal_handler();
+  }
+
   return false;
 }
 
@@ -177,27 +206,125 @@ Query_expression *PartialPlan::QueryExpression() const {
   return m_query_block->master_query_expression();
 }
 
+MEM_ROOT *SourcePlanChangedStore::mem_root() { return m_join->thd->mem_root; }
+
+bool SourcePlanChangedStore::save_base_ref_items() {
+  assert(!m_base_ref_items);
+  auto *query_block = m_join->query_block;
+  size_t size = query_block->base_ref_items.size();
+  if (!(m_base_ref_items =
+            static_cast<Item **>(mem_root()->Alloc(sizeof(Item *) * size))))
+    return true;
+  memcpy(m_base_ref_items, query_block->base_ref_items.array(),
+         sizeof(Item *) * size);
+  return false;
+}
+
+bool SourcePlanChangedStore::save_sum_funcs() {
+  if (m_sum_funcs) return false;
+
+  size_t size = 0;
+  while (m_join->sum_funcs[size] != nullptr) ++size;
+  if (!(m_sum_funcs =
+            (Item_sum **)mem_root()->Alloc(sizeof(Item_sum *) * size)))
+    return true;
+  m_sum_funcs_length = size;
+  memcpy(m_sum_funcs, m_join->sum_funcs, sizeof(Item_sum *) * size);
+  return false;
+}
+
+bool SourcePlanChangedStore::save_fields_and_ref_items() {
+  const int num_slices =
+      (m_join->need_tmp_before_win || m_join->m_windows.elements > 0)
+          ? REF_SLICE_WIN_1 + m_join->m_windows.elements
+          : 0;
+  if (num_slices > 0 &&
+      !(m_ref_items = mem_root()->ArrayAlloc<Ref_item_array>(num_slices)))
+    return true;
+  if (num_slices > 0 &&
+      !(m_tmp_fields = mem_root()->ArrayAlloc<mem_root_deque<Item *>>(
+            num_slices, mem_root())))
+    return true;
+
+  m_fields = m_join->fields;
+
+  for (int i = 0; i < num_slices; i++) {
+    if (m_join->ref_items[i].is_null()) continue;
+    m_ref_items[i] = m_join->ref_items[i];
+    m_tmp_fields[i] = m_join->tmp_fields[i];
+  }
+
+  return false;
+}
+
+AccessPathChangesStore *SourcePlanChangedStore::create_access_path_changes() {
+  m_access_path_changes = new (mem_root()) AccessPathChangesStore(m_join);
+  return m_access_path_changes;
+}
+
+void SourcePlanChangedStore::reset_restore_for_join() {
+  m_sum_funcs = nullptr;
+  m_fields = nullptr;
+  assert(m_access_path_changes);
+  m_access_path_changes->clear();
+}
+
+SourcePlanChangedStore::~SourcePlanChangedStore() {
+  if (m_base_ref_items) {
+    auto *query_block = m_join->query_block;
+    size_t size = query_block->base_ref_items.size();
+    memcpy(query_block->base_ref_items.array(), m_base_ref_items,
+           sizeof(Item *) * size);
+  }
+
+  if (m_sum_funcs) {
+    assert(m_sum_funcs_length > 0);
+    memcpy(m_join->sum_funcs, m_sum_funcs,
+           sizeof(Item_sum *) * m_sum_funcs_length);
+  }
+
+  if (m_fields) {
+    assert(m_ref_items);
+    m_join->fields = m_fields;
+    const int num_slices = REF_SLICE_WIN_1 + m_join->m_windows.elements;
+    for (int i = 0; i < num_slices; i++) {
+      if (m_ref_items[i].is_null()) continue;
+      m_join->ref_items[i] = m_ref_items[i];
+      m_join->tmp_fields[i] = m_tmp_fields[i];
+    }
+  }
+
+  destroy(m_access_path_changes);
+}
+
 JOIN *PartialPlan::Join() const { return m_query_block->join; }
 
-ParallelPlan::ParallelPlan(MEM_ROOT *mem_root, Query_block *query_block)
-    : m_fields(mem_root), m_source_query_block(query_block) {}
+void PartialPlan::SetTablesParallelScan(TABLE *table,
+                                      const parallel_scan_desc_t &psdesc) {
+  m_parallel_scan_info = {table, psdesc};
+}
+
+ParallelPlan::ParallelPlan(JOIN *join)
+    : m_join(join),
+      m_fields(join->thd->mem_root),
+      m_source_plan_changed(join) {}
+
+ParallelPlan::~ParallelPlan() { DestroyCollector(thd()); }
 
 JOIN *ParallelPlan::PartialJoin() const {
   return m_partial_plan.Join();
 }
 
-JOIN *ParallelPlan::SourceJoin() const {
-  return m_source_query_block->join;
+JOIN *ParallelPlan::SourceJoin() const { return m_join; }
+
+Query_block *ParallelPlan::SourceQueryBlock() const {
+  return m_join->query_block;
 }
 
-THD *ParallelPlan::thd() const {
-  JOIN *join = m_source_query_block->join;
-  assert(join);
-  return join->thd;
-}
+THD *ParallelPlan::thd() const { return m_join->thd; }
 
 bool ParallelPlan::AddPartialLeafTables() {
-  Query_block *source = m_source_query_block;
+  Query_block *source = m_join->query_block;
   Query_block *partial_query_block = PartialQueryBlock();
   TABLE_LIST **last_table = &partial_query_block->leaf_tables;
 
@@ -402,6 +529,9 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
   ItemRefCloneResolver ref_resolver(thd->mem_root, source_query_block);
   OriginItemRewriteContext clone_context(thd, source_query_block, &ref_resolver,
                                          collector_table, partial_fields);
+
+  if (m_source_plan_changed.save_base_ref_items()) return true;
+
   // Process original fields
   for (uint i = 0; i < source_query_block->fields.size(); i++) {
     FieldPushdownDesc &desc = (*fields_pushdown_desc)[i];
@@ -421,8 +551,8 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
     } else {
       assert(desc.pushdown_action == FieldPushdownDesc::Clone);
       if (!(new_item = item->clone(&clone_context))) return true;
-      // XXXXXX change source plan
       if (new_item->type() == Item::SUM_FUNC_ITEM) {
+        if (m_source_plan_changed.save_sum_funcs()) return true;
         Item_sum *item_sum = down_cast<Item_sum *>(new_item);
         item_sum->set_sum_stage(Item_sum::COMBINE_STAGE);
         for (auto **sum_func_ptr = source_join->sum_funcs; *sum_func_ptr;
@@ -434,7 +564,7 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
     }
     if (m_fields.push_back(new_item)) return true;
 
-    // XXXXXX change source plan
+    // Change source plan: update original base_ref_items with new items
     bool found [[maybe_unused]] = false;
     for (size_t j = 0; j < source_query_block->fields.size(); j++) {
       if (source_query_block->base_ref_items[j]->is_identical(new_item)) {
@@ -524,13 +654,13 @@ bool ParallelPlan::GeneratePartialPlan(
   // We don't support blob type in row exchange
   TABLE *table = m_collector->CollectorTable();
   if (table->s->blob_fields > 0) {
-    trace.add_alnum("fallback_cause", "have_blob_fields");
+    trace.add_alnum("fallback_to_serial_plan_cause", "have_blob_fields");
     return true;
   }
   return false;
 }
 
-bool ParallelPlan::Generate(bool &fallback) {
+bool ParallelPlan::Generate() {
   JOIN *source_join = SourceJoin();
   THD *thd = source_join->thd;
   LEX *lex = thd->lex;
@@ -539,28 +669,25 @@ bool ParallelPlan::Generate(bool &fallback) {
   Item_clone_context *partial_clone_context;
   FieldsPushdownDesc fields_pushdown_desc(mem_root);
 
-  Opt_trace_context *const trace = &thd->opt_trace;
-  Opt_trace_object trace_wrapper(trace);
-  Opt_trace_object trace_generating(trace, "generating");
-  Opt_trace_array trace_steps(trace, "steps");
-
-  fallback = false;
-  if (GeneratePartialPlan(&partial_clone_context, &fields_pushdown_desc)) {
-    destroy(m_collector);
-    Opt_trace_object trace_fallback(trace);
-    trace_fallback.add("fallback", true);
-    fallback = true;
-    return false;
-  }
+  if (GeneratePartialPlan(&partial_clone_context, &fields_pushdown_desc)) return true;
 
   if (GenFinalFields(&fields_pushdown_desc)) return true;
 
-  // XXXXXX change source plan
+  if (m_source_plan_changed.save_fields_and_ref_items()) return true;
+
   source_join->fields = &m_fields;
+  // tmp_fields[REF_SLICE_ACTIVE] is not used, here we use it for access path
+  // rewrite.
   source_join->tmp_fields[REF_SLICE_ACTIVE] = m_fields;
   source_join->ref_items[REF_SLICE_ACTIVE] = source_query_block->base_ref_items;
+
   if (!source_join->ref_items[REF_SLICE_SAVED_BASE].is_null())
     source_join->copy_ref_item_slice(REF_SLICE_SAVED_BASE, REF_SLICE_ACTIVE);
+
+  DBUG_EXECUTE_IF("pq_simulate_plan_generate_error", {
+    { my_error(ER_DA_UNKNOWN_ERROR_NUMBER, MYF(0), 3); };
+    return true;
+  });
 
   if (GenerateAccessPath(partial_clone_context)) return true;
 
@@ -568,6 +695,8 @@ bool ParallelPlan::Generate(bool &fallback) {
 
   if (!lex->is_explain() || lex->is_explain_analyze)
     m_collector->PrepareExecution(thd);
+
+  m_source_plan_changed.reset_restore_for_join();
 
   return false;
 }
@@ -585,7 +714,7 @@ bool ParallelPlan::CreateCollector(THD *thd) {
 }
 
 void ParallelPlan::EndCollector(THD *thd, ha_rows *found_rows) {
-  m_collector->End(thd, found_rows);
+  m_collector->End(thd, m_need_collect_found_rows ? found_rows : nullptr);
 }
 
 void ParallelPlan::ResetCollector() { m_collector->Reset(); }
@@ -594,7 +723,6 @@ void ParallelPlan::DestroyCollector(THD *thd) {
   if (!m_collector) return;
   m_collector->Destroy(thd);
   destroy(m_collector);
-  m_collector = nullptr;
 }
 
 AccessPath *ParallelPlan::CreateCollectorAccessPath(THD *thd) {
@@ -604,11 +732,14 @@ AccessPath *ParallelPlan::CreateCollectorAccessPath(THD *thd) {
 
 bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   JOIN *source_join = SourceJoin();
-  JOIN *partial_join = PartialJoin();
   THD *thd = source_join->thd;
   AccessPath *partial_path;
   AccessPath *parallelized_path;
-  AccessPathParallelizer rewriter(clone_context, source_join, partial_join);
+  auto *access_path_changes =
+      m_source_plan_changed.create_access_path_changes();
+  if (!access_path_changes) return true;
+  AccessPathParallelizer rewriter(clone_context, source_join, &m_partial_plan,
+                                  access_path_changes);
   Opt_trace_object trace_wrapper(&thd->opt_trace);
   Opt_trace_object trace(&thd->opt_trace, "access_path_rewriting");
 
@@ -623,6 +754,7 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   partial_path = rewriter.out_path();
   if (source_join->root_access_path() != parallelized_path) {
     CopyBasicProperties(*partial_path, rewriter.collector_access_path());
+    access_path_changes->set_root_path(source_join->root_access_path());
     source_join->set_root_access_path(parallelized_path);
   }
 
@@ -630,7 +762,15 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
       m_collector->CreateMergeSort(source_join, rewriter.MergeSort()))
     return true;
 
-  partial_join->set_root_access_path(partial_path);
+  if (rewriter.has_pushed_limit_offset()) m_need_collect_found_rows = true;
+
+  PartialJoin()->set_root_access_path(partial_path);
+
+  DBUG_EXECUTE_IF("pq_simulate_access_path_generate_error", {
+    { my_error(ER_DA_UNKNOWN_ERROR_NUMBER, MYF(0), 4); };
+    return true;
+  });
+
   return false;
 }
 

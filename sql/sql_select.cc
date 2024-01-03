@@ -1798,7 +1798,7 @@ void JOIN::destroy() {
         table->duplicate_removal_iterator = nullptr;
       }
   }
-  if (parallel_plan) parallel_plan->DestroyCollector(thd);
+  destroy_parallel_plan();
 
   // The parallel query also depends on this cleanup because we recreate
   // temporary table on leader furthermore there is no qep_tab in partial plan.
