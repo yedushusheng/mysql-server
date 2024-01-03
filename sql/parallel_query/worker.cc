@@ -239,6 +239,8 @@ void Worker::ThreadMainEntry() {
 
   THD_STAGE_INFO(thd, stage_starting);
 
+  thd->mdl_context.join_lock_group(&m_leader_thd->mdl_context);
+
   thd->m_digest = &thd->m_digest_state;
   thd->m_digest->reset(thd->m_token_array, get_max_digest_length());
   THD_STAGE_INFO(thd, stage_starting);

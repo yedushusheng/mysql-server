@@ -1480,6 +1480,21 @@ class MDL_context {
 
   void init(MDL_context_owner *arg) { m_owner = arg; }
 
+  MDL_context *get_group_leader() const { return m_group_leader; }
+  void init_lock_group() {
+    // It could be called multiple times if there are more one parallel query
+    // block
+    if (m_group_leader) return;
+    materialize_fast_path_locks();
+    m_group_leader = this;
+  }
+  void join_lock_group(MDL_context *leader) { m_group_leader = leader; }
+  void deinit_lock_group() {
+    // It could be called multiple times, fortunately all calls should be at the
+    // end of query.
+    if (m_group_leader) m_group_leader = nullptr;
+  }
+
   void set_needs_thr_lock_abort(bool needs_thr_lock_abort) {
     /*
       @note In theory, this member should be modified under protection
@@ -1593,6 +1608,7 @@ class MDL_context {
   MDL_ticket_store m_ticket_store;
 
   MDL_context_owner *m_owner;
+  MDL_context *m_group_leader;
   /**
     true -  if for this context we will break protocol and try to
             acquire table-level locks while having only S lock on
