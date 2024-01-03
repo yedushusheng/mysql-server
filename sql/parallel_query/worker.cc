@@ -355,6 +355,11 @@ bool Worker::PrepareQueryPlan() {
   auto *query_result = new (thd->mem_root) Query_result_to_collector(
       &m_row_exchange_writer, &from_join->tmp_table_param);
 
+  DBUG_EXECUTE_IF("pq_simulate_worker_prepare_query_plan_error_1", {
+    my_error(ER_DA_UNKNOWN_ERROR_NUMBER, MYF(0), 2);
+    query_result = nullptr;
+  });
+
   if (!query_result) {
     NotifyAbort();
     return true;
@@ -373,6 +378,11 @@ bool Worker::PrepareQueryPlan() {
   if (open_tables_for_query(thd, lex->query_tables, 0) ||
       lock_tables(thd, lex->query_tables, lex->table_count, 0))
     return true;
+
+  DBUG_EXECUTE_IF("pq_simulate_worker_prepare_query_plan_error_2", {
+    my_error(ER_DA_UNKNOWN_ERROR_NUMBER, MYF(0), 3);
+    return true;
+  });
 
   auto *unit = lex->unit,
                    *from_unit = m_query_plan->QueryExpression();
