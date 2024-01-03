@@ -2316,7 +2316,8 @@ class SELECT_LEX {
   /// Hidden items added during optimization
   /// @note that using this means we modify resolved data during optimization
   uint hidden_items_from_optimization{0};
-
+  bool forbid_parallel_by_upper_query_block{false};
+  
  private:
   friend class SELECT_LEX_UNIT;
   friend class Condition_context;
