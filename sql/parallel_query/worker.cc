@@ -80,7 +80,7 @@ class Query_result_to_collector : public Query_result_interceptor {
                     nullptr, false))
       return true;
 
-    auto res = m_row_exchange_writer->Write(m_table->record[0],
+    auto res = m_row_exchange_writer->Write(thd, m_table->record[0],
                                             (size_t)m_table->s->reclength);
 
     assert(res != RowExchange::Result::ERROR &&
@@ -121,10 +121,10 @@ bool Worker::Init() {
   debug_sync_set_eval_id(&m_thd, m_id);
   debug_sync_clone_actions(&m_thd, m_leader_thd);
 #endif
-
+  // Allocate all communication facilities in leader's thd mem_root
   if (!(m_message_queue = new (m_leader_thd->mem_root)
             MemMessageQueue(message_queue_ring_size)) ||
-      m_message_queue->Init(m_leader_thd) ||
+      m_message_queue->Init(m_leader_thd->mem_root) ||
       m_row_exchange.Init(m_leader_thd->mem_root,
                           [this](uint) { return m_message_queue; }) ||
       m_row_exchange_writer.Init(m_leader_thd, nullptr))

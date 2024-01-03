@@ -6,7 +6,9 @@
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
 
+class MEM_ROOT;
 class THD;
+
 namespace pq {
 class MessageQueueEvent {
  public:
@@ -52,7 +54,7 @@ class MessageQueue {
 
   inline void SetEvent(MessageQueueEvent *event) { m_event = event; }
 
-  virtual bool Init(THD *thd) = 0;
+  virtual bool Init(MEM_ROOT *mem_root) = 0;
   inline void NotifyPeer() { m_event->Set(); }
   inline void Wait(THD *thd) { m_event->Wait(thd); }
 
@@ -75,7 +77,7 @@ class MemMessageQueue : public MessageQueue {
   friend class MemMessageQueueHandle;
   MemMessageQueue(std::size_t queue_size);
   virtual ~MemMessageQueue(){}
-  bool Init(THD *thd) override;
+  bool Init(MEM_ROOT *mem_root) override;
 
  protected:
   void HandleDetach() override {
@@ -83,11 +85,11 @@ class MemMessageQueue : public MessageQueue {
   }
   void IncreaseBytesWritten(std::size_t n);
   void IncreaseBytesRead(std::size_t n);
-  Result SendBytes(std::size_t nbytes, const void *data, bool nowait,
-                   std::size_t *bytes_written, THD *thd);
-  Result ReceiveBytes(std::size_t bytes_needed, bool nowait,
+  Result SendBytes(THD *thd, std::size_t nbytes, const void *data, bool nowait,
+                   std::size_t *bytes_written);
+  Result ReceiveBytes(THD *thd, std::size_t bytes_needed, bool nowait,
                       std::size_t *nbytesp, void **datap,
-                      std::size_t *consume_pending, THD *thd);
+                      std::size_t *consume_pending);
 
   std::size_t Size() { return m_ring_size; }
 
@@ -99,13 +101,13 @@ class MemMessageQueue : public MessageQueue {
 
 class MessageQueueHandle {
  public:
-  MessageQueueHandle(MessageQueue *smq, THD *thd) : m_queue(smq), m_thd(thd) {}
+  MessageQueueHandle(MessageQueue *smq) : m_queue(smq) {}
   MessageQueueHandle(const MessageQueueHandle &) = delete;
   virtual ~MessageQueueHandle(){}
-  virtual MessageQueue::Result Send(std::size_t nbytes, const void *data,
-                                    bool nowait) = 0;
-  virtual MessageQueue::Result Receive(std::size_t *nbytesp, void **datap,
-                                       bool nowait) = 0;
+  virtual MessageQueue::Result Send(THD *thd, std::size_t nbytes,
+                                    const void *data, bool nowait) = 0;
+  virtual MessageQueue::Result Receive(THD *thd, std::size_t *nbytesp,
+                                       void **datap, bool nowait) = 0;
   /**
     Notify counterparty that we're detaching from shared message queue.
   */
@@ -120,7 +122,6 @@ class MessageQueueHandle {
 
  protected:
   MessageQueue *m_queue;
-  THD *m_thd;
   /**
     The flag is set which means sender/receiver does not send/receive messages
     any more.
@@ -132,9 +133,9 @@ class MemMessageQueueHandle : public MessageQueueHandle {
   using MessageQueueHandle::MessageQueueHandle;
 
  public:
-  MessageQueue::Result Send(std::size_t nbytes, const void *data,
+  MessageQueue::Result Send(THD *thd, std::size_t nbytes, const void *data,
                             bool nowait) override;
-  MessageQueue::Result Receive(std::size_t *nbytesp, void **datap,
+  MessageQueue::Result Receive(THD *thd, std::size_t *nbytesp, void **datap,
                                bool nowait) override;
 
  private:
