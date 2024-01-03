@@ -7062,6 +7062,14 @@ static Sys_var_bool Sys_replication_sender_observe_commit_only(
     DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr),
     ON_UPDATE(nullptr));
 
+static Sys_var_uint Sys_max_parallel_workers(
+    "max_parallel_workers",
+    "Sets the maximum number of parallel workers that can be active at one "
+    "time.",
+    GLOBAL_VAR(pq::max_parallel_workers), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, 10000), DEFAULT(pq::default_max_parallel_workers),
+    BLOCK_SIZE(1));
+
 static Sys_var_uint Sys_max_parallel_degree(
     "max_parallel_degree",
     "Define maximum active parallel degree for one query. "
@@ -7069,3 +7077,19 @@ static Sys_var_uint Sys_max_parallel_degree(
     HINT_UPDATEABLE SESSION_VAR(max_parallel_degree), CMD_LINE(REQUIRED_ARG),
     VALID_RANGE(0, max_parallel_degree_limit),
     DEFAULT(pq::default_max_parallel_degree), BLOCK_SIZE(1));
+
+static Sys_var_double Sys_parallel_plan_cost_threshold(
+    "parallel_plan_cost_threshold",
+    "Plan cost threshold for parallel plan. When plan cost is greater or equal "
+    "to this value, parallel plan will be considered.",
+    HINT_UPDATEABLE SESSION_VAR(parallel_plan_cost_threshold),
+    CMD_LINE(REQUIRED_ARG), VALID_RANGE(0, DBL_MAX), DEFAULT(50000));
+
+static Sys_var_ulonglong Sys_parallel_scan_records_threshold(
+    "parallel_scan_records_threshold",
+    "Access records threshold for parallel scan. When the number of table "
+    "access records is greater or equal to this value, parallel scan of this table"
+    "will be considered.",
+    HINT_UPDATEABLE SESSION_VAR(parallel_scan_records_threshold),
+    CMD_LINE(REQUIRED_ARG), VALID_RANGE(0, ULLONG_MAX), DEFAULT(10000),
+    BLOCK_SIZE(1));
