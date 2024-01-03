@@ -675,6 +675,8 @@ static bool clone_hander_pushed_cond(Item_clone_context *context, uint keyno,
     assert(remained_cond == nullptr);
   }
 
+  if (table->file->tdsql_clone_pushed(from->file, context)) return true;
+
   return false;
 }
 

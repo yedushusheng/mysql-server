@@ -74,6 +74,7 @@ class Alter_info;
 class Create_field;
 class Field;
 class Item;
+class Item_clone_context;
 class JOIN;
 class Json_dom;
 class Partition_handler;
@@ -5567,6 +5568,13 @@ class handler {
     pushed_idx_cond = nullptr;
     pushed_idx_cond_keyno = MAX_KEY;
     in_range_check_pushed_down = false;
+  }
+
+  /// Clone tdsql pushed plan stuff, e.g. condition, projection
+  virtual bool tdsql_clone_pushed(const handler *from MY_ATTRIBUTE((unused)),
+                                  Item_clone_context *context
+                                      MY_ATTRIBUTE((unused))) {
+    return false;
   }
 
   /**

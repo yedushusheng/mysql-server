@@ -15,6 +15,7 @@
 #include "sql/sql_join_buffer.h"
 #include "sql/sql_optimizer.h"
 #include "sql/sql_tmp_table.h"
+#include "sql/tdsql/trans.h"
 
 namespace pq {
 /// Maximum parallel workers of this instance is allowed
@@ -120,9 +121,9 @@ static void ChooseParallelPlan(JOIN *join) {
     cause = "disabled_by_zero_of_max_parallel_workers";
     return;
   }
-  // Only support SELECT command
-  if (thd->lex->sql_command != SQLCOM_SELECT) {
-    cause = "not_supported_sql_command";
+  // SELECT command is checked inside tdsql::ReadWithoutTrans()
+  if (!tdsql::ReadWithoutTrans(thd)) {
+    cause = "not_supported_transaction_with_participants";
     return;
   }
 
