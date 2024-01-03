@@ -106,8 +106,9 @@ static bool IsAccessRangeSupported(QEP_TAB *qt) {
 
 static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
   auto typ = qt->type();
-  // JT_EQ_REF used by subselect or join between tables
-  if (typ < JT_EQ_REF || typ > JT_REF_OR_NULL || typ == JT_FT)
+  // Temporarily disable range scan and ref scan, plan restore this if parallel
+  // scan is ready.
+  if (typ != JT_ALL && typ != JT_INDEX_SCAN)
     return "table_access_type_is_not_supported";
 
   if (qt->type() == JT_RANGE && !IsAccessRangeSupported(qt))
