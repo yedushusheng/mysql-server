@@ -128,7 +128,7 @@ class RowIterator {
   // or just ignore it. The right behavior depends on the iterator.
   virtual void UnlockRow() = 0;
 
-  virtual std::string TimingString() const {
+  virtual std::string TimingString(bool binary [[maybe_unused]] = false) const {
     // Valid for TimingIterator only.
     DBUG_ASSERT(false);
     return "";

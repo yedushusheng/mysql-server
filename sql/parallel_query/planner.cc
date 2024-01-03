@@ -614,7 +614,9 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
 
   assert(source_join->root_access_path());
   rewriter.set_collector_access_path(CreateCollectorAccessPath(thd));
-
+  if (thd->lex->is_explain_analyze) {
+    rewriter.set_fake_timing_iterator(NewFakeTimingIterator(thd, m_collector));
+  }
   if (!(parallelized_path =
             rewriter.parallelize_access_path(source_join->root_access_path())))
     return true;

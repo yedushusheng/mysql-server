@@ -34,6 +34,10 @@ class Collector {
   uint NumWorkers() const { return m_workers.size(); }
   bool CreateMergeSort(JOIN *join, ORDER *merge_order);
   Filesort *MergeSort() const { return m_merge_sort; }
+  template <class Func>
+  void ForEachWorker(Func &&func) {
+    for (auto *worker : m_workers) func(worker);
+  }
 
  private:
   bool CreateRowExchange(MEM_ROOT *mem_root);
@@ -55,6 +59,8 @@ class Collector {
   mysql_mutex_t m_worker_state_lock;
   mysql_cond_t m_worker_state_cond;
 };
+
+RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
 }  // namespace pq
 
 class CollectorIterator final : public TableRowIterator {

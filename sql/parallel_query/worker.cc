@@ -3,6 +3,7 @@
 #include "sql/debug_sync.h"  // DEBUG_SYNC
 #include "sql/item.h"
 #include "sql/item_sum.h"
+#include "sql/join_optimizer/explain_access_path.h"
 #include "sql/mysqld.h"
 #include "sql/parallel_query/message_queue.h"
 #include "sql/parallel_query/planner.h"
@@ -130,6 +131,8 @@ bool Worker::Init() {
                           [this](uint) { return m_message_queue; }) ||
       m_row_exchange_writer.Init(m_leader_thd, nullptr))
     return true;
+  if (m_leader_thd->lex->is_explain_analyze)
+    m_query_plan_timing_data.reset(new std::string);
 
   return false;
 }
@@ -370,6 +373,7 @@ bool Worker::PrepareQueryPlan() {
 
 void Worker::ExecuteQuery() {
   THD *thd = &m_thd;
+  auto *lex = thd->lex;
 
   DEBUG_SYNC(thd, "before_pqworker_exec_query");
 
@@ -378,7 +382,20 @@ void Worker::ExecuteQuery() {
     goto cleanup;
   }
 
-  thd->lex->unit->execute(thd);
+  if (lex->unit->execute(thd)) {
+    assert(thd->is_error() || thd->killed);
+    goto cleanup;
+  }
+
+  if (lex->is_explain_analyze) {
+    auto *unit = lex->unit;
+    auto *join = unit->first_query_block()->join;
+
+    assert(!unit->is_union());
+
+    PrintQueryPlanTiming(unit->root_access_path(), join, true,
+                         m_query_plan_timing_data.get());
+  }
 
   DEBUG_SYNC(thd, "after_pqworker_exec_query");
 

@@ -1,5 +1,6 @@
 #include "sql/parallel_query/executor.h"
 
+#include <chrono>
 #include "sql/debug_sync.h"  // DEBUG_SYNC
 #include "sql/filesort.h"
 #include "sql/parallel_query/planner.h"
@@ -297,6 +298,158 @@ JOIN *Collector::PartialJoin() const {
 
 AccessPath *Collector::PartialRootAccessPath() const {
   return partial_plan()->Join()->root_access_path();
+}
+
+using duration_type = std::chrono::steady_clock::time_point::duration;
+static std::string::size_type ReadOneIteratorTimingData(
+    const char *timing_data, std::string::size_type cursor, uint64_t *num_rows,
+    uint64_t *num_init_calls, duration_type *time_spent_in_first_row,
+    duration_type *time_spent_in_other_rows) {
+  auto offset = 0;
+  auto size_of_var = sizeof num_rows;
+  memcpy(num_rows, timing_data + cursor, size_of_var);
+  offset += size_of_var;
+  memcpy(num_init_calls, timing_data + cursor + offset, size_of_var);
+  offset += size_of_var;
+  size_of_var = sizeof time_spent_in_first_row;
+  memcpy(time_spent_in_first_row, timing_data + cursor + offset, size_of_var);
+  offset += size_of_var;
+  memcpy(time_spent_in_other_rows, timing_data + cursor + offset, size_of_var);
+  offset += size_of_var;
+
+  return offset;
+}
+
+static std::pair<std::string *, std::string *> GetOutputWorkersTimingData(
+    Collector *collector) {
+  std::string *min_worker_timing_data{nullptr},
+      *max_worker_timing_data{nullptr};
+  duration_type min_total_rows_spent{duration_type::max()},
+      max_total_rows_spent{duration_type::zero()};
+
+  collector->ForEachWorker([&](Worker *worker) {
+    auto *timing_data = worker->QueryPlanTimingData();
+    // Only needs check root iterator
+    uint64 num_rows, num_init_calls;
+    duration_type time_spent_in_first_row, time_spent_in_other_rows;
+    ReadOneIteratorTimingData(timing_data->c_str(), 0, &num_rows,
+                              &num_init_calls, &time_spent_in_first_row,
+                              &time_spent_in_other_rows);
+    auto total_all_rows_spent =
+        time_spent_in_first_row + time_spent_in_other_rows;
+
+    if (total_all_rows_spent < min_total_rows_spent) {
+      min_worker_timing_data = timing_data;
+      min_total_rows_spent = total_all_rows_spent;
+    }
+
+    if (total_all_rows_spent > max_total_rows_spent) {
+      max_worker_timing_data = timing_data;
+      max_total_rows_spent = total_all_rows_spent;
+    }
+  });
+
+  return {min_worker_timing_data, max_worker_timing_data};
+}
+
+/**
+   A fake iterator for parallel partial plan timing, all partial access paths
+   share same object. It just forwards to collector.
+ */
+class FakeTimingIterator : public RowIterator {
+ public:
+  FakeTimingIterator(THD *thd, Collector *collector)
+      : RowIterator(thd), m_collector(collector) {}
+  /**
+    This class just for EXPLAIN ANALYZE, these methods should not be called.
+  */
+  bool Init() override {
+    assert(false);
+    return false;
+  }
+  int Read() override {
+    assert(false);
+    return -1;
+  }
+  void SetNullRowFlag(bool) override { assert(false); }
+  void UnlockRow() override { assert(false); }
+
+  /**
+    Partial plan is executed by multiple workers, Here output minimum
+    last_row_spent and maximum last_row_sent worker's timing data.
+  */
+  std::string TimingString(bool) const override {
+    uint64_t num_rows1, num_rows2, num_init_calls1, num_init_calls2;
+    duration_type time_spent_in_first_row1, time_spent_in_first_row2,
+        time_spent_in_other_rows1, time_spent_in_other_rows2;
+
+    if (m_timing_data_cursor == 0)
+      const_cast<FakeTimingIterator *>(this)->m_timing_data =
+          GetOutputWorkersTimingData(m_collector);
+
+    ReadOneIteratorTimingData(m_timing_data.first->c_str(),
+                              m_timing_data_cursor, &num_rows1,
+                              &num_init_calls1, &time_spent_in_first_row1,
+                              &time_spent_in_other_rows1);
+
+    const_cast<FakeTimingIterator *>(this)->m_timing_data_cursor +=
+        ReadOneIteratorTimingData(m_timing_data.second->c_str(),
+                                  m_timing_data_cursor, &num_rows2,
+                                  &num_init_calls2, &time_spent_in_first_row2,
+                                  &time_spent_in_other_rows2);
+
+    char buf[1024];
+    if (num_init_calls1 == 0 && num_init_calls2 == 0) {
+      snprintf(buf, sizeof(buf), "(never executed)");
+      return buf;
+    }
+
+    double first_row_ms1 =
+        std::chrono::duration<double>(time_spent_in_first_row1).count() * 1e3;
+    double last_row_ms1 =
+        std::chrono::duration<double>(time_spent_in_first_row1 +
+                                      time_spent_in_other_rows1)
+            .count() *
+        1e3;
+    double first_row_ms2 =
+        std::chrono::duration<double>(time_spent_in_first_row2).count() * 1e3;
+    double last_row_ms2 =
+        std::chrono::duration<double>(time_spent_in_first_row2 +
+                                      time_spent_in_other_rows2)
+            .count() *
+        1e3;
+    if (m_collector->NumWorkers() == 1)
+      snprintf(buf, sizeof(buf),
+               "(actual time=%.3f..%.3f rows=%lld loops=%" PRIu64 ")",
+               first_row_ms2 / num_init_calls2, last_row_ms2 / num_init_calls2,
+               llrintf(static_cast<double>(num_rows2) / num_init_calls2),
+               num_init_calls2);
+    else
+      snprintf(
+          buf, sizeof(buf),
+          "(actual time=%.3f..%.3f/%.3f..%.3f rows=%lld/%lld loops=%" PRIu64
+          "/%" PRIu64 ")",
+          num_init_calls1 > 0 ? first_row_ms1 / num_init_calls1 : 0,
+          first_row_ms2 / num_init_calls2,
+          num_init_calls1 > 0 ? last_row_ms1 / num_init_calls1 : 0,
+          last_row_ms2 / num_init_calls2,
+          num_init_calls1 > 0
+              ? llrintf(static_cast<double>(num_rows1) / num_init_calls1)
+              : 0,
+          llrintf(static_cast<double>(num_rows2) / num_init_calls2),
+          num_init_calls1, num_init_calls2);
+
+    return buf;
+  }
+
+ private:
+  Collector *m_collector;
+  std::string::size_type m_timing_data_cursor{0};
+  std::pair<std::string *, std::string *> m_timing_data;
+};
+
+RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector) {
+  return new (thd->mem_root) FakeTimingIterator(thd, collector);
 }
 }  // namespace pq
 

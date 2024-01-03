@@ -1,6 +1,7 @@
 #ifndef PARALLEL_QUERY_WORKER_H
 #define PARALLEL_QUERY_WORKER_H
 #include <sys/types.h>
+#include <memory>
 #include "sql/parallel_query/row_exchange.h"
 #include "sql/sql_class.h"
 
@@ -34,6 +35,7 @@ class Worker {
 
   pq::MessageQueue *MessageQueue() const { return m_message_queue; }
   Diagnostics_area *stmt_da(ha_rows *found_rows, ha_rows *examined_rows);
+  std::string *QueryPlanTimingData() { return m_query_plan_timing_data.get(); }
 #if !defined(NDEBUG)
   CSStackClone *dbug_cs_stack_clone;
 #endif
@@ -50,6 +52,8 @@ class Worker {
   THD m_thd;  // Current worker's THD
   uint m_id;
   PartialPlan *m_query_plan;
+
+  std::unique_ptr<std::string> m_query_plan_timing_data;
 
   /// Communication facilities with leader
   RowExchange m_row_exchange{1};
