@@ -91,14 +91,14 @@ class MergeSort {
   /// For first time fetch, populate PQ with one record from each channel.
   bool Populate(THD *thd);
   /// Read one row of sorted data
-  Result Read(THD *thd, uchar **buf);
+  Result Read(uchar **buf);
 
  private:
   /**
     Fill element buffer with records from corresponding channel. This function
     should be called when the element buffer is emptied
   */
-  Result FillElementBuffer(THD *thd, MergeSortElement *elem,
+  Result FillElementBuffer(MergeSortElement *elem,
                            bool block_for_first);
 
   MergeSortSource *m_source;
@@ -123,7 +123,7 @@ class MergeSortSource {
   virtual void Wait(THD *thd) = 0;
   /// Read data from channel @param index, returned @param data and size into
   /// @param bytes, can do a block read if @param no_wait is true.
-  virtual MergeSort::Result ReadFromChannel(THD *thd, uint index,
+  virtual MergeSort::Result ReadFromChannel(uint index,
                                             size_t *nbytes, void **data,
                                             bool no_wait) = 0;
 };

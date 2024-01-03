@@ -115,19 +115,19 @@ bool Collector::InitParallelScan() {
 }
 
 bool Collector::Init(THD *thd) {
+  if (CreateRowExchange(thd->mem_root)) return true;
+
   // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
   // you should use m_id - 1
   uint wid = 1;
   for (auto *&worker : m_workers) {
     worker = new (thd->mem_root) Worker(
         thd, wid++, partial_plan(), &m_worker_state_lock, &m_worker_state_cond);
-    if (!worker || worker->Init()) return true;
+    if (!worker || worker->Init(m_row_exchange_reader->Event())) return true;
   }
 
-  if (CreateRowExchange(thd->mem_root)) return true;
-
   if (m_row_exchange->Init(thd->mem_root, [this](uint index) {
-        return m_workers[index]->MessageQueue();
+        return m_workers[index]->message_queue();
       }))
     return true;
 
@@ -151,7 +151,8 @@ bool Collector::Init(THD *thd) {
   // Initialize row exchange reader after workers are started. The reader with
   // merge sort do a block read in Init().
   bool res = m_row_exchange_reader->Init(
-      thd, has_failed_worker ? &closed_queues : nullptr);
+      thd->mem_root, has_failed_worker ? &closed_queues : nullptr, thd,
+      [this](uint index) { return m_workers[index]->message_queue_event(); });
 
   if (has_failed_worker) bitmap_free(&closed_queues);
   return res;

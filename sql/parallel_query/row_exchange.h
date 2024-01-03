@@ -12,27 +12,28 @@ namespace pq {
 class RowExchange {
  public:
   enum Result { SUCCESS, END, ERROR, OOM, KILLED };
-  RowExchange(uint num_queues) : m_num_queues(num_queues) {}
+  RowExchange(uint num_queues)
+      : m_num_queues(num_queues) {}
   bool Init(MEM_ROOT *mem_root, std::function<MessageQueue *(uint)> get_queue);
   uint NumQueues() const { return m_num_queues; }
   MessageQueue *Queue(uint i) const { return m_message_queues[i]; }
-  void Wait(THD *thd) { m_message_queue_event.Wait(thd); }
 
  private:
   MessageQueue **m_message_queues{nullptr};
-  MessageQueueEvent m_message_queue_event;
   uint m_num_queues;
 };
 
-class RowExchangeContainer {
+class RowExchangeEndpoint {
  public:
   using Result = RowExchange::Result;
-  RowExchangeContainer(RowExchange *row_exchange)
+  RowExchangeEndpoint(RowExchange *row_exchange)
       : m_row_exchange(row_exchange) {}
-  RowExchangeContainer(const RowExchangeContainer &) = delete;
-  virtual ~RowExchangeContainer();
+  RowExchangeEndpoint(const RowExchangeEndpoint &) = delete;
+  virtual ~RowExchangeEndpoint();
 
-  virtual bool Init(THD *thd, MY_BITMAP *closed_queues);
+  virtual bool Init(MEM_ROOT *mem_root, MY_BITMAP *closed_queues, THD *user_thd,
+                    std::function<MessageQueueEvent *(uint)> get_peer_event);
+  MessageQueueEvent *Event() { return &m_message_queue_event; }
 
  protected:
   bool IsQueueClosed(uint queue) {
@@ -40,15 +41,16 @@ class RowExchangeContainer {
   }
   void CloseQueue(uint queue) { m_message_queue_handles[queue]->SetClosed(); }
   RowExchange *m_row_exchange;
+  MessageQueueEvent m_message_queue_event;
   MessageQueueHandle **m_message_queue_handles{nullptr};
 };
 
 /// Normal collect rows from multiple workers for normal gather operator.
-class RowExchangeReader : public RowExchangeContainer {
+class RowExchangeReader : public RowExchangeEndpoint {
  public:
   RowExchangeReader(RowExchange *row_exchange,
                     std::function<bool(uint)> queue_detach_handler)
-      : RowExchangeContainer(row_exchange),
+      : RowExchangeEndpoint(row_exchange),
         m_left_queues(row_exchange->NumQueues()),
         m_queue_detach_handler(queue_detach_handler) {}
 
@@ -69,15 +71,14 @@ class RowExchangeReader : public RowExchangeContainer {
   }
   uint m_left_queues;
   std::function<bool(uint)> m_queue_detach_handler;
-
   uint m_next_queue{0};
 };
 
-class RowExchangeWriter : public RowExchangeContainer {
+class RowExchangeWriter : public RowExchangeEndpoint {
  public:
   RowExchangeWriter(RowExchange *row_exchange)
-      : RowExchangeContainer(row_exchange) {}
-  Result Write(THD *thd, uchar *record, size_t nbytes);
+      : RowExchangeEndpoint(row_exchange) {}
+  Result Write(uchar *record, size_t nbytes);
   void WriteEOF();
 };
 
@@ -89,13 +90,14 @@ class RowExchangeMergeSortReader : public RowExchangeReader, MergeSortSource {
       : RowExchangeReader(row_exchange, queue_detach_handler),
         m_filesort(filesort),
         m_mergesort(this) {}
-  bool Init(THD *thd, MY_BITMAP *closed_queues) override;
+  bool Init(MEM_ROOT *mem_root, MY_BITMAP *closed_queues, THD *user_thd,
+            std::function<MessageQueueEvent *(uint)> get_peer_event) override;
   Result Read(THD *thd, uchar **buf) override;
 
   bool IsChannelFinished(uint i) override { return IsQueueClosed(i); }
-  void Wait(THD *thd) override { m_row_exchange->Wait(thd); }
-  MergeSort::Result ReadFromChannel(THD *thd, uint i, size_t *nbytes,
-                                    void **data, bool no_wait) override;
+  void Wait(THD *thd) override { m_message_queue_event.Wait(thd); }
+  MergeSort::Result ReadFromChannel(uint i, size_t *nbytes, void **data,
+                                    bool no_wait) override;
 
  private:
   Filesort *m_filesort;

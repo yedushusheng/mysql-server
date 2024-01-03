@@ -5,40 +5,43 @@
 #include "sql/table.h"
 
 namespace pq {
-bool RowExchange::Init(MEM_ROOT *mem_root,
-                       std::function<MessageQueue *(uint)> get_queue) {
+bool RowExchange::Init(
+    MEM_ROOT *mem_root,
+    std::function<MessageQueue *(uint)>
+        get_queue) {
   if (!(m_message_queues = new (mem_root) MessageQueue *[m_num_queues]))
     return true;
 
   for (uint i = 0; i < m_num_queues; i++) {
-    MessageQueue *queue = get_queue(i);
-    assert(queue);
-    queue->SetEvent(&m_message_queue_event);
-    m_message_queues[i] = queue;
+    m_message_queues[i] = get_queue(i);
+    assert(m_message_queues[i]);
   }
 
   return false;
 }
 
-RowExchangeContainer::~RowExchangeContainer() {
+RowExchangeEndpoint::~RowExchangeEndpoint() {
   if (!m_message_queue_handles) return;
   for (uint i = 0; i < m_row_exchange->NumQueues(); i++)
     destroy(m_message_queue_handles[i]);
 }
 
-bool RowExchangeContainer::Init(THD *thd, MY_BITMAP *closed_queues) {
-  MEM_ROOT *mem_root = thd->mem_root;
+bool RowExchangeEndpoint::Init(
+    MEM_ROOT *mem_root, MY_BITMAP *closed_queues, THD *user_thd,
+    std::function<MessageQueueEvent *(uint)> get_peer_event) {
   uint queues = m_row_exchange->NumQueues();
 
   if (!(m_message_queue_handles = new (mem_root) MessageQueueHandle *[queues]))
     return true;
 
   for (uint i = 0; i < queues; i++) {
-    if (!(m_message_queue_handles[i] =
-              new (mem_root) MemMessageQueueHandle(m_row_exchange->Queue(i))))
+    if (!(m_message_queue_handles[i] = new (mem_root)
+              MemMessageQueueHandle(m_row_exchange->Queue(i), user_thd,
+                                    &m_message_queue_event, get_peer_event(i))))
       return true;
     if (closed_queues && bitmap_is_set(closed_queues, i)) CloseQueue(i);
   }
+
   return false;
 }
 
@@ -50,7 +53,7 @@ RowExchange::Result RowExchangeReader::Read(THD *thd, uchar **buf) {
     size_t nbytes;
     void *data;
     auto *handler = m_message_queue_handles[m_next_queue];
-    auto result = handler->Receive(thd, &nbytes, &data, true);
+    auto result = handler->Receive(&nbytes, &data, true);
 
     if (likely(result == MessageQueue::Result::SUCCESS)) {
       *buf = (uchar *)data;
@@ -82,7 +85,7 @@ RowExchange::Result RowExchangeReader::Read(THD *thd, uchar **buf) {
     visited++;
     if (visited >= m_left_queues) {
       /* Nothing to do except wait for developments. */
-      m_row_exchange->Wait(thd);
+      m_message_queue_event.Wait(thd);
       visited = 0;
     }
   }
@@ -90,12 +93,12 @@ RowExchange::Result RowExchangeReader::Read(THD *thd, uchar **buf) {
   return Result::END;
 }
 
-RowExchange::Result RowExchangeWriter::Write(THD *thd, uchar *data,
+RowExchange::Result RowExchangeWriter::Write(uchar *data,
                                              size_t nbytes) {
   assert(m_row_exchange->NumQueues() == 1);
   uint queue = 0;
   if (IsQueueClosed(queue)) return Result::SUCCESS;
-  auto result = m_message_queue_handles[queue]->Send(thd, nbytes, data, false);
+  auto result = m_message_queue_handles[queue]->Send(nbytes, data, false);
   switch (result) {
     case MessageQueue::Result::SUCCESS:
       return Result::SUCCESS;
@@ -118,20 +121,24 @@ void RowExchangeWriter::WriteEOF() {
   m_message_queue_handles[0]->Detach();
 }
 
-bool RowExchangeMergeSortReader::Init(THD *thd, MY_BITMAP *closed_queues) {
-  if (RowExchangeContainer::Init(thd, closed_queues)) return true;
+bool RowExchangeMergeSortReader::Init(
+    MEM_ROOT *mem_root, MY_BITMAP *closed_queues, THD *user_thd,
+    std::function<MessageQueueEvent *(uint)> get_peer_event) {
+  if (RowExchangeEndpoint::Init(mem_root, closed_queues, user_thd,
+                                 get_peer_event))
+    return true;
 
-  if (m_mergesort.Init(thd, m_filesort, m_row_exchange->NumQueues()) ||
-      m_mergesort.Populate(thd))
+  if (m_mergesort.Init(user_thd, m_filesort, m_row_exchange->NumQueues()) ||
+      m_mergesort.Populate(user_thd))
     return true;
 
   return false;
 }
 
 MergeSort::Result RowExchangeMergeSortReader::ReadFromChannel(
-    THD *thd, uint index, size_t *nbytes, void **data, bool no_wait) {
+    uint index, size_t *nbytes, void **data, bool no_wait) {
   auto result =
-      m_message_queue_handles[index]->Receive(thd, nbytes, data, no_wait);
+      m_message_queue_handles[index]->Receive(nbytes, data, no_wait);
   switch (result) {
     case MessageQueue::Result::SUCCESS:
       break;
@@ -152,8 +159,8 @@ MergeSort::Result RowExchangeMergeSortReader::ReadFromChannel(
   return MergeSort::Result::SUCCESS;
 }
 
-RowExchange::Result RowExchangeMergeSortReader::Read(THD *thd, uchar **buf) {
-  auto result = m_mergesort.Read(thd, buf);
+RowExchange::Result RowExchangeMergeSortReader::Read(THD *, uchar **buf) {
+  auto result = m_mergesort.Read(buf);
   switch (result) {
     case MergeSort::Result::SUCCESS:
       return Result::SUCCESS;
