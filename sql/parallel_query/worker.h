@@ -18,6 +18,7 @@ class Worker {
   /// QUICK_GROUP_MIN_MAX_SELECT::get_next(). When a worker is in Cleaning
   /// state, Terminate() skips to send termination request to it.
   enum class State { None, Starting, Started, Cleaning, Finished, StartFailed };
+  enum class ScheduleType {bthread, SysThread};
   Worker(THD *thd, uint worker_id, PartialPlan *plan, mysql_mutex_t *state_lock,
          mysql_cond_t *state_cond);
   THD *thd() { return &m_thd; }
@@ -36,6 +37,11 @@ class Worker {
   pq::MessageQueue *MessageQueue() const { return m_message_queue; }
   Diagnostics_area *stmt_da(ha_rows *found_rows, ha_rows *examined_rows);
   std::string *QueryPlanTimingData() { return m_query_plan_timing_data.get(); }
+  static bool IsScheduleSysThread() {
+    return worker_handling == (ulong)ScheduleType::SysThread;
+  }
+  static ulong worker_handling;
+
 #if !defined(NDEBUG)
   CSStackClone *dbug_cs_stack_clone;
 #endif
@@ -66,5 +72,8 @@ class Worker {
   mysql_cond_t *m_state_cond;
   bool m_terminate_requested{false};
 };
+
+constexpr ulong default_worker_schedule_type =
+    (ulong)Worker::ScheduleType::bthread;
 }
 #endif

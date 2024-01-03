@@ -106,6 +106,7 @@
 #include "sql/opt_trace_context.h"
 #include "sql/options_mysqld.h"
 #include "sql/parallel_query/planner.h"
+#include "sql/parallel_query/worker.h"
 #include "sql/protocol_classic.h"
 #include "sql/psi_memory_key.h"
 #include "sql/query_options.h"
@@ -7093,3 +7094,13 @@ static Sys_var_ulonglong Sys_parallel_scan_records_threshold(
     HINT_UPDATEABLE SESSION_VAR(parallel_scan_records_threshold),
     CMD_LINE(REQUIRED_ARG), VALID_RANGE(0, ULLONG_MAX), DEFAULT(10000),
     BLOCK_SIZE(1));
+
+static const char *parallel_worker_handling_names[] = {"co-threads",
+                                                       "sys-threads", nullptr};
+
+static Sys_var_enum Sys_parallel_worker_handling(
+    "parallel_worker_handling",
+    "Define workers usage for handling parallel queries, one of "
+    "co-threads, sys-threads",
+    READ_ONLY GLOBAL_VAR(pq::Worker::worker_handling), CMD_LINE(REQUIRED_ARG),
+    parallel_worker_handling_names, DEFAULT(pq::default_worker_schedule_type));    

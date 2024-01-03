@@ -25,6 +25,7 @@ static void *launch_worker_thread_handle(void *arg) {
 
 namespace pq {
 constexpr uint message_queue_ring_size = 65536;
+ulong Worker::worker_handling = default_worker_schedule_type;
 
 class Query_result_to_collector : public Query_result_interceptor {
  private:
@@ -139,10 +140,27 @@ bool Worker::Init() {
 }
 
 int Worker::Start() {
-  my_thread_handle th;
   SetState(State::Starting);
-  int res = mysql_thread_create(PSI_INSTRUMENT_ME, &th, &connection_attrib,
+
+  auto schedule_type = static_cast<ScheduleType>(worker_handling);
+  int res;
+  switch (schedule_type) {
+    case ScheduleType::bthread: {
+      bthread_t th;
+      res = bthread_start_background(&th, nullptr, launch_worker_thread_handle,
+                                     (void *)this);
+      break;
+    }
+    case ScheduleType::SysThread: {
+      my_thread_handle th;
+      res = mysql_thread_create(PSI_INSTRUMENT_ME, &th, &connection_attrib,
                                 launch_worker_thread_handle, (void *)this);
+      break;
+    }
+    default:
+      assert(false);
+  }
+
   if (res != 0) SetState(State::StartFailed);
 
   return res;
@@ -226,20 +244,22 @@ void Worker::ThreadMainEntry() {
   THD *thd = &m_thd;
 
   THD_CHECK_SENTRY(thd);
+
   my_thread_init();
+
+  thd->set_new_thread_id();
 
   // XXX HAVE_PSI_THREAD_INTERFACE process
 
   thd->thread_stack = (char *)&thd;  // remember where our stack is
 
-  thd->set_new_thread_id();
   thd->store_globals();
-
-  InitExecThdFromLeader();
 
   // XXX Note, should after store_globals() calling because
   // THR_mysys is allocated by set_my_thread_var_id() called by in it.
   DBUG_RESTORE_CSSTACK(dbug_cs_stack_clone);
+
+  InitExecThdFromLeader();
 
   THD_STAGE_INFO(thd, stage_starting);
 
@@ -260,7 +280,7 @@ void Worker::ThreadMainEntry() {
   SetState(State::Finished);
 
   my_thread_end();
-  my_thread_exit(nullptr);
+  if (IsScheduleSysThread()) my_thread_exit(nullptr);
 }
 
 class PartialItemCloneContext : public Item_clone_context {
