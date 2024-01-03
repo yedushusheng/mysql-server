@@ -27,6 +27,36 @@ static bool ItemRefuseParallel(const Item *item, const char **cause) {
   return false;
 }
 
+constexpr uint32 parallel_disabled = PT_hint_parallel::parallel_disabled;
+constexpr uint32 degree_unspecified = PT_hint_parallel::degree_unspecified;
+
+static uint32 table_parallel_degree(THD *thd, TABLE_LIST *table,
+                                    bool *specified_by_hint) {
+  uint32 degree = degree_unspecified;
+  auto *lex = thd->lex;
+  *specified_by_hint = true;
+  if (table->opt_hints_table && table->opt_hints_table->parallel_scan) {
+    auto *table_hint = table->opt_hints_table->parallel_scan;
+    degree = table_hint->parallel_degree();
+    if (degree != PT_hint_parallel::degree_unspecified) return degree;
+  }
+
+  if (table->opt_hints_qb && table->opt_hints_qb->get_parallel_hint()) {
+    auto *qb_hint = table->opt_hints_qb->get_parallel_hint();
+    degree = qb_hint->parallel_degree();
+    if (degree != PT_hint_parallel::degree_unspecified) return degree;
+  }
+
+  if (lex->opt_hints_global && lex->opt_hints_global->parallel_hint) {
+    auto *global_hint = lex->opt_hints_global->parallel_hint;
+    degree = global_hint->parallel_degree();
+    if (degree != PT_hint_parallel::degree_unspecified) return degree;
+  }
+
+  *specified_by_hint = false;
+  return thd->variables.max_parallel_degree;
+}
+
 static void ChooseParallelPlan(JOIN *join) {
   THD *thd = join->thd;
   Opt_trace_context *const trace = &thd->opt_trace;
@@ -40,11 +70,6 @@ static void ChooseParallelPlan(JOIN *join) {
         if (!chosen) trace_choosing.add_alnum("cause", cause);
       });
 
-  // Global status we don't support yet.
-  if (thd->variables.max_parallel_degree == 0) {
-    cause = "max_parallel_degree_is_not_set";
-    return;
-  }
   if (thd->lex->sql_command != SQLCOM_SELECT) {
     cause = "not_supported_sql_command";
     return;
@@ -89,6 +114,16 @@ static void ChooseParallelPlan(JOIN *join) {
 
   // Block parallel query based on table properties
   auto *qt = &join->qep_tab[0];
+
+  bool specified_by_hint;
+  uint32 parallel_degree =
+      table_parallel_degree(thd, qt->table_ref, &specified_by_hint);
+  if (parallel_degree == parallel_disabled) {
+    cause = specified_by_hint ? "forbidden_by_parallel_hint"
+                              : "max_parallel_degree_not_set";
+    return;
+  }
+
   auto *table = qt->table();
   if (qt->type() != JT_ALL && qt->type() != JT_INDEX_SCAN) {
     cause = "access_type_is_not_table_scan_or_index_scan";
@@ -123,7 +158,7 @@ static void ChooseParallelPlan(JOIN *join) {
   }
 
   chosen = true;
-  join->parallel_plan = new (thd->mem_root) ParallelPlan(join);
+  join->parallel_plan = new (thd->mem_root) ParallelPlan(join, parallel_degree);
 }
 
 class ParallelPlanGenErrorIgnoreHandler : public Internal_error_handler {
@@ -304,10 +339,11 @@ void PartialPlan::SetTablesParallelScan(TABLE *table,
   m_parallel_scan_info = {table, psdesc};
 }
 
-ParallelPlan::ParallelPlan(JOIN *join)
+ParallelPlan::ParallelPlan(JOIN *join, uint32 parallel_degree)
     : m_join(join),
       m_fields(join->thd->mem_root),
-      m_source_plan_changed(join) {}
+      m_source_plan_changed(join),
+      m_parallel_degree(parallel_degree) {}
 
 ParallelPlan::~ParallelPlan() { DestroyCollector(thd()); }
 
@@ -702,8 +738,9 @@ bool ParallelPlan::Generate() {
 }
 
 bool ParallelPlan::CreateCollector(THD *thd) {
+  assert(m_parallel_degree < max_parallel_degree_limit);
   if (!(m_collector = new (thd->mem_root)
-            Collector(thd->variables.max_parallel_degree, &m_partial_plan)) ||
+            Collector(m_parallel_degree, &m_partial_plan)) ||
       m_collector->CreateCollectorTable()) {
     destroy(m_collector);
     m_collector = nullptr;

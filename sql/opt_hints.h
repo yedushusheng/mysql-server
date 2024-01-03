@@ -83,6 +83,7 @@ enum opt_hints_enum {
   GROUP_INDEX_HINT_ENUM,
   ORDER_INDEX_HINT_ENUM,
   DERIVED_CONDITION_PUSHDOWN_HINT_ENUM,
+  PARALLEL_HINT_ENUM,
   MAX_HINT_ENUM
 };
 
@@ -343,6 +344,8 @@ class Opt_hints {
                                      String *str MY_ATTRIBUTE((unused))) {}
 };
 
+class PT_hint_parallel;
+
 /**
   Global level hints.
 */
@@ -351,6 +354,7 @@ class Opt_hints_global : public Opt_hints {
  public:
   PT_hint_max_execution_time *max_exec_time;
   Sys_var_hint *sys_var_hint;
+  PT_hint_parallel *parallel_hint{nullptr};
 
   Opt_hints_global(MEM_ROOT *mem_root_arg)
       : Opt_hints(nullptr, nullptr, mem_root_arg) {
@@ -381,11 +385,14 @@ class Opt_hints_qb : public Opt_hints {
   /// Bit map of which hints are ignored.
   ulonglong join_order_hints_ignored;
 
+  PT_hint_parallel *parallel_hint{nullptr};
+
   /*
     PT_qb_level_hint::contextualize sets subquery/semijoin_hint during parsing.
     it also registers join order hints during parsing.
   */
   friend class PT_qb_level_hint;
+  friend class PT_hint_parallel;
 
  public:
   Opt_hints_qb(Opt_hints *opt_hints_arg, MEM_ROOT *mem_root_arg,
@@ -480,6 +487,7 @@ class Opt_hints_qb : public Opt_hints {
     @param join JOIN object
   */
   void apply_join_order_hints(JOIN *join);
+  PT_hint_parallel *get_parallel_hint() const { return parallel_hint; }
 
  private:
   void register_join_order_hint(PT_qb_level_hint *hint_arg) {
@@ -556,6 +564,7 @@ class Opt_hints_table : public Opt_hints {
   Index_key_hint join_index;
   Index_key_hint group_index;
   Index_key_hint order_index;
+  PT_hint_parallel *parallel_scan{nullptr};
 
   Opt_hints_table(const LEX_CSTRING *table_name_arg, Opt_hints_qb *qb_hints_arg,
                   MEM_ROOT *mem_root_arg)

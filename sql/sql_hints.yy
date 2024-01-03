@@ -129,6 +129,8 @@ static bool parse_int(longlong *to, const char *from, size_t from_length)
 %token DERIVED_CONDITION_PUSHDOWN_HINT 1047
 %token NO_DERIVED_CONDITION_PUSHDOWN_HINT 1048
 %token HINT_ARG_FLOATING_POINT_NUMBER 1049
+%token PARALLEL_HINT 1050
+%token NO_PARALLEL_HINT 1051
 
 /*
   YYUNDEF in internal to Bison. Please don't change its number, or change
@@ -152,6 +154,7 @@ static bool parse_int(longlong *to, const char *from, size_t from_length)
 %type <hint>
   hint
   max_execution_time_hint
+  parallel_hint
   index_level_hint
   table_level_hint
   qb_level_hint
@@ -229,6 +232,7 @@ hint:
         | qb_level_hint
         | qb_name_hint
         | max_execution_time_hint
+        | parallel_hint
         | set_var_hint
         | resource_group_hint
         ;
@@ -253,6 +257,77 @@ max_execution_time_hint:
           }
         ;
 
+parallel_hint:
+          PARALLEL_HINT '(' hint_param_table_ext ')'
+          {
+            {
+              $$= NEW_PTN PT_hint_parallel($3, true);
+              if ($$ == NULL)
+                YYABORT; // OOM
+            }
+          }
+        | PARALLEL_HINT '(' HINT_ARG_NUMBER ')'
+          {
+            longlong n;
+            if (parse_int(&n, $3.str, $3.length) || n > max_parallel_degree_limit) {
+              scanner->syntax_warning(ER_THD(thd,
+                                             ER_WARN_BAD_PARALLEL_DEGREE));
+              $$= NULL;
+            } else {
+              $$= NEW_PTN PT_hint_parallel(n);
+              if ($$ == NULL)
+                YYABORT; // OOM
+            }
+          }
+        | PARALLEL_HINT '(' hint_param_table_ext HINT_ARG_NUMBER ')'
+          {
+            longlong n;
+            if (parse_int(&n, $4.str, $4.length) || n > max_parallel_degree_limit) {
+              scanner->syntax_warning(ER_THD(thd,
+                                             ER_WARN_BAD_PARALLEL_DEGREE));
+              $$= NULL;
+            }
+            else
+            {
+              $$= NEW_PTN PT_hint_parallel($3, n);
+              if ($$ == NULL)
+                YYABORT; // OOM
+            }
+          }
+        | PARALLEL_HINT '(' HINT_ARG_QB_NAME HINT_ARG_NUMBER ')'
+          {
+            longlong n;
+            if (parse_int(&n, $4.str, $4.length) || n > max_parallel_degree_limit) {
+              scanner->syntax_warning(ER_THD(thd,
+                                             ER_WARN_BAD_PARALLEL_DEGREE));
+              $$= NULL;
+            }
+            else
+            {
+              $$= NEW_PTN PT_hint_parallel($3, n);
+              if ($$ == NULL)
+                YYABORT; // OOM
+            }
+          }
+        | NO_PARALLEL_HINT
+          {
+            $$= NEW_PTN PT_hint_parallel;
+            if ($$ == NULL)
+              YYABORT; // OOM
+          }
+        | NO_PARALLEL_HINT '(' HINT_ARG_QB_NAME ')'
+          {
+            $$= NEW_PTN PT_hint_parallel($3);
+            if ($$ == NULL)
+              YYABORT; // OOM
+          }
+        | NO_PARALLEL_HINT '(' hint_param_table_ext ')'
+          {
+            $$= NEW_PTN PT_hint_parallel($3, false);
+            if ($$ == NULL)
+              YYABORT; // OOM
+          }
+        ;
 
 opt_hint_param_table_list:
           /* empty */ { $$.init(thd->mem_root); }

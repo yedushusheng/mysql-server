@@ -11,7 +11,6 @@ namespace pq {
 class Collector;
 class AccessPathChangesStore;
 
-constexpr uint max_parallel_degree_limit = 128;
 constexpr uint default_max_parallel_degree = 0;
 
 class ItemRefCloneResolver : public Item_ref_clone_resolver {
@@ -90,7 +89,7 @@ using FieldsPushdownDesc = mem_root_deque<FieldPushdownDesc>;
 
 class ParallelPlan {
  public:
-  ParallelPlan(JOIN *join);
+  ParallelPlan(JOIN *join, uint parallel_degree);
   ~ParallelPlan();
   bool Generate();
   void ResetCollector();
@@ -124,6 +123,7 @@ class ParallelPlan {
   // The query plan template for workers, workers clone plan from this.
   PartialPlan m_partial_plan;
   SourcePlanChangedStore m_source_plan_changed;
+  uint32 m_parallel_degree;
   // If there is LIMIT OFFSET and it is pushed to workers, collecting found
   // rows from workers when workers end.
   bool m_need_collect_found_rows{false};

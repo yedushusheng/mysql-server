@@ -9537,6 +9537,12 @@ reserved-error-section 5000 5999
 ER_STARTING_PARALLEL_QUERY_THREAD
   eng "The parallel query worker threads failed to start. (errno: %d - %s)"
 
+ER_WARN_BAD_PARALLEL_DEGREE
+  eng "Invalid degree of parallelism"
+
+ER_WARN_UNSUPPORTED_PARALLEL
+  eng "PARALLEL hint is not supported by this statement"
+
 ################################################################################
 # DO NOT add messages for the error-log to this file;
 # they go in messages_to_error_log.txt in the same
