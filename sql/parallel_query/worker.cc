@@ -140,7 +140,7 @@ int Worker::Start() {
   SetState(State::Starting);
 
   auto schedule_type = static_cast<ScheduleType>(worker_handling);
-  int res;
+  int res = 0;
   switch (schedule_type) {
     case ScheduleType::bthread: {
       bthread_t th;

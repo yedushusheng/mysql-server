@@ -211,6 +211,7 @@ void init_pfs_tls_channels_instrumentation() {
 }
 
 void cleanup_pfs_tls_channels_instrumentation() {
+  if (!g_instrumented_tls_channels_inited) return;
   g_instrumented_tls_channels_inited = false;
   mysql_rwlock_destroy(&LOCK_pfs_tls_channels);
 }
