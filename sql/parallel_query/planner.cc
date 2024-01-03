@@ -195,8 +195,7 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  if (qt->type() != JT_ALL && qt->type() != JT_INDEX_SCAN &&
-      qt->type() != JT_RANGE) {
+  if (qt->type() != JT_ALL && qt->type() != JT_INDEX_SCAN) {
     cause = "table_access_type_is_not_supported";
     return;
   }
