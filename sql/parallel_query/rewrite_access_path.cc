@@ -83,6 +83,9 @@ bool AccessPathRewriter::do_rewrite(AccessPath *path) {
   switch (path->type) {
     case AccessPath::TABLE_SCAN:
     case AccessPath::INDEX_SCAN:
+    case AccessPath::REF:
+    case AccessPath::REF_OR_NULL:
+    case AccessPath::EQ_REF:
     case AccessPath::INDEX_RANGE_SCAN:
     case AccessPath::PARALLEL_COLLECTOR_SCAN:
       break;
@@ -133,6 +136,27 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *path) {
       assert(!end_of_out_path());
       out = accesspath_dup(path, mem_root());
       if (rewrite_index_scan(path, out)) return true;
+      m_out_path = out;
+      break;
+    }
+    case AccessPath::REF: {
+      assert(!end_of_out_path());
+      out = accesspath_dup(path, mem_root());
+      if (rewrite_ref(path, out)) return true;
+      m_out_path = out;
+      break;
+    }
+    case AccessPath::REF_OR_NULL: {
+      assert(!end_of_out_path());
+      out = accesspath_dup(path, mem_root());
+      if (rewrite_ref_or_null(path, out)) return true;
+      m_out_path = out;
+      break;
+    }
+    case AccessPath::EQ_REF: {
+      assert(!end_of_out_path());
+      out = accesspath_dup(path, mem_root());
+      if (rewrite_eq_ref(path, out)) return true;
       m_out_path = out;
       break;
     }
@@ -245,15 +269,6 @@ void AccessPathParallelizer::set_table_parallel_scan(TABLE *table, uint keynr,
   m_partial_plan->SetTablesParallelScan(table, scan_desc);
 }
 
-void AccessPathParallelizer::set_table_parallel_scan(QUICK_SELECT_I *quick) {
-  key_range *min_key, *max_key;
-  bool is_asc = !quick->reverse_sorted();
-  uint16_t key_used = quick->scan_range_keyused(mem_root(), &min_key, &max_key);
-
-  parallel_scan_desc_t scan_desc = {quick->index, min_key, max_key, key_used, is_asc};
-  m_partial_plan->SetTablesParallelScan(quick->head, scan_desc);
-}
-
 bool AccessPathParallelizer::rewrite_table_scan(AccessPath *in, AccessPath *out
                                                 [[maybe_unused]]) {
   assert(out);
@@ -262,22 +277,87 @@ bool AccessPathParallelizer::rewrite_table_scan(AccessPath *in, AccessPath *out
   return false;
 }
 
+void AccessPathParallelizer::rewrite_index_access_path(
+    TABLE *table, uint keynr, bool use_order, bool reverse,
+    std::function<void(uint16_t *, key_range **, key_range **)>
+        get_scan_range) {
+  auto *join = m_join_in;
+  if (use_order) {
+    assert(join->m_ordered_index_usage != JOIN::ORDERED_INDEX_VOID);
+
+    merge_sort = join->m_ordered_index_usage == JOIN::ORDERED_INDEX_ORDER_BY
+                     ? join->order.order
+                     : (join->group_list_planned.empty()
+                            ? join->group_list.order
+                            : join->group_list_planned.order);
+  }
+
+  key_range *min_key = nullptr, *max_key = nullptr;
+  bool is_asc = !reverse;
+  uint16_t key_used = UINT16_MAX;
+  if(get_scan_range) get_scan_range(&key_used, &min_key, &max_key);
+  parallel_scan_desc_t scan_desc = {keynr, min_key, max_key, key_used, is_asc};
+
+  m_partial_plan->SetTablesParallelScan(table, scan_desc);
+}
+
 bool AccessPathParallelizer::rewrite_index_scan(AccessPath *in, AccessPath *out
                                                 [[maybe_unused]]) {
   assert(out);
   auto &index_scan = in->index_scan();
-  TABLE *table = index_scan.table;
-  if (index_scan.use_order) {
-    assert(m_join_in->m_ordered_index_usage != JOIN::ORDERED_INDEX_VOID);
 
-    merge_sort = m_join_in->m_ordered_index_usage == JOIN::ORDERED_INDEX_ORDER_BY
-                     ? m_join_in->order.order
-                     : (m_join_in->group_list_planned.empty()
-                            ? m_join_in->group_list.order
-                            : m_join_in->group_list_planned.order);
-  }
-  set_table_parallel_scan(table, index_scan.idx, index_scan.reverse);
+  rewrite_index_access_path(index_scan.table, index_scan.idx,
+                            index_scan.use_order, index_scan.reverse, nullptr);
+  return false;
+}
 
+static void get_scan_range_for_ref(MEM_ROOT *mem_root, TABLE_REF *ref,
+                                   uint16_t *key_used, key_range **min_key,
+                                   key_range **max_key) {
+  *key_used = UINT16_MAX;
+  *min_key = *max_key = new (mem_root) key_range();
+  (*min_key)->key = (const uchar *)ref->key_buff;
+  (*min_key)->length = ref->key_length;
+  (*min_key)->keypart_map = make_prev_keypart_map(ref->key_parts);
+  (*min_key)->flag = HA_READ_KEY_EXACT;
+}
+
+bool AccessPathParallelizer::rewrite_ref(AccessPath *in,
+                                         AccessPath *out [[maybe_unused]]) {
+  assert(out);
+  auto &ref = in->ref();
+  rewrite_index_access_path(
+      ref.table, ref.ref->key, ref.use_order, ref.reverse,
+      [&ref, this](auto key_used, auto min_key, auto max_key) {
+        get_scan_range_for_ref(mem_root(), ref.ref, key_used, min_key, max_key);
+      });
+  return false;
+}
+
+bool AccessPathParallelizer::rewrite_ref_or_null(AccessPath *in, AccessPath *out
+                                                 [[maybe_unused]]) {
+  assert(out);
+  auto &ref_or_null = in->ref_or_null();
+
+  rewrite_index_access_path(
+      ref_or_null.table, ref_or_null.ref->key, ref_or_null.use_order, false,
+      [&ref_or_null, this](auto key_used, auto min_key, auto max_key) {
+        get_scan_range_for_ref(mem_root(), ref_or_null.ref, key_used, min_key,
+                               max_key);
+      });
+  return false;
+}
+
+bool AccessPathParallelizer::rewrite_eq_ref(AccessPath *in,
+                                            AccessPath *out [[maybe_unused]]) {
+  assert(out);
+  auto &eq_ref = in->eq_ref();
+
+  rewrite_index_access_path(
+      eq_ref.table, eq_ref.ref->key, eq_ref.use_order, false,
+      [&eq_ref, this](auto key_used, auto min_key, auto max_key) {
+        get_scan_range_for_ref(mem_root(), eq_ref.ref, key_used, min_key, max_key);
+      });
   return false;
 }
 
@@ -287,7 +367,13 @@ bool AccessPathParallelizer::rewrite_index_range_scan(AccessPath *in, AccessPath
   auto *quick = index_range_scan.quick;
   assert(quick->head == index_range_scan.table);
 
-  set_table_parallel_scan(quick);
+  rewrite_index_access_path(
+      quick->head, quick->index,
+      m_join_in->m_ordered_index_usage != JOIN::ORDERED_INDEX_VOID,
+      !quick->reverse_sorted(),
+      [quick, this](auto key_used, auto min_key, auto max_key) {
+        *key_used = quick->scan_range_keyused(mem_root(), min_key, max_key);
+      });
 
   return false;
 }
@@ -663,8 +749,8 @@ TABLE *PartialAccessPathRewriter::find_leaf_table(TABLE *) const {
 
 /// XXX TDSQL seems that pushed_cond also is used in LIMIT pushdown, so
 /// should it also be cloned.
-static bool clone_hander_pushed_cond(Item_clone_context *context, uint keyno,
-                                  const TABLE *from, TABLE *table) {
+static bool clone_handler_pushed_cond(Item_clone_context *context, uint keyno,
+                                      const TABLE *from, TABLE *table) {
   Item *cond, *from_cond = from->file->pushed_idx_cond;
   if (from_cond) {
     assert(keyno < MAX_KEY);
@@ -680,52 +766,69 @@ static bool clone_hander_pushed_cond(Item_clone_context *context, uint keyno,
   return false;
 }
 
-bool PartialAccessPathRewriter::rewrite_table_scan(AccessPath *,
-                                                   AccessPath *out) {
-  auto &out_table_scan = out->table_scan();
-  auto *orig_table = out_table_scan.table;
+template <typename aptype>
+bool PartialAccessPathRewriter::rewrite_base_scan(aptype &out, uint keyno) {
+  auto *orig_table = out.table;
   TABLE *table = find_leaf_table(orig_table);
 
-  if (clone_hander_pushed_cond(m_item_clone_context, MAX_KEY, orig_table,
-                               table))
+  if (clone_handler_pushed_cond(m_item_clone_context, keyno, orig_table, table))
     return true;
 
-  out_table_scan.table = table;
+  out.table = table;
 
   set_sorting_info({table, REF_SLICE_SAVED_BASE});
+
   return false;
+}
+
+template <typename aptype>
+bool PartialAccessPathRewriter::rewrite_base_ref(aptype &out) {
+  if (rewrite_base_scan(out, out.ref->key)) return true;
+  auto *ref = out.ref;
+  if (!(out.ref = ref->clone(out.table, m_join_out->const_table_map,
+                             m_item_clone_context)))
+    return true;
+
+  return false;
+}
+
+bool PartialAccessPathRewriter::rewrite_table_scan(AccessPath *,
+                                                   AccessPath *out) {
+  auto &table_scan = out->table_scan();
+  return rewrite_base_scan(table_scan, MAX_KEY);
 }
 
 bool PartialAccessPathRewriter::rewrite_index_scan(AccessPath *,
                                                    AccessPath *out) {
-  auto &out_index_scan = out->index_scan();
-  auto *orig_table = out_index_scan.table;
-  TABLE *table = find_leaf_table(out_index_scan.table);
-  if (clone_hander_pushed_cond(m_item_clone_context, out_index_scan.idx,
-                            orig_table, table))
-    return true;
+  auto &index_scan = out->index_scan();
+  return rewrite_base_scan(index_scan, index_scan.idx);
+}
 
-  out_index_scan.table = table;
+bool PartialAccessPathRewriter::rewrite_ref(AccessPath *, AccessPath *out) {
+  return rewrite_base_ref(out->ref());
+}
 
-  set_sorting_info({table, REF_SLICE_SAVED_BASE});
-  return false;
+bool PartialAccessPathRewriter::rewrite_ref_or_null(AccessPath *,
+                                                    AccessPath *out) {
+  return rewrite_base_ref(out->ref_or_null());
+}
+
+bool PartialAccessPathRewriter::rewrite_eq_ref(AccessPath *, AccessPath *out) {
+  return rewrite_base_ref(out->eq_ref());
 }
 
 bool PartialAccessPathRewriter::rewrite_index_range_scan(AccessPath *,
                                                          AccessPath *out) {
   auto &index_range_scan = out->index_range_scan();
-  auto *orig_table = index_range_scan.table;
-  auto *join = m_join_out;
-  auto *table = find_leaf_table(orig_table);
-  auto *quick = index_range_scan.quick->clone(join, table);
-
-  if (clone_hander_pushed_cond(m_item_clone_context, quick->index, orig_table,
-                            table))
+  if (rewrite_base_scan(index_range_scan, index_range_scan.quick->index))
     return true;
+  // Target table has been set inside of rewrite_base_scan()
+  auto *table = index_range_scan.table;
+  auto *join = m_join_out;
+  auto *quick = index_range_scan.quick->clone(join, table);
 
   if (!quick || join->quick_selects_to_cleanup.push_back(quick)) return true;
 
-  index_range_scan.table = table;
   index_range_scan.quick = quick;
 
   set_sorting_info({table, REF_SLICE_SAVED_BASE});
