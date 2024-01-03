@@ -75,6 +75,7 @@
 #include "sql/opt_range.h"  // QUICK_SELECT_I
 #include "sql/opt_trace.h"  // Opt_trace_*
 #include "sql/protocol.h"
+#include "sql/parallel_query/planner.h"
 #include "sql/row_iterator.h"
 #include "sql/sql_bitmap.h"
 #include "sql/sql_class.h"
@@ -992,6 +993,15 @@ bool Explain_table_base::explain_extra_common(int quick_type, uint keyno) {
         return true;
     }
 
+    auto *parallel_plan = tab->join() ? tab->join()->parallel_plan : nullptr;
+    if (parallel_plan && parallel_plan->IsParallelScanTable(tab->table())) {
+      char buf[16];
+      snprintf(buf, sizeof(buf), "(%u workers)",
+               parallel_plan->ParallelDegree());
+      StringBuffer<16> str(cs);
+      str.append(buf);
+      if (push_extra(ET_PARALLEL_SCAN, str)) return true;
+    }
     const Item *pushed_cond = table->file->pushed_cond;
     if (pushed_cond) {
       StringBuffer<64> buff(cs);
@@ -1990,6 +2000,29 @@ bool explain_query_specification(THD *explain_thd, const THD *query_thd,
   return ret;
 }
 
+static bool is_parallel_plan(const Query_expression *unit) {
+  for (Query_block *sl = unit->first_query_block(); sl;
+       sl = sl->next_query_block()) {
+    if (sl->join && sl->join->parallel_plan) return true;
+
+    for (auto *u = sl->first_inner_query_expression(); u;
+         u = u->next_query_expression()) {
+      if (is_parallel_plan(u)) return true;
+    }
+  }
+
+  return false;
+}
+
+static void print_warning_if_parallel_plan(THD *explain_thd,
+                                           const Query_expression *unit) {
+  if (!is_parallel_plan(unit)) return;
+
+  push_warning(explain_thd, Sql_condition::SL_NOTE, ER_YES,
+               "Query is executed in a parallel plan;  explain "
+               "with tree format to see the plan details.");
+}
+
 /// @returns a comma-separated list of all tables that are touched by UPDATE or
 /// DELETE, with a mention of whether a temporary table is used for each.
 static string FindUpdatedTables(JOIN *join) {
@@ -2264,6 +2297,7 @@ bool explain_query(THD *explain_thd, const THD *query_thd,
     unit->print(explain_thd, &str, eqt);
     str.append('\0');
     push_warning(explain_thd, Sql_condition::SL_NOTE, ER_YES, str.ptr());
+    print_warning_if_parallel_plan(explain_thd, unit);
   }
 
   if (res)

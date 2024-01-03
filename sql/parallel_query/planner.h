@@ -95,6 +95,7 @@ class ParallelPlan {
   void ResetCollector();
   void EndCollector(THD *thd, ha_rows *found_rows);
   bool GenerateAccessPath(Item_clone_context *clone_context);
+  uint ParallelDegree() const { return m_parallel_degree; }
 
  private:
   THD *thd() const;
@@ -123,7 +124,7 @@ class ParallelPlan {
   // The query plan template for workers, workers clone plan from this.
   PartialPlan m_partial_plan;
   SourcePlanChangedStore m_source_plan_changed;
-  uint32 m_parallel_degree;
+  uint m_parallel_degree;
   // If there is LIMIT OFFSET and it is pushed to workers, collecting found
   // rows from workers when workers end.
   bool m_need_collect_found_rows{false};
