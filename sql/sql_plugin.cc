@@ -3042,14 +3042,20 @@ void plugin_thdvar_init(THD *thd, bool enable_plugins) {
   cleanup_variables(thd, &thd->variables);
 
   mysql_mutex_lock(&LOCK_global_system_variables);
-  thd->variables = global_system_variables;
+  thd->variables = thd->parallel_leader() ? thd->parallel_leader()->variables
+                                          : global_system_variables;  
   thd->variables.table_plugin = nullptr;
   thd->variables.temp_table_plugin = nullptr;
 
   thd->variables.dynamic_variables_version = 0;
   thd->variables.dynamic_variables_size = 0;
   thd->variables.dynamic_variables_ptr = nullptr;
-
+  if (thd->parallel_leader()) {
+    thd->variables.dynamic_variables_head =
+        global_system_variables.dynamic_variables_head;
+    thd->variables.dynamic_variables_allocs =
+        global_system_variables.dynamic_variables_allocs;
+  }
   if (enable_plugins) {
     mysql_mutex_lock(&LOCK_plugin);
     thd->variables.table_plugin =
