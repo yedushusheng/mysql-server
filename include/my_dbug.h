@@ -130,6 +130,15 @@ class AutoDebugTrace {
   _db_stack_frame_ m_stack_frame;
 };
 
+class CSStackClone {
+ public:
+  ~CSStackClone();
+  void save_state();
+  void restore_state();
+private:
+void *m_state{nullptr};
+};
+
 #ifdef __SUNPRO_CC
 // Disable debug tracing for Developer Studio, because we may get
 // a fatal error from ld when linking large executables.
@@ -190,6 +199,8 @@ class AutoDebugTrace {
 #define DBUG_POP() _db_pop_()
 #define DBUG_SET(a1) _db_set_(a1)
 #define DBUG_SET_INITIAL(a1) _db_set_init_(a1)
+#define DBUG_SAVE_CSSTACK(c) (c)->save_state()
+#define DBUG_RESTORE_CSSTACK(c) (c)->restore_state()
 #define DBUG_PROCESS(a1) _db_process_(a1)
 #define DBUG_FILE _db_fp_()
 #define DBUG_DUMP(keyword, a1, a2) _db_dump_(__LINE__, keyword, a1, a2)
@@ -268,6 +279,12 @@ extern void _db_flush_gcov_();
 #define DBUG_POP() \
   do {             \
   } while (0)
+#define DBUG_SAVE_CSSTACK(c) \
+  do {                \
+  } while (0)
+#define DBUG_RESTORE_CSSTACK(c) \
+  do {                \
+  } while (0)  
 #define DBUG_PROCESS(a1) \
   do {                   \
   } while (0)

@@ -49,8 +49,9 @@ class ParallelPlan {
  public:
   ParallelPlan(MEM_ROOT *mem_root, Query_block *query_block);
   bool Generate(bool &fallback);
+  void ResetCollector();
   void EndCollector(THD *thd, ha_rows *found_rows);
-  void DestroyCollector();
+  void DestroyCollector(THD *thd);
   bool GenerateAccessPath(Item_clone_context *clone_context);
 
  private:

@@ -4,6 +4,7 @@
 #include <functional>
 #include "sql/parallel_query/row_exchange.h"
 #include "sql/row_iterator.h"
+
 class Diagnostics_area;
 class AccessPath;
 struct ORDER;
@@ -18,10 +19,17 @@ class Collector {
   ~Collector();
   TABLE *CollectorTable() const { return m_table; }
   bool CreateCollectorTable();
+  void PrepareExecution(THD *thd);
+  /// This function could be called multiple times, because it called in
+  /// RowIterator::Init(), If an initial operation just need once, should put it
+  /// to PrepareExecution()
   bool Init(THD *thd);
+  void Reset();
   int Read(THD *thd, uchar *buf, ulong reclength);
   void End(THD *thd, ha_rows *found_rows);
+  void Destroy(THD *thd);
   AccessPath *PartialRootAccessPath() const;
+  PartialPlan *partial_plan() const { return m_partial_plan; }
   JOIN *PartialJoin() const;
   uint NumWorkers() const { return m_workers.size(); }
   bool CreateMergeSort(JOIN *join, ORDER *merge_order);
@@ -32,14 +40,18 @@ class Collector {
   bool LaunchWorkers(bool &has_failed_worker);
   void TerminateWorkers();
   bool HandleWorkerExited(uint windex);
+  void CollectStatusFromWorkers(THD *thd);
   Diagnostics_area *combine_workers_stmt_da(THD *thd, ha_rows *found_rows);
-
+#if !defined(NDEBUG)
+  CSStackClone dbug_cs_stack_clone;
+#endif
   PartialPlan *m_partial_plan;
   TABLE *m_table{nullptr};
   Filesort *m_merge_sort{nullptr};
   RowExchange *m_row_exchange{nullptr};
   RowExchangeReader *m_row_exchange_reader{nullptr};
   std::vector<Worker *> m_workers;
+
   mysql_mutex_t m_worker_state_lock;
   mysql_cond_t m_worker_state_cond;
 };

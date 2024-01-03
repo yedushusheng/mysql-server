@@ -298,6 +298,13 @@ static bool recreate_materialized_table(THD *thd, JOIN *join, ORDER *group,
       join->query_block->active_options(), limit_rows, "");
   if (!*table) return true;
   (*table)->alias = "<temporary>";
+
+  // See handling of need_tmp_before_win in make_tmp_tables_info(), if there is
+  // tmp table REF_SLICE_SAVED_BASE must be assigned.
+  if (join->ref_items[REF_SLICE_SAVED_BASE].is_null()) {
+    if (join->alloc_ref_item_slice(thd, REF_SLICE_SAVED_BASE)) return true;
+    join->copy_ref_item_slice(REF_SLICE_SAVED_BASE, REF_SLICE_ACTIVE);
+  }
   if (join->ref_items[ref_slice].is_null() &&
       join->alloc_ref_item_slice(thd, ref_slice))
     return true;
@@ -541,10 +548,12 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
   if (m_join_out->alloc_ref_item_slice(thd, dest_param->ref_slice)) return true;
   auto &query_block = dest_param->query_blocks[0];
   ORDER *group =
-      clone_order_list(m_join_in->group_list.order,
-                       {thd->mem_root, &query_block_out->base_ref_items,
-                        query_block_out->fields.size(),
-                        &query_block_in->base_ref_items[0]});
+      m_join_in->group_list.empty()
+          ? nullptr
+          : clone_order_list(m_join_in->group_list.order,
+                             {thd->mem_root, &query_block_out->base_ref_items,
+                              query_block_out->fields.size(),
+                              &query_block_in->base_ref_items[0]});
 
   if (recreate_materialized_table(thd, m_join_out, group,
                                   dest_param->table->s->is_distinct, false,

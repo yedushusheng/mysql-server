@@ -58,6 +58,8 @@ extern MYSQL_PLUGIN_IMPORT uint opt_debug_sync_timeout;
 extern int debug_sync_init(void);
 extern void debug_sync_end(void);
 extern void debug_sync_init_thread(THD *thd);
+extern bool debug_sync_clone_actions(THD *thd, THD *from_thd);
+extern void debug_sync_set_eval_id(THD *thd, ulong id);
 extern void debug_sync_claim_memory_ownership(THD *thd, bool claim);
 extern void debug_sync_end_thread(THD *thd);
 extern void debug_sync(THD *thd, const char *sync_point_name, size_t name_len);

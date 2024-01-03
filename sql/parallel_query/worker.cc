@@ -1,4 +1,6 @@
 #include "sql/parallel_query/worker.h"
+#include "scope_guard.h"
+#include "sql/debug_sync.h"  // DEBUG_SYNC
 #include "sql/item.h"
 #include "sql/item_sum.h"
 #include "sql/mysqld.h"
@@ -86,12 +88,9 @@ class Query_result_to_collector : public Query_result_interceptor {
 
     thd->inc_sent_row_count(1);
 
-    DBUG_EXECUTE_IF("pq_simulate_one_worker_error", {
-      bool simulate_one_worker_error_reported{false};
-      if (!simulate_one_worker_error_reported &&
-          thd->get_sent_row_count() == 10) {
-        my_error(ER_DA_OOM, MYF(0));
-        simulate_one_worker_error_reported = true;
+    DBUG_EXECUTE_IF("pq_simulate_one_worker_part_result_error", {
+      if (m_worker_id == 1 && thd->get_sent_row_count() == 10) {
+        my_error(ER_DA_UNKNOWN_ERROR_NUMBER, MYF(0), 1);
         return true;
       }
     });
@@ -103,6 +102,10 @@ class Query_result_to_collector : public Query_result_interceptor {
     m_row_exchange_writer->WriteEOF();
     return false;
   }
+
+#ifndef NDEBUG
+  uint m_worker_id{0};
+#endif
 };
 
 Worker::Worker(THD *thd, uint worker_id, PartialPlan *plan,
@@ -115,6 +118,11 @@ Worker::Worker(THD *thd, uint worker_id, PartialPlan *plan,
       m_state_cond(state_cond) {}
 
 bool Worker::Init() {
+#if defined(ENABLED_DEBUG_SYNC)
+  debug_sync_set_eval_id(&m_thd, m_id);
+  debug_sync_clone_actions(&m_thd, m_leader_thd);
+#endif
+
   if (!(m_message_queue = new (m_leader_thd->mem_root)
             MemMessageQueue(message_queue_ring_size)) ||
       m_message_queue->Init(m_leader_thd) ||
@@ -182,7 +190,6 @@ void Worker::InitExecThdFromLeader() {
   THD *thd = &m_thd;
   THD *from = m_leader_thd;
 
-  // FIXME: Clone thd->variables from leader
   // FIXME: XXX transaction state of thd may be changed by Attachable_trx. If
   // so, the transation state may be invalid when the workers finished
   thd->tx_isolation = from->tx_isolation;
@@ -195,12 +202,18 @@ void Worker::InitExecThdFromLeader() {
   thd->set_query_id(from->query_id);
   thd->set_security_context(from->security_context());
 
+  thd->m_digest = &thd->m_digest_state;
+  thd->m_digest->reset(thd->m_token_array, get_max_digest_length());
+
   //  LAST_INSERT_ID() push down need this, see class Item_func_last_insert_id;
   thd->first_successful_insert_id_in_prev_stmt =
       from->first_successful_insert_id_in_prev_stmt;
 
   //myrock_encode function need this.
   thd->save_raw_record = from->save_raw_record;
+
+  // Thank add_to_status(), Leader will count workers created
+  thd->status_var.pq_workers_created = 1;
 }
 
 void Worker::ThreadMainEntry() {
@@ -219,6 +232,12 @@ void Worker::ThreadMainEntry() {
   thd->store_globals();
 
   InitExecThdFromLeader();
+
+  // XXX Note, should after store_globals() calling because
+  // THR_mysys is allocated by set_my_thread_var_id() called by in it.
+  DBUG_RESTORE_CSSTACK(dbug_cs_stack_clone);
+
+  THD_STAGE_INFO(thd, stage_starting);
 
   thd->m_digest = &thd->m_digest_state;
   thd->m_digest->reset(thd->m_token_array, get_max_digest_length());
@@ -290,7 +309,10 @@ bool Worker::PrepareQueryPlan() {
   THD *thd = &m_thd;
   LEX *lex = thd->lex, *orig_lex = m_leader_thd->lex;
 
-  if (lex_start(thd)) return true;
+  if (lex_start(thd)) {
+    NotifyAbort();
+    return true;
+  }
 
   lex->is_partial_plan = true;
 
@@ -302,22 +324,20 @@ bool Worker::PrepareQueryPlan() {
   lex->explain_format = orig_lex->explain_format;
   lex->is_explain_analyze = orig_lex->is_explain_analyze;
 
-  Query_block *from_query_block = m_query_plan->QueryBlock();
-  JOIN *from_join = from_query_block->join;
-
-  // XXX MDL lock needs some process
-  Query_result_interceptor *query_result =
-      new (thd->mem_root) Query_result_to_collector(
-          &m_row_exchange_writer, &from_join->tmp_table_param);
+  auto *from_query_block = m_query_plan->QueryBlock();
+  auto *from_join = from_query_block->join;
+  auto *query_result = new (thd->mem_root) Query_result_to_collector(
+      &m_row_exchange_writer, &from_join->tmp_table_param);
 
   if (!query_result) {
-    // Let row exchange reader side return
-    m_row_exchange_writer.WriteEOF();
+    NotifyAbort();
     return true;
   }
   lex->result = query_result;
-
-  Query_block *query_block = lex->query_block;
+#ifndef NDEBUG
+  query_result->m_worker_id = m_id;
+#endif
+  auto *query_block = lex->query_block;
 
   // Clone partial query plan and open tables
   if (add_tables_to_query_block(thd, query_block,
@@ -328,7 +348,7 @@ bool Worker::PrepareQueryPlan() {
       lock_tables(thd, lex->query_tables, lex->table_count, 0))
     return true;
 
-  Query_expression *unit = lex->unit,
+  auto *unit = lex->unit,
                    *from_unit = m_query_plan->QueryExpression();
   ItemRefCloneResolver ref_clone_resolver(thd->mem_root, query_block);
   PartialItemCloneContext clone_context(thd, query_block, &ref_clone_resolver,
@@ -349,18 +369,22 @@ bool Worker::PrepareQueryPlan() {
 void Worker::ExecuteQuery() {
   THD *thd = &m_thd;
 
+  DEBUG_SYNC(thd, "before_pqworker_exec_query");
+
   if (PrepareQueryPlan()) {
     assert(thd->is_error() || thd->killed);
-    return;
+    goto cleanup;
   }
 
-  Query_expression *unit = thd->lex->unit;
-  unit->execute(thd);
+  thd->lex->unit->execute(thd);
 
-  Cleanup();
+  DEBUG_SYNC(thd, "after_pqworker_exec_query");
+
+ cleanup:
+  EndQuery();
 }
 
-void Worker::Cleanup() {
+void Worker::EndQuery() {
   THD *thd = &m_thd;
   LEX *lex = thd->lex;
   Query_expression *unit = lex->unit;
@@ -369,7 +393,7 @@ void Worker::Cleanup() {
   THD_STAGE_INFO(thd, stage_end);
 
   // In order to call JOIN::cleanup()
-  unit->cleanup(thd, false);
+  if (unit) unit->cleanup(thd, false);
 
   lex->clear_values_map();
 
@@ -382,7 +406,7 @@ void Worker::Cleanup() {
     trans_commit_stmt(thd);
 
   // In order to call JOIN::destroy()
-  unit->cleanup(thd, true);
+  if (unit) unit->cleanup(thd, true);
   thd->update_previous_found_rows();
 
   THD_STAGE_INFO(thd, stage_closing_tables);
@@ -400,6 +424,8 @@ void Worker::Cleanup() {
   thd->release_resources();
   thd->mem_root->Clear();
 }
+
+void Worker::NotifyAbort() { m_row_exchange_writer.WriteEOF(); }
 
 Diagnostics_area *Worker::stmt_da(ha_rows *found_rows, ha_rows *examined_rows) {
   assert(!IsRunning(true));

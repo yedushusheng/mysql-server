@@ -493,6 +493,10 @@ struct System_status_var {
   /* Number of statements sent from the client. */
   ulonglong questions;
 
+  // Parallel Query status vars
+  ulonglong pq_workers_created;
+  ulonglong pq_rows_exchanged;
+
   /// How many queries have been executed on a secondary storage engine.
   ulonglong secondary_engine_execution_count;
 

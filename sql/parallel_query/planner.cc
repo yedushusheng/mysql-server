@@ -67,11 +67,23 @@ static void ChooseParallelPlan(JOIN *join) {
     cause = "not_single_table_or_just_const_tables";
     return;
   }
+
   // Don't support window function and rollup yet
   if (!join->m_windows.is_empty() ||
       join->rollup_state != JOIN::RollupState::NONE) {
     cause = "include_window_function_or_rullup";
     return;
+  }
+
+  // We don't support IN sub query because we don't support clone of its refs in
+  // items yet.
+  auto *subselect = join->query_expression()->item;
+  if (subselect && subselect->substype() == Item_subselect::IN_SUBS) {
+    Item_in_subselect *subs = down_cast<Item_in_subselect *>(subselect);
+    if (subs->strategy == Subquery_strategy::SUBQ_EXISTS) {
+      cause = "IN_subquery_strategy_is_SUBQ_EXISTS";
+      return;
+    }
   }
 
   // Block parallel query based on table properties
@@ -554,6 +566,9 @@ bool ParallelPlan::Generate(bool &fallback) {
 
   partial_clone_context->final_resolve_refs();
 
+  if (!lex->is_explain() || lex->is_explain_analyze)
+    m_collector->PrepareExecution(thd);
+
   return false;
 }
 
@@ -572,8 +587,12 @@ bool ParallelPlan::CreateCollector(THD *thd) {
 void ParallelPlan::EndCollector(THD *thd, ha_rows *found_rows) {
   m_collector->End(thd, found_rows);
 }
-void ParallelPlan::DestroyCollector() {
+
+void ParallelPlan::ResetCollector() { m_collector->Reset(); }
+
+void ParallelPlan::DestroyCollector(THD *thd) {
   if (!m_collector) return;
+  m_collector->Destroy(thd);
   destroy(m_collector);
   m_collector = nullptr;
 }
@@ -732,6 +751,7 @@ bool Query_block::clone_from(THD *thd, Query_block *from,
 
     select_list_tables |= new_item->used_tables();
   }
+
   cond_value = from->cond_value;
   having_value = from->having_value;
   // Clone join

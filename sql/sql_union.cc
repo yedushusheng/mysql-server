@@ -1279,8 +1279,6 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
     auto join_cleanup = create_scope_guard([this, thd] {
       for (SELECT_LEX *sl = first_select(); sl; sl = sl->next_select()) {
         JOIN *join = sl->join;
-        if (join->parallel_plan)
-          join->parallel_plan->EndCollector(thd, &join->send_records);
         join->join_free();
         thd->inc_examined_row_count(join->examined_rows);
       }
