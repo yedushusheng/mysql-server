@@ -385,12 +385,20 @@ static void ChooseParallelPlan(JOIN *join) {
                               : "include_unsafe_items_in_fields";
     return;
   }
+
   if (qt->condition() &&
       ItemRefuseParallel(qt->condition(), &item_refuse_cause)) {
     cause =
         item_refuse_cause ? item_refuse_cause : "filter_has_unsafe_condition";
     return;
   }
+  Item *item = qt->table()->file->pushed_idx_cond;
+  if (item && ItemRefuseParallel(item, &item_refuse_cause)) {
+    cause = item_refuse_cause ? item_refuse_cause
+                              : "filter_pushed_idx_cond_has_unsafe_condition";
+    return;
+  }
+
   if (join->having_cond &&
       ItemRefuseParallel(join->having_cond, &item_refuse_cause)) {
     cause = item_refuse_cause ? item_refuse_cause : "having_is_unsafe";
@@ -878,7 +886,7 @@ bool ParallelPlan::Generate() {
 }
 
 bool ParallelPlan::CreateCollector(THD *thd) {
-  assert(m_parallel_degree < max_parallel_degree_limit);
+  assert(m_parallel_degree <= max_parallel_degree_limit);
   if (!(m_collector = new (thd->mem_root)
             Collector(m_parallel_degree, &m_partial_plan)) ||
       m_collector->CreateCollectorTable()) {

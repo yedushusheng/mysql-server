@@ -541,6 +541,7 @@ bool AccessPathRewriter::do_stream_rewrite(JOIN *join, AccessPath *path) {
                                   HA_POS_ERROR, &stream.table,
                                   &stream.temp_table_param))
     return true;
+  if (stream.join != join) stream.join = join;
 
   // See setup_tmptable_write_func(), stream aggregation and precomputed
   // GROUP BY needs this hack for aggregation functions.
@@ -655,6 +656,7 @@ static bool clone_handler_pushed_cond(Item_clone_context *context, uint keyno,
                                       const TABLE *from, TABLE *table) {
   Item *cond, *from_cond = from->file->pushed_idx_cond;
   if (from_cond) {
+    assert(from_cond->parallel_safe() == Item_parallel_safe::Safe);
     assert(keyno < MAX_KEY);
     if (!(cond = from_cond->clone(context))) return true;
 
