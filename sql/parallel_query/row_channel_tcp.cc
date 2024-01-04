@@ -18,8 +18,13 @@ class RowTxConnection {
   bool Init(THD *thd, Event *event, bool receiver) {
     m_thd = thd;
     m_event = event;
-    return EventServiceAddFd(m_socket, event, receiver);
+    if (!thd->m_pqcomm_event_session &&
+        !(thd->m_pqcomm_event_session = RegisterEventSession()))
+      return true;
+    return EventServiceAddFd(thd->m_pqcomm_event_session, m_socket, event,
+                             receiver);
   }
+
   static constexpr int SendBufferSize{8192};
   static constexpr int RecvBufferSize{8192};
 
@@ -33,7 +38,7 @@ class RowTxConnection {
     // TODO: handle flush error here
     flush(false);
     // TODO: handle remove error here
-    EventServiceRemoveFd(m_socket);
+    EventServiceRemoveFd(m_thd->m_pqcomm_event_session, m_socket, m_event);
     close(m_socket);
     m_socket = -1;
   }

@@ -2424,7 +2424,7 @@ static void clean_up(bool print_message) {
   ha_binlog_end(current_thd);
 
   pq::comm::StopEventService();
-  
+
   injector::free_instance();
   mysql_bin_log.cleanup();
 
@@ -7476,6 +7476,9 @@ int mysqld_main(int argc, char **argv)
 
   start_handle_manager();
 
+  if (pq::comm::start_service_when_system_up && !opt_initialize &&
+      pq::comm::StartEventService())
+    unireg_abort(MYSQLD_ABORT_EXIT);
   create_compress_gtid_table_thread();
 
   LogEvent()

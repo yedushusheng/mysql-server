@@ -144,6 +144,12 @@ class Dictionary_client;
 class DD_kill_immunizer;
 }  // namespace dd
 
+namespace pq {
+namespace comm {
+class EventSession;
+}
+}  // namespace pq
+
 class Internal_error_handler;
 class Modification_plan;
 class Query_result;
