@@ -681,7 +681,7 @@ bool PartialExecutor::PrepareQueryPlan(PartialExecutorContext *context) {
                                         context->find_user_var_entry);
   if (unit->clone_from(thd, from_unit, &clone_context)) return true;
 
-  clone_context.final_resolve_refs();
+  if (clone_context.final_resolve_refs()) return true;
 
   if (query_block->change_query_result(thd, query_result, nullptr)) return true;
 

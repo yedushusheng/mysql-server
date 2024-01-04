@@ -9,6 +9,7 @@ class QEP_TAB;
 struct AccessPath;
 
 #define PARALLEL_QUERY_JOIN (1ULL << 0)
+#define PARALLEL_QUERY_SELECT_COUNT (1ULL << 1)
 
 // Including the switch in this set, makes its default 'on'
 #define PARALLEL_QUERY_SWITCH_DEFAULT (PARALLEL_QUERY_JOIN)
@@ -25,7 +26,11 @@ class ItemRefCloneResolver : public Item_ref_clone_resolver {
  public:
   ItemRefCloneResolver(MEM_ROOT *mem_root, Query_block *query_block);
   bool resolve(Item_ref *item, const Item_ref *from) override;
-  void final_resolve() override;
+  bool final_resolve(Item_clone_context *context) override;
+
+#ifndef NDEBUG
+  Query_block *query_block_for_inline_clone_assert{nullptr};
+#endif
 
  private:
   mem_root_deque<std::pair<Item_ref *, const Item_ref *>> m_refs_to_resolve;

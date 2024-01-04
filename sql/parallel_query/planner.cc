@@ -409,6 +409,10 @@ static bool ChooseExecNodes(ParallelPlan *parallel_plan,
   return false;
 }
 
+bool parallel_query_enable_select_count(THD *thd) {
+  return thd->parallel_query_switch_flag(PARALLEL_QUERY_SELECT_COUNT);
+}
+
 static void ChooseParallelPlan(JOIN *join) {
   THD *thd = join->thd;
   Opt_trace_context *const trace = &thd->opt_trace;
@@ -454,12 +458,12 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  // Only create parallel scan when tdsql_parallel_optim is off. Multiple tables
-  // can not be supported yet because row count RPC request of non-parallel scan
-  // depends on QEP_TAB deeply see GetStartEndKey() in ha_rocksdb.cc
+  // Multiple tables can not be supported yet because row count RPC request of
+  // non-parallel scan depends on QEP_TAB deeply see GetStartEndKey() in
+  // ha_rocksdb.cc
   if (join->select_count &&
-      (thd->variables.tdsql_parallel_optim || join->primary_tables > 1)) {
-    cause = "plan_with_unsupported_select_count";
+      (!parallel_query_enable_select_count(thd) || join->primary_tables > 1)) {
+    cause = "disabled_or_unsupported_select_count";
     return;
   }
 
@@ -623,7 +627,38 @@ bool ItemRefCloneResolver::resolve(Item_ref *item, const Item_ref *from) {
   return m_refs_to_resolve.push_back({item, from});
 }
 
-void ItemRefCloneResolver::final_resolve() {
+#ifndef NDEBUG
+// Assert for inline clone. an Item_ref fail to resolve, there are 2 cases
+// currently, a. refer to a unpushed item; b. a merged derived leaves an
+// item_ref point to its own base_ref_items.
+static bool item_is_const_or_in_merged_deriveds(const Item *item,
+                                                Query_block *query_block) {
+  if (item->const_item()) return true;
+  for (TABLE_LIST *tl = query_block->get_table_list(); tl;
+       tl = tl->next_local) {
+    if (!tl->is_view_or_derived() && !tl->is_merged()) continue;
+    for (Field_translator *transl = tl->field_translation;
+         transl < tl->field_translation_end; transl++) {
+      if (transl->item == item) return true;
+    }
+  }
+
+  return false;
+}
+#endif
+
+static bool ResolveItemRefByInlineClone(Item_ref *item_ref,
+                                        const Item_ref *from,
+                                        Item_clone_context *context) {
+  Item **ref_item;
+  if (!(ref_item = (Item **)new (context->mem_root()) Item **) ||
+      !(*ref_item = from->ref_item()->clone(context)))
+    return true;
+  item_ref->set_ref_pointer(ref_item);
+  return false;
+}
+
+bool ItemRefCloneResolver::final_resolve(Item_clone_context *context) {
   auto &base_ref_items = m_query_block->base_ref_items;
   for (auto &ref : m_refs_to_resolve) {
     auto *item_ref = ref.first;
@@ -635,9 +670,17 @@ void ItemRefCloneResolver::final_resolve() {
         break;
       }
     }
+    if (!item_ref->ref_pointer()) {
+      assert(!query_block_for_inline_clone_assert ||
+             item_is_const_or_in_merged_deriveds(
+                 from, query_block_for_inline_clone_assert));
 
+      if (ResolveItemRefByInlineClone(item_ref, from, context)) return true;
+    }
     assert(item_ref->ref_item());
   }
+
+  return false;
 }
 
 Query_expression *PartialPlan::QueryExpression() const {
@@ -1016,12 +1059,7 @@ class OriginItemRewriteContext : public Item_clone_context {
   bool resolve_view_ref(Item_view_ref *item,
                         const Item_view_ref *from) override {
     assert(!from->get_first_inner_table());
-    Item **ref_item;
-    if (!( ref_item = (Item **) new (mem_root()) Item **) ||
-        !(*ref_item = from->ref_item()->clone(this)))
-      return true;
-    item->set_ref_pointer(ref_item);
-    return false;
+    return ResolveItemRefByInlineClone(item, from, this);
   }
 
  private:
@@ -1041,6 +1079,9 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
   Opt_trace_object trace(&thd->opt_trace, "final_plan");
 
   ItemRefCloneResolver ref_resolver(thd->mem_root, source_query_block);
+#ifndef NDEBUG
+  ref_resolver.query_block_for_inline_clone_assert = source_query_block;
+#endif
   OriginItemRewriteContext clone_context(
       thd, source_query_block, &ref_resolver,
       m_aggregate_strategy == AggregateStrategy::OnePhase, collector_table,
@@ -1095,7 +1136,7 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
   }
 
   // Make all cloned ref point to correct item.
-  clone_context.final_resolve_refs();
+  if (clone_context.final_resolve_refs()) return true;
 
   return false;
 }
@@ -1138,6 +1179,9 @@ bool ParallelPlan::GeneratePartialPlan(
 
   auto *ref_clone_resolver =
       new (mem_root) ItemRefCloneResolver(mem_root, partial_query_block);
+#ifndef NDEBUG
+  ref_clone_resolver->query_block_for_inline_clone_assert = source_query_block;
+#endif
   auto *clone_context = new (mem_root)
       PartialItemGenContext(thd, partial_query_block, ref_clone_resolver);
   if (!ref_clone_resolver || !clone_context) return true;
@@ -1208,7 +1252,7 @@ bool ParallelPlan::Generate() {
 
   if (GenerateAccessPath(partial_clone_context)) return true;
 
-  partial_clone_context->final_resolve_refs();
+  if (partial_clone_context->final_resolve_refs()) return true;
 
   if (setup_sum_funcs(thd, source_join->sum_funcs)) return true;
 
@@ -1415,8 +1459,6 @@ bool Query_block::clone_from(THD *thd, Query_block *from,
     Item *new_item = item->clone(context);
     if (!new_item || fields.push_back(new_item)) return true;
     base_ref_items[i++] = new_item;
-
-    select_list_tables |= new_item->used_tables();
   }
 
   cond_value = from->cond_value;
