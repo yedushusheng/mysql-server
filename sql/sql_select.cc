@@ -4659,6 +4659,7 @@ bool JOIN::make_tmp_tables_info() {
             !(qep_tab[0].quick() &&
               qep_tab[0].quick()->is_agg_loose_index_scan());
         if (prepare_sum_aggregators(sum_funcs, need_distinct)) return true;
+        merge_sort = group_list;
         group_list.clean();
         if (setup_sum_funcs(thd, sum_funcs)) return true;
       }

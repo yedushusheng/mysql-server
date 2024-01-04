@@ -56,6 +56,7 @@ static bool ItemRefuseParallel(const Item *item, const char **cause) {
     *cause = "item_refer_to_outer_query_field";
     return true;
   }
+
   return false;
 }
 
@@ -112,9 +113,8 @@ static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
 }
 
 static void get_scan_range_for_ref(MEM_ROOT *mem_root, TABLE_REF *ref,
-                                   uint *keynr,
-                                   key_range **min_key, key_range **max_key,
-                                   bool ref_or_null) {
+                                   uint *keynr, key_range **min_key,
+                                   key_range **max_key, bool ref_or_null) {
   *keynr = ref->key;
   *min_key = new (mem_root) key_range();
   (*min_key)->key = (const uchar *)ref->key_buff;
@@ -340,9 +340,9 @@ static bool ChooseParallelScanTable(ParallelPlan *parallel_plan, QEP_TAB *&qt,
   return false;
 }
 
-static bool ChooseExecNodes(ParallelPlan *parallel_plan, QEP_TAB *parallel_table,
-                            uint32 parallel_degree, bool forbid_degree_reduce,
-                            const char **cause) {
+static bool ChooseExecNodes(ParallelPlan *parallel_plan,
+                            QEP_TAB *parallel_table, uint32 parallel_degree,
+                            bool forbid_degree_reduce, const char **cause) {
   auto *join = parallel_plan->SourceJoin();
   THD *thd = join->thd;
   auto *dist_adapter = parallel_plan->DistAdapter();
@@ -701,9 +701,7 @@ ParallelPlan::~ParallelPlan() {
   DestroyCollector(thd());
 }
 
-JOIN *ParallelPlan::PartialJoin() const {
-  return m_partial_plan.Join();
-}
+JOIN *ParallelPlan::PartialJoin() const { return m_partial_plan.Join(); }
 
 JOIN *ParallelPlan::SourceJoin() const { return m_join; }
 
@@ -766,6 +764,40 @@ class PartialItemGenContext : public Item_clone_context {
   }
 };
 
+static bool can_field_push_down(AggregateStrategy agg_strategy, Item *item) {
+  assert(item->parallel_safe() == Item_parallel_safe::Safe);
+
+  bool is_sum_func = item->type() == Item::SUM_FUNC_ITEM;
+
+  if (is_sum_func && agg_strategy == AggregateStrategy::OnePhase) return false;
+
+  return !(item->has_aggregation() || item->const_item()) || is_sum_func;
+}
+
+static AggregateStrategy decide_aggregate_strategy(JOIN *join) {
+  bool group_scan = false;
+  if (join->primary_tables == 1) {
+    auto *qt = &join->qep_tab[0];
+    if (qt->type() == JT_RANGE &&
+        qt->quick()->get_type() == QUICK_SELECT_I::QS_TYPE_GROUP_MIN_MAX)
+
+      group_scan = true;
+  }
+
+  // Check if there are distinct aggregation functions, e.g.
+  // COUNT(DISTINCT). There is a specify case: distinct aggregation
+  // functions + group min max scan should use a two phase aggregation.
+  for (auto **sum_func_ptr = join->sum_funcs; *sum_func_ptr; sum_func_ptr++) {
+    if (!(*sum_func_ptr)->has_with_distinct()) continue;
+
+    return group_scan ? AggregateStrategy::TwoPhase
+                      : AggregateStrategy::OnePhase;
+  }
+
+  return group_scan ? AggregateStrategy::PushedOnePhase
+                    : AggregateStrategy::TwoPhase;
+}
+
 bool ParallelPlan::GenPartialFields(Item_clone_context *context,
                                     FieldsPushdownDesc *fields_pushdown_desc) {
   Query_block *source = SourceQueryBlock();
@@ -775,10 +807,10 @@ bool ParallelPlan::GenPartialFields(Item_clone_context *context,
   // See get_best_group_min_max(), which only support 1 table with no rollup
   assert(join->rollup_state == JOIN::RollupState::NONE);
 
-  auto *qt = &join->qep_tab[0];
+  m_aggregate_strategy = decide_aggregate_strategy(join);
+
   bool sumfuncs_full_pushdown =
-      qt->quick() &&
-      qt->quick()->get_type() == QUICK_SELECT_I::QS_TYPE_GROUP_MIN_MAX;
+      m_aggregate_strategy == AggregateStrategy::PushedOnePhase;
 
   for (uint i = 0; i < source->fields.size(); i++) {
     Item *new_item, *item = source->fields[i];
@@ -787,18 +819,15 @@ bool ParallelPlan::GenPartialFields(Item_clone_context *context,
     // const_item(), see optimize_aggregated_query(), it calls make_const()
     // to make MIN(), MAX() as a const. XXX This should be not pushed down
     // if non-pushed down sum got supported.
-    assert(item->parallel_safe() == Item_parallel_safe::Safe);
-    bool is_sum_func = item->type() == Item::SUM_FUNC_ITEM;
-    bool pushdown =
-        !(item->has_aggregation() || item->const_item()) || is_sum_func;
 
-    if (pushdown) {
+    if (can_field_push_down(m_aggregate_strategy, item)) {
       if (!(new_item = item->clone(context))) return true;
+      bool is_sum_func = item->type() == Item::SUM_FUNC_ITEM;
       if (is_sum_func && !sumfuncs_full_pushdown) {
         Item_sum *item_sum = down_cast<Item_sum *>(new_item);
         item_sum->set_sum_stage(Item_sum::TRANSITION_STAGE);
-        // change item_name so let EXPLAIN doesn't show Sum(Sum(a)) for leader's
-        // aggregation
+        // change item_name so let EXPLAIN doesn't show Sum(Sum(a)) for
+        // leader's aggregation
         Item *arg = item_sum->get_arg(0);
         item_sum->item_name = arg->item_name;
       }
@@ -810,7 +839,7 @@ bool ParallelPlan::GenPartialFields(Item_clone_context *context,
     } else {
       FieldPushdownDesc pushdown_desc(FieldPushdownDesc::Clone);
       mem_root_deque<Item_field *> field_list(thd()->mem_root);
-      enum_walk walk{enum_walk::PREFIX | enum_walk::ELIMINATE_SUM};
+      enum_walk walk{enum_walk::PREFIX | enum_walk::ITEM_CLONE};
       item->walk(&Item::collect_item_field_processor, walk,
                  pointer_cast<uchar *>(&field_list));
       for (auto *item_field : field_list) {
@@ -859,9 +888,10 @@ class OriginItemRewriteContext : public Item_clone_context {
  public:
   OriginItemRewriteContext(THD *thd, Query_block *query_block,
                            ItemRefCloneResolver *ref_resolver,
-                           TABLE *collector_table,
+                           bool nonpushed_sum_funcs, TABLE *collector_table,
                            mem_root_deque<Item *> &partial_fields)
       : Item_clone_context(thd, query_block, ref_resolver),
+        m_nonpushed_sum_funcs(nonpushed_sum_funcs),
         m_collector_table(collector_table),
         m_partial_fields(partial_fields) {}
 
@@ -916,29 +946,35 @@ class OriginItemRewriteContext : public Item_clone_context {
   }
 
   Item *replace_sum_arg(Item_sum *item_func, const Item *arg) override {
+    if (m_nonpushed_sum_funcs) return nullptr;
     // Find table field no for pushed down item sum
     for (uint i = 0; i < m_partial_fields.size(); i++) {
-      auto *pitem = m_partial_fields[i];
-      if (item_func->is_identical(pitem)) {
+      auto *partial_item = m_partial_fields[i];
+      if (item_func->is_identical(partial_item)) {
         Item_field *item_field = new Item_field(m_collector_table->field[i]);
         // Arg could be nullptr, e.g. PTI_count_sym
         if (arg) item_field->set_id(arg->id());
         return item_field;
       }
     }
-    assert(0);
+
+    assert(false);
+
     return nullptr;
   }
 
   bool resolve_view_ref(Item_view_ref *item,
                         const Item_view_ref *from) override {
-    item->ref = from->ref;
-    if (from->get_first_inner_table())
-      item->set_first_inner_table(from->get_first_inner_table());
+    assert(!from->get_first_inner_table());
+    if (!(item->ref = (Item **)new (mem_root()) Item *) ||
+        !(*item->ref = (*from->ref)->clone(this)))
+      return true;
+
     return false;
   }
 
  private:
+  bool m_nonpushed_sum_funcs;
   TABLE *m_collector_table;
   mem_root_deque<Item *> &m_partial_fields;
 };
@@ -954,8 +990,10 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
   Opt_trace_object trace(&thd->opt_trace, "final_plan");
 
   ItemRefCloneResolver ref_resolver(thd->mem_root, source_query_block);
-  OriginItemRewriteContext clone_context(thd, source_query_block, &ref_resolver,
-                                         collector_table, partial_fields);
+  OriginItemRewriteContext clone_context(
+      thd, source_query_block, &ref_resolver,
+      m_aggregate_strategy == AggregateStrategy::OnePhase, collector_table,
+      partial_fields);
 
   // Process original fields
   for (uint i = 0; i < source_query_block->fields.size(); i++) {
@@ -978,7 +1016,8 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
       if (!(new_item = item->clone(&clone_context))) return true;
       if (new_item->type() == Item::SUM_FUNC_ITEM) {
         Item_sum *item_sum = down_cast<Item_sum *>(new_item);
-        item_sum->set_sum_stage(Item_sum::COMBINE_STAGE);
+        if (m_aggregate_strategy == AggregateStrategy::TwoPhase)
+          item_sum->set_sum_stage(Item_sum::COMBINE_STAGE);
         for (auto **sum_func_ptr = source_join->sum_funcs; *sum_func_ptr;
              sum_func_ptr++) {
           if (!item_sum->is_identical(*sum_func_ptr)) continue;
@@ -1006,7 +1045,6 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
 
   // Make all cloned ref point to correct item.
   clone_context.final_resolve_refs();
-
 
   return false;
 }
@@ -1100,7 +1138,8 @@ bool ParallelPlan::Generate() {
   Item_clone_context *partial_clone_context;
   FieldsPushdownDesc fields_pushdown_desc(mem_root);
 
-  if (GeneratePartialPlan(&partial_clone_context, &fields_pushdown_desc)) return true;
+  if (GeneratePartialPlan(&partial_clone_context, &fields_pushdown_desc))
+    return true;
 
   if (GenFinalFields(&fields_pushdown_desc)) return true;
 
@@ -1116,6 +1155,8 @@ bool ParallelPlan::Generate() {
   if (GenerateAccessPath(partial_clone_context)) return true;
 
   partial_clone_context->final_resolve_refs();
+
+  if (setup_sum_funcs(thd, source_join->sum_funcs)) return true;
 
   if (!lex->is_explain() || lex->is_explain_analyze)
     m_collector->PrepareExecution(thd);
@@ -1153,7 +1194,7 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   THD *thd = source_join->thd;
   AccessPath *partial_path;
   AccessPath *parallelized_path;
-  AccessPathParallelizer rewriter(clone_context, source_join, &m_partial_plan);
+  AccessPathParallelizer rewriter(this, clone_context);
   Opt_trace_object trace_wrapper(&thd->opt_trace);
   Opt_trace_object trace(&thd->opt_trace, "access_path_rewriting");
 
@@ -1269,8 +1310,8 @@ bool Query_block::clone_from(THD *thd, Query_block *from,
   if (setup_tables(thd, get_table_list(), false)) return true;
 
   // Clone table attributes from @from tables
-  for (TABLE_LIST *tl = leaf_tables, *ftl = from->leaf_tables;
-       tl && ftl; tl = tl->next_leaf, ftl = ftl->next_leaf) {
+  for (TABLE_LIST *tl = leaf_tables, *ftl = from->leaf_tables; tl && ftl;
+       tl = tl->next_leaf, ftl = ftl->next_leaf) {
     tl->m_id = ftl->m_id;
     TABLE *table = tl->table;
     TABLE *ftable = ftl->table;
@@ -1314,8 +1355,7 @@ bool Query_block::clone_from(THD *thd, Query_block *from,
   uint i = 0;
   for (auto *item : from->fields) {
     Item *new_item = item->clone(context);
-    if (!new_item || fields.push_back(new_item))
-      return true;
+    if (!new_item || fields.push_back(new_item)) return true;
     base_ref_items[i++] = new_item;
 
     select_list_tables |= new_item->used_tables();
@@ -1325,10 +1365,10 @@ bool Query_block::clone_from(THD *thd, Query_block *from,
   having_value = from->having_value;
   // Clone join
   if (join && join->clone_from(from->join, context)) {
-      assert(thd->is_error() || thd->killed);
+    assert(thd->is_error() || thd->killed);
 
-      return true;
-    }
+    return true;
+  }
 
   return false;
 }
@@ -1374,7 +1414,7 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
       from->tmp_table_param.allow_group_via_temp_table;
   tmp_table_param.sum_func_count = from->tmp_table_param.sum_func_count;
 
-  assert(query_block->olap ==  UNSPECIFIED_OLAP_TYPE);
+  assert(query_block->olap == UNSPECIFIED_OLAP_TYPE);
   if (alloc_func_list()) return true;
 
   set_optimized();
@@ -1400,7 +1440,7 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
 
   if (!(m_root_access_path =
             aprewriter.clone_and_rewrite(from->root_access_path())))
-      return true;
+    return true;
 
   if (thd->is_error()) return true;
 

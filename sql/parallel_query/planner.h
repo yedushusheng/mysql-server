@@ -121,6 +121,8 @@ class ParallelDegreeHolder {
   uint m_degree{0};
 };
 
+enum class AggregateStrategy { OnePhase, PushedOnePhase, TwoPhase };
+
 using FieldsPushdownDesc = mem_root_deque<FieldPushdownDesc>;
 
 class ParallelPlan {
@@ -128,6 +130,7 @@ class ParallelPlan {
   ParallelPlan(JOIN *join);
   ~ParallelPlan();
   JOIN *SourceJoin() const;
+  JOIN *PartialJoin() const;
   bool Generate();
   void ResetCollector();
   void EndCollector(THD *thd, ha_rows *found_rows);
@@ -136,15 +139,25 @@ class ParallelPlan {
     return m_parallel_degree.acquire(degree, forbid_reduce) == 0;
   }
   void SetParallelDegree(uint degree) { return m_parallel_degree.set(degree); }
-
   uint ParallelDegree() const { return m_parallel_degree.degree(); }
+
   void SetTableParallelScan(TABLE *table, ulong suggested_ranges,
                             const parallel_scan_desc_t &psdesc) {
     m_partial_plan.SetTableParallelScan(table, suggested_ranges, psdesc);
   }
+  void SetParallelScanReverse() { m_partial_plan.SetParallelScanReverse(); }
   bool IsParallelScanTable(TABLE *table) {
     return m_partial_plan.IsParallelScanTable(table);
   }
+
+  bool NonpushedAggregate() const {
+    return m_aggregate_strategy == AggregateStrategy::OnePhase;
+  }
+
+  bool FullPushedAggregate() const {
+    return m_aggregate_strategy == AggregateStrategy::PushedOnePhase;
+  }
+
   void SetDistAdapter(dist::Adapter *adapter) { m_dist_adapter = adapter; }
   dist::Adapter *DistAdapter() const { return m_dist_adapter; }
 
@@ -158,7 +171,6 @@ class ParallelPlan {
   THD *thd() const;
   Query_block *SourceQueryBlock() const;
   Query_block *PartialQueryBlock() const { return m_partial_plan.QueryBlock(); }
-  JOIN *PartialJoin() const;
 
   bool AddPartialLeafTables();
   bool ResolvePushdownFields(FieldsPushdownDesc *fields_pushdown_desc);
@@ -175,8 +187,11 @@ class ParallelPlan {
 
   JOIN *m_join;
 
-  mem_root_deque<Item *>
-      m_fields;  // The new item fields create by parallel plan
+  // The new item fields create by parallel plan
+  mem_root_deque<Item *> m_fields;
+
+  AggregateStrategy m_aggregate_strategy{AggregateStrategy::TwoPhase};
+
   Collector *m_collector{nullptr};
   // The query plan template for workers, workers clone plan from this.
   PartialPlan m_partial_plan;

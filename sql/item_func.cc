@@ -484,15 +484,21 @@ bool Func_args_handle::param_type_uses_non_param(THD *thd,
   return param_type_uses_non_param_inner(thd, arg_count, args, def);
 }
 
-bool Item_func::walk(Item_processor processor, enum_walk walk,
-                     uchar *argument) {
+bool Item_func::walk_args(Item_processor processor, enum_walk walk,
+                          uchar *argument, Item **func_args) {
   if ((walk & enum_walk::PREFIX) && (this->*processor)(argument)) return true;
 
   Item **arg, **arg_end;
-  for (arg = args, arg_end = args + arg_count; arg != arg_end; arg++) {
+  for (arg = func_args, arg_end = func_args + arg_count; arg != arg_end;
+       arg++) {
     if ((*arg)->walk(processor, walk, argument)) return true;
   }
   return (walk & enum_walk::POSTFIX) && (this->*processor)(argument);
+}
+
+bool Item_func::walk(Item_processor processor, enum_walk walk,
+                     uchar *argument) {
+  return walk_args(processor, walk, argument, args);
 }
 
 void Item_func::traverse_cond(Cond_traverser traverser, void *argument,

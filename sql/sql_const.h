@@ -442,7 +442,7 @@ enum class enum_walk {
   SUBQUERY = 0x04,
   SUBQUERY_PREFIX = 0x05,  // Combine prefix and subquery traversal
   SUBQUERY_POSTFIX = 0x06,  // Combine postfix and subquery traversal
-  ELIMINATE_SUM = 0x08
+  ITEM_CLONE = 0x08
 };
 
 inline enum_walk operator|(enum_walk lhs, enum_walk rhs) {

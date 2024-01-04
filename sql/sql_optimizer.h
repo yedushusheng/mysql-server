@@ -836,6 +836,8 @@ class JOIN {
   bool clear_sj_tmp_tables();
   bool clear_corr_derived_tmp_tables();
 
+  void cleanup_item_list(const mem_root_deque<Item *> &items) const;
+
   void mark_const_table(JOIN_TAB *table, Key_use *key);
   /// State of execution plan. Currently used only for EXPLAIN
   enum enum_plan_state {
@@ -960,7 +962,6 @@ class JOIN {
 
  private:
   void set_prefix_tables();
-  void cleanup_item_list(const mem_root_deque<Item *> &items) const;
   void set_semijoin_embedding();
   bool make_join_plan();
   bool init_planner_arrays();

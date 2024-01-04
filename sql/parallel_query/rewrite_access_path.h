@@ -1,18 +1,11 @@
 #ifndef PARALLEL_QUERY_REWRITE_ACCESS_PATH_H
 #define PARALLEL_QUERY_REWRITE_ACCESS_PATH_H
 
-#include "my_base.h"
-#include "sql/item.h"
+#include "sql/parallel_query/planner.h"
 
-struct AccessPath;
-class Item_clone_context;
-class JOIN;
 class RowIterator;
-class QUICK_SELECT_I;
 
 namespace pq {
-class PartialPlan;
-class Collector;
 
 /**
    A access path rewriter to decompose access path tree into parallel plan: a
@@ -42,6 +35,14 @@ class AccessPathRewriter {
   void set_sorting_info(SortingInfo sorting_info) {
     m_sorting_info = sorting_info;
   }
+
+  /// workhorse dispatcher for each access path rewrite, parameters: @param
+  /// in: current input access path, it can be changed by type driver
+  /// routine. @param curjoin: innermost parent JOIN access path node which
+  /// has 2 children; @outer_path the outer child access path if it is a
+  /// JOIN; @param out: current result access path node until now, it is the
+  /// access path of partial plan for plan parallelizer and the worker
+  /// execution copy of a plan for the partial access path rewriter.
   bool rewrite_each_access_path(AccessPath *&in, AccessPath *curjoin,
                                 AccessPath *outer_path, AccessPath *&out);
 
@@ -68,13 +69,14 @@ class AccessPathRewriter {
 
   virtual bool rewrite_filter(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_sort(AccessPath *, AccessPath *) { return false; }
-  virtual bool rewrite_aggregate(AccessPath *, AccessPath *) { return false; }
-  virtual bool rewrite_temptable_aggregate(AccessPath *in, AccessPath *out) = 0;
+  virtual bool rewrite_aggregate(AccessPath *, AccessPath *&) { return false; }
+  virtual bool rewrite_temptable_aggregate(AccessPath *in,
+                                           AccessPath *&out) = 0;
   virtual bool rewrite_limit_offset(AccessPath *, AccessPath *, bool) {
     return false;
   }
   virtual bool rewrite_stream(AccessPath *in, AccessPath *out) = 0;
-  virtual bool rewrite_materialize(AccessPath *in, AccessPath *out,
+  virtual bool rewrite_materialize(AccessPath *in, AccessPath *&out,
                                    bool under_join);
   virtual bool rewrite_weedout(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_remove_duplicates_on_index(AccessPath *, AccessPath *) {
@@ -105,8 +107,8 @@ class AccessPathRewriter {
 
 class AccessPathParallelizer : public AccessPathRewriter {
  public:
-  AccessPathParallelizer(Item_clone_context *item_clone_context, JOIN *join_in,
-                         PartialPlan *partial_plan);
+  AccessPathParallelizer(ParallelPlan *parallel_plan,
+                         Item_clone_context *item_clone_context);
   /// Return parallelized access path tree. It may not be @param in e.g. All
   /// plan has been pushed.
   AccessPath *parallelize_access_path(Collector *collector, AccessPath *in,
@@ -136,19 +138,19 @@ class AccessPathParallelizer : public AccessPathRewriter {
 
   bool rewrite_filter(AccessPath *in, AccessPath *out) override;
   bool rewrite_sort(AccessPath *in, AccessPath *out) override;
-  bool rewrite_aggregate(AccessPath *in, AccessPath *out) override;
-  bool rewrite_temptable_aggregate(AccessPath *in, AccessPath *out) override;
+  bool rewrite_aggregate(AccessPath *in, AccessPath *&out) override;
+  bool rewrite_temptable_aggregate(AccessPath *in, AccessPath *&out) override;
   bool rewrite_limit_offset(AccessPath *in, AccessPath *out,
                             bool under_join) override;
   bool rewrite_stream(AccessPath *in, AccessPath *out) override;
-  bool rewrite_materialize(AccessPath *in, AccessPath *out,
+  bool rewrite_materialize(AccessPath *in, AccessPath *&out,
                            bool under_join) override;
 
   void post_rewrite_out_path(AccessPath *out) override;
 
   void rewrite_index_access_path(TABLE *table, bool use_order, bool reverse);
 
-  PartialPlan *m_partial_plan;
+  ParallelPlan *m_parallel_plan;
   TABLE *m_collector_table{nullptr};
   AccessPath **m_collector_path_pos{nullptr};
   ORDER *merge_sort{nullptr};
@@ -193,10 +195,10 @@ class PartialAccessPathRewriter : public AccessPathRewriter {
 
   bool rewrite_filter(AccessPath *in, AccessPath *out) override;
   bool rewrite_sort(AccessPath *in, AccessPath *out) override;
-  bool rewrite_aggregate(AccessPath *in, AccessPath *out) override;
-  bool rewrite_temptable_aggregate(AccessPath *in, AccessPath *out) override;
+  bool rewrite_aggregate(AccessPath *in, AccessPath *&out) override;
+  bool rewrite_temptable_aggregate(AccessPath *in, AccessPath *&out) override;
   bool rewrite_stream(AccessPath *in, AccessPath *out) override;
-  bool rewrite_materialize(AccessPath *in, AccessPath *out,
+  bool rewrite_materialize(AccessPath *in, AccessPath *&out,
                            bool under_join) override;
   bool rewrite_weedout(AccessPath *in, AccessPath *out) override;
   bool rewrite_remove_duplicates_on_index(AccessPath *in,

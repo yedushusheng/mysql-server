@@ -892,6 +892,7 @@ Item *Item_sum::set_arg(THD *thd, uint i, Item *new_val) {
   if (!orig_args && !(orig_args = thd->mem_root->ArrayAlloc<Item *>(arg_count)))
     return nullptr;
   orig_args[i] = args[i];
+  new_val->set_id(args[i]->id());
   thd->change_item_tree(args + i, new_val);
   return new_val;
 }

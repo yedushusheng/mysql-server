@@ -616,7 +616,6 @@ class Item_sum : public Item_result_field, public Func_args_handle {
   virtual bool keep_field_type() const { return false; }
   bool resolve_type(THD *) override;
   Item_parallel_safe parallel_safe() const override {
-    if (with_distinct) return Item_parallel_safe::Restricted;
     return Item_func::parallel_safe();
   }
   bool init_from(const Item *item, Item_clone_context *context) override;
@@ -707,9 +706,12 @@ class Item_sum : public Item_result_field, public Func_args_handle {
     force_copy_fields = false;
   }
 
-  bool walk(Item_processor processor, enum_walk walk, uchar *arg) override {
-    if (walk & enum_walk::ELIMINATE_SUM) return false;
-    return Item_func::walk(processor, walk, arg);
+  bool walk(Item_processor processor, enum_walk walk,
+            uchar *argument) override {
+    if ((walk & enum_walk::ITEM_CLONE) && orig_args)
+      return walk_args(processor, walk, argument, orig_args);
+
+    return Item_func::walk(processor, walk, argument);
   }
 
   /**

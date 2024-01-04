@@ -488,6 +488,8 @@ class Item_func : public Item_result_field, public Func_args_handle {
                                             item_sep);
   }
 
+  bool walk_args(Item_processor processor, enum_walk walk, uchar *argument,
+                 Item **func_args);
   bool walk(Item_processor processor, enum_walk walk, uchar *arg) override;
   Item *transform(Item_transformer transformer, uchar *arg) override;
   Item *compile(Item_analyzer analyzer, uchar **arg_p,
