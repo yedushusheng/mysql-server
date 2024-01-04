@@ -1,10 +1,14 @@
 #ifndef PARALLEL_QUERY_WORKER_H
 #define PARALLEL_QUERY_WORKER_H
-#include "sql/parallel_query/row_exchange.h"
-#include "sql/sql_class.h"
+#include "my_base.h"
+#include "sql/sql_error.h"
 
 namespace pq {
 class PartialPlan;
+namespace comm {
+class Event;
+class RowChannel;
+}  // namespace comm
 
 #ifndef NDEBUG
 #define SET_DBUG_CS_STACK_CLONE(worker, cs_stack) \
@@ -25,7 +29,8 @@ class Worker {
   /// QUICK_GROUP_MIN_MAX_SELECT::get_next(). When a worker is in Cleaning
   /// state, Terminate() skips to send termination request to it.
   enum class State { None, Starting, Started, Cleaning, Finished, StartFailed };
-  Worker(uint id) : m_id(id) {}
+  Worker(uint id, comm::Event *state_event)
+      : m_id(id), m_state_event(state_event) {}
   virtual ~Worker();
 
  public:
@@ -35,8 +40,8 @@ class Worker {
   virtual void Terminate() = 0;
 
   // State interfaces
-  bool IsRunning(bool need_state_lock) const {
-    auto cur_state = state(need_state_lock);
+  bool IsRunning() const {
+    auto cur_state = state();
     bool is_running =
         (cur_state == State::Started || cur_state == State::Cleaning ||
          cur_state == State::Starting);
@@ -58,14 +63,18 @@ class Worker {
 
  protected:
   // Internal state functions
-  virtual State state(bool need_state_lock = true) const = 0;
-  virtual void SetState(State state) = 0;
+  virtual State state() const = 0;
+  virtual void SetState(State state);
+
   const uint m_id;
   /// Communication facilities for leader, leader use this channel to
   /// receive rows from workers. Note, because we only have two phase of
   /// query plan, so we can put receiver channel here, move this to suitable
   /// position.
   comm::RowChannel *m_receiver_channel{nullptr};
+
+ private:
+  comm::Event *m_state_event;
 };
 
 enum class WorkerScheduleType { bthread, SysThread };
@@ -74,7 +83,7 @@ constexpr ulong default_worker_schedule_type =
     static_cast<ulong>(WorkerScheduleType::bthread);
 extern ulong worker_handling;
 
-Worker *CreateLocalWorker(uint id, THD *thd, PartialPlan *plan,
-                          mysql_mutex_t *state_lock, mysql_cond_t *state_cond);
-}
+Worker *CreateLocalWorker(uint id, comm::Event *state_event, THD *thd,
+                          PartialPlan *plan);
+}  // namespace pq
 #endif
