@@ -40,28 +40,23 @@ MessageBuffer::~MessageBuffer() { my_free(buf); }
 
 class MemRowChannel : public RowChannel {
  public:
-  MemRowChannel() = default;
-  MemRowChannel(MemRowChannel *peer)
-      : m_message_queue(peer->m_message_queue), m_message_queue_owned(false) {
-    assert(m_message_queue);
+  MemRowChannel(MEM_ROOT *mem_root, MemRowChannel *peer) {
+    m_message_queue_owned = !peer;
+    m_message_queue = peer ? peer->m_message_queue
+                           : new (mem_root)
+                                 MessageQueue(message_queue_ring_size);
+    m_message_queue_handle = new (mem_root) MessageQueueHandle(m_message_queue);
   }
+
   ~MemRowChannel() {
     ::destroy(m_message_queue_handle);
     if (m_message_queue_owned) ::destroy(m_message_queue);
   }
   bool Init(THD *thd, Event *event, bool) override {
-    if (m_message_queue_owned) {
-      assert(!m_message_queue);
-      if (!(m_message_queue =
-                new (thd->mem_root) MessageQueue(message_queue_ring_size)) ||
-          m_message_queue->Init(thd->mem_root))
-        return true;
-    }
-
-    if (!(m_message_queue_handle = new (thd->mem_root)
-              MessageQueueHandle(m_message_queue, thd, event)))
+    if (m_message_queue_owned && m_message_queue->Init(thd->mem_root))
       return true;
 
+    m_message_queue_handle->SetSelfEvent(thd, event);
     return false;
   }
   Result Send(std::size_t nbytes, const void *data, bool nowait) override {
@@ -87,9 +82,14 @@ class MemRowChannel : public RowChannel {
   }
 
  private:
-  MessageQueue *m_message_queue{nullptr};
-  MessageQueueHandle *m_message_queue_handle{nullptr};
-  bool m_message_queue_owned{true};
+  friend RowChannel *CreateMemRowChannel(MEM_ROOT *mem_root, RowChannel *peer);
+  MessageQueue *m_message_queue;
+  MessageQueueHandle *m_message_queue_handle;
+  /// There is two MemRowChannel instances: receiver (in upper plan slice)
+  /// and sender (in lower plan slice), the message queue is shared between
+  /// two channels and it is owned by only one instance (owner is receiver
+  /// usually.)
+  bool m_message_queue_owned;
   /**
     The flag is set which means sender/receiver does not send/receive messages
     any more.
@@ -100,14 +100,16 @@ class MemRowChannel : public RowChannel {
 /// Create a memory row channel and create an owned message queue if @param
 /// peer is not given otherwise connect to peer's message queue.
 RowChannel *CreateMemRowChannel(MEM_ROOT *mem_root, RowChannel *peer) {
-  MemRowChannel *channel =
-      peer ? new (mem_root) MemRowChannel(down_cast<MemRowChannel *>(peer))
-           : new (mem_root) MemRowChannel;
+  assert(!peer || down_cast<MemRowChannel *>(peer)->m_message_queue);
+
+  MemRowChannel *channel = new (mem_root) MemRowChannel(
+      mem_root, peer ? down_cast<MemRowChannel *>(peer) : nullptr);
+  if (!channel || !channel->m_message_queue_handle || !channel->m_message_queue)
+    return nullptr;
   return channel;
 }
 
 void SetPeerEventForMemChannel(RowChannel *channel, Event *peer_event) {
-  assert(peer_event);
   down_cast<MemRowChannel *>(channel)->SetPeerEvent(peer_event);
 }
 

@@ -21,6 +21,7 @@ class LocalWorker : public Worker {
         m_leader_thd(thd),
         m_thd(true, m_leader_thd),
         m_executor(&m_thd, plan, [this]() { SetState(State::Cleaning); }) {}
+  ~LocalWorker() { destroy(m_sender_channel); }
 
   /// The receiver row channel created inside of worker, @param comm_event
   /// is for receiver waiting.
@@ -47,10 +48,6 @@ class LocalWorker : public Worker {
   void SetState(State state) override;
 
  private:
-  /// Cleanup resources in this class allocated in m_thd. Those must be released
-  /// before its mem_root clears.
-  void CleanupThdResources();
-
   static bool IsScheduleSysThread() {
     return static_cast<WorkerScheduleType>(worker_handling) ==
            WorkerScheduleType::SysThread;
@@ -107,26 +104,27 @@ bool LocalWorker::Init(comm::Event *comm_event) {
     if (!(m_receiver_channel =
               comm::CreateMemRowChannel(m_leader_thd->mem_root, nullptr)) ||
         m_receiver_channel->Init(m_leader_thd, comm_event, true) ||
-        !(m_sender_channel =
-              comm::CreateMemRowChannel(m_thd.mem_root, m_receiver_channel)) ||
+        !(m_sender_channel = comm::CreateMemRowChannel(m_leader_thd->mem_root,
+                                                       m_receiver_channel)) ||
         m_sender_channel->Init(&m_thd, m_sender_exchange.event(), false))
       return true;
+    comm::SetPeerEventForMemChannel(m_receiver_channel,
+                                    m_sender_exchange.event());
+    comm::SetPeerEventForMemChannel(m_sender_channel, comm_event);
   } else if (row_channel_type == comm::RowChannel::Type::TCP) {
     int sock = -1;
     if (!(m_receiver_channel =
               comm::CreateTcpRowChannel(m_leader_thd->mem_root, &sock)) ||
         m_receiver_channel->Init(m_leader_thd, comm_event, true) ||
         !(m_sender_channel =
-              comm::CreateTcpRowChannel(m_thd.mem_root, &sock)) ||
+              comm::CreateTcpRowChannel(m_leader_thd->mem_root, &sock)) ||
         m_sender_channel->Init(&m_thd, m_sender_exchange.event(), false))
       return true;
   } else if (row_channel_type == comm::RowChannel::Type::BRPC_STREAM) {
-    if (comm::CreateBrpcStreamRowChannelPair(m_leader_thd->mem_root,
-                                             &m_receiver_channel,
-                                             m_thd.mem_root,
-                                             &m_sender_channel) ||
+    if (comm::CreateBrpcStreamRowChannelPair(
+            m_leader_thd->mem_root, &m_receiver_channel, &m_sender_channel) ||
         m_receiver_channel->Init(m_leader_thd, comm_event, true) ||
-        m_sender_channel->Init(&m_thd, m_sender_exchange.event(), false))  {
+        m_sender_channel->Init(&m_thd, m_sender_exchange.event(), false)) {
       return true;
     }
   }
@@ -134,13 +132,6 @@ bool LocalWorker::Init(comm::Event *comm_event) {
   if (m_sender_exchange.Init(m_leader_thd->mem_root, 1,
                              [this](uint) { return m_sender_channel; }))
     return true;
-
-  // Only shared memory message queue needs this.
-  if (row_channel_type == comm::RowChannel::Type::MEM) {
-    comm::SetPeerEventForMemChannel(m_receiver_channel,
-                                    m_sender_exchange.event());
-    comm::SetPeerEventForMemChannel(m_sender_channel, comm_event);
-  }
 
   return m_executor.Init(m_sender_channel, &m_sender_exchange,
                          m_leader_thd->lex->is_explain_analyze);
@@ -261,7 +252,6 @@ void LocalWorker::ThreadMainEntry() {
 
   m_executor.ExecuteQuery(&context);
 
-  CleanupThdResources();
   thd->mem_root->Clear();
 
   THD_CHECK_SENTRY(thd);
@@ -271,12 +261,6 @@ void LocalWorker::ThreadMainEntry() {
   SetState(State::Finished);
 
   if (IsScheduleSysThread()) my_thread_exit(nullptr);
-}
-
-void LocalWorker::CleanupThdResources() {
-  m_sender_exchange.Reset();
-  destroy(m_sender_channel);
-  m_sender_channel = nullptr;
 }
 
 Diagnostics_area *LocalWorker::stmt_da(bool finished_collect,

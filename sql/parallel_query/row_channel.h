@@ -7,7 +7,7 @@ namespace pq {
 namespace comm {
 class RowChannel {
  public:
-  enum class Type {MEM, TCP};
+  enum class Type {MEM, TCP, BRPC_STREAM};
 
   virtual ~RowChannel() {}
   using Result = RowTxResult;
@@ -28,6 +28,9 @@ RowChannel *CreateMemRowChannel(MEM_ROOT *mem_root, RowChannel *peer);
 void SetPeerEventForMemChannel(RowChannel *channel, Event *peer_event);
 
 RowChannel *CreateTcpRowChannel(MEM_ROOT *mem_root, int *sock);
+
+bool CreateBrpcStreamRowChannelPair(MEM_ROOT *mem_root, RowChannel **receiver,
+                                    RowChannel **sender);
 
 }  // namespace comm
 }  // namespace pq
