@@ -1069,8 +1069,9 @@ static TABLE *recreate_semijoin_materialized_table(
   THD *thd = clone_context->thd();
   TABLE *table;
   mem_root_deque<Item *> sjm_fields(mem_root);
-  if (partial_plan->CloneSJMatInnerExprsForTable(orig_table, &sjm_fields,
-                                                 clone_context))
+  auto *orig_table_list = orig_table->pos_in_table_list;
+  if (partial_plan->CloneSJMatInnerExprsForTable(orig_table_list->m_id,
+                                                 &sjm_fields, clone_context))
     return nullptr;
 
   count_field_types(query_block, temp_table_param, sjm_fields, false, true);
@@ -1092,8 +1093,8 @@ static TABLE *recreate_semijoin_materialized_table(
   auto table_list = new (thd->mem_root) TABLE_LIST("", name, TL_IGNORE);
   if (table_list == nullptr) return nullptr; /* purecov: inspected */
   table_list->table = table;
-  table_list->set_tableno(orig_table->pos_in_table_list->tableno());
-  table_list->m_id = orig_table->pos_in_table_list->m_id;
+  table_list->set_tableno(orig_table_list->tableno());
+  table_list->m_id = orig_table_list->m_id;
   table->pos_in_table_list = table_list;
   table->pos_in_table_list->query_block = query_block;
 

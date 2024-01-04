@@ -647,7 +647,8 @@ bool PartialPlan::CollectSJMatInfoList(JOIN *source_join,
   auto *mem_root = source_join->thd->mem_root;
   // For semi join materialization temporary table recreating
   for (auto &sjm : source_join->sjm_exec_list) {
-    auto *sjm_info = new (mem_root) Semijoin_mat_info(mem_root, sjm.table);
+    ulong tbl_id = sjm.table->pos_in_table_list->m_id;
+    auto *sjm_info = new (mem_root) Semijoin_mat_info(mem_root, tbl_id);
     if (!sjm_info) return true;
     for (auto *item : sjm.sj_nest->nested_join->sj_inner_exprs) {
       Item *new_item;
@@ -662,11 +663,11 @@ bool PartialPlan::CollectSJMatInfoList(JOIN *source_join,
 }
 
 bool PartialPlan::CloneSJMatInnerExprsForTable(
-    TABLE *orig_table, mem_root_deque<Item *> *sjm_fields,
+    ulong table_id, mem_root_deque<Item *> *sjm_fields,
     Item_clone_context *clone_context) {
   Semijoin_mat_info *sj_mat_info = nullptr;
   for (auto &sjmi : sjm_info_list) {
-    if (sjmi.table == orig_table) {
+    if (sjmi.table_id == table_id) {
       sj_mat_info = &sjmi;
       break;
     }

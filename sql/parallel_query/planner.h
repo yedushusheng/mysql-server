@@ -38,10 +38,10 @@ struct ParallelScanInfo {
 };
 
 struct Semijoin_mat_info {
-  Semijoin_mat_info(MEM_ROOT *mem_root, TABLE *mat_table)
-      : sj_inner_exprs(mem_root), table(mat_table) {}
+  Semijoin_mat_info(MEM_ROOT *mem_root, ulong table_id)
+      : sj_inner_exprs(mem_root), table_id(table_id) {}
   mem_root_deque<Item *> sj_inner_exprs;
-  TABLE *table;
+  ulong table_id;
 };
 
 /**
@@ -81,7 +81,7 @@ class PartialPlan {
   bool InitExecution(uint num_workers);
   bool CollectSJMatInfoList(JOIN *source_join,
                             Item_clone_context *clone_context);
-  bool CloneSJMatInnerExprsForTable(TABLE *orig_table,
+  bool CloneSJMatInnerExprsForTable(ulong table_id,
                                     mem_root_deque<Item *> *sjm_fields,
                                     Item_clone_context *clone_context);
 
