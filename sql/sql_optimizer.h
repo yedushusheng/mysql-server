@@ -726,6 +726,7 @@ class JOIN {
   bool plan_is_single_table() { return primary_tables - const_tables == 1; }
 
   bool optimize();  //NOTE:正式优化阶段,使用逻辑、物理优化的方式,进行查询的各种操作估算
+  bool parallel_optimize();
   void reset();
   bool prepare_result();
   void destroy();

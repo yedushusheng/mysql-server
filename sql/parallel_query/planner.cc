@@ -668,10 +668,6 @@ static void ChooseParallelPlan(JOIN *join) {
 
 bool GenerateParallelPlan(JOIN *join) {
   THD *thd = join->thd;
-  Opt_trace_context *const trace = &thd->opt_trace;
-  Opt_trace_object trace_wrapper(trace);
-  Opt_trace_object trace_parallel_plan(trace, "parallel_plan");
-  Opt_trace_array trace_steps(trace, "steps");
 
   ChooseParallelPlan(join);
 
@@ -680,8 +676,8 @@ bool GenerateParallelPlan(JOIN *join) {
   if (!parallel_plan) return false;
 
   assert(!thd->is_error());
-  Opt_trace_context *const trace_gen = &thd->opt_trace;
-  Opt_trace_object trace_gen_wrapper(trace_gen);
+  Opt_trace_context *const trace = &thd->opt_trace;
+  Opt_trace_object trace_gen_wrapper(trace);
   Opt_trace_object trace_generating(trace, "generating");
   Opt_trace_array trace_gen_steps(trace, "steps");
 

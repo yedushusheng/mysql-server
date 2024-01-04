@@ -1927,6 +1927,7 @@ bool SELECT_LEX::optimize(THD *thd) {
                        /*create_iterators=*/false))
       return true;
   }
+  if (join->parallel_optimize()) return true;
 
   return false;
 }
