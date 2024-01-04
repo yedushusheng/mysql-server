@@ -47,11 +47,15 @@ class MergeSort {
 
  private:
   /**
-    Fill element buffer with records from corresponding channel. This function
-    should be called when the element buffer is emptied
+    Fill up element buffer with records from corresponding channel. If
+    succeed, the element is fully filled. This function should be called
+    when the element buffer is emptied. It reads the first row with nowait =
+    false if @param block_for_first is set then change nowait = true to read
+    the other rows. The function sets @param has_row_filled to true if it
+    actually fills at least one row.
   */
-  Result FillElementBuffer(MergeSortElement *elem,
-                           bool block_for_first);
+  Result FillElementBuffer(MergeSortElement *elem, bool block_for_first,
+                           bool *has_row_filled);
   /// Read one row of sorted data, @param duplicated_with_last will set to
   /// true if it valid and current sort key duplicated with last saved key.
   Result ReadOneRow(uchar **buf, bool *duplicated_with_last);
