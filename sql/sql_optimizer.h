@@ -538,8 +538,8 @@ class JOIN {
   //NOTE:order/group子句 MySQL5.6:ORDER* order/ORDER* group_list
 
   // group_list could be clear if the group_list step is arranged. this is used
-  // for save original group_list.
-  ORDER_with_src group_list_planned;
+  // for save original group_list or order.
+  ORDER_with_src merge_sort;
 
   // Used so that AggregateIterator knows which items to signal when the rollup
   // level changes. Obviously only used in the presence of rollup.

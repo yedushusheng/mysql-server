@@ -230,10 +230,9 @@ void AccessPathParallelizer::rewrite_index_access_path(
     assert(join->m_ordered_index_usage != JOIN::ORDERED_INDEX_VOID);
 
     merge_sort = join->m_ordered_index_usage == JOIN::ORDERED_INDEX_ORDER_BY
-                     ? join->order.order
-                     : (join->group_list_planned.empty()
-                            ? join->group_list.order
-                            : join->group_list_planned.order);
+      ? join->order.order : join->group_list.order;
+    if (!merge_sort && !join->merge_sort.empty())
+      merge_sort = join->merge_sort.order;
   }
   if (reverse) m_partial_plan->SetTableParallelScanReverse();
 }
@@ -602,17 +601,17 @@ bool AccessPathParallelizer::rewrite_sort(AccessPath *in, AccessPath *out) {
 }
 
 bool AccessPathParallelizer::rewrite_aggregate(AccessPath *in, AccessPath *) {
-  ORDER_with_src group_list = m_join_in->group_list_planned.empty()
+  ORDER_with_src group_list = m_join_in->merge_sort.empty()
                                   ? m_join_in->group_list
-                                  : m_join_in->group_list_planned;
+                                  : m_join_in->merge_sort;
   m_join_out->group_list =
       group_list.clone({mem_root(), &m_join_out->query_block->base_ref_items,
                         m_join_out->fields->size(), nullptr});
 
   // Recreate group fields original join since underlying table changed
-  if (!m_join_in->group_list_planned.empty()) {
+  if (!m_join_in->merge_sort.empty()) {
     assert(m_join_in->group_list.empty());
-    m_join_in->group_list = m_join_in->group_list_planned;
+    m_join_in->group_list = m_join_in->merge_sort;
   }
   m_join_in->group_fields_cache.clear();
   m_join_in->group_fields.destroy_elements();
