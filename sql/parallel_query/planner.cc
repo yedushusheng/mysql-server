@@ -1090,6 +1090,20 @@ bool Query_expression::clone_from(THD *thd, Query_expression *from,
   return false;
 }
 
+/// Other SQLEngine nodes maybe change table definition e.g. drop index. It may
+/// cause problems when cloning plan.
+static bool CheckTableDefChange(TABLE *table, TABLE *from) {
+  if (table->schema_version == from->schema_version &&
+      table->tindex_id == from->tindex_id)
+    return false;
+
+  my_error(ER_TABLE_IS_OUT_OF_DATE, MYF(0), from->s->db.str,
+           from->s->table_name.str, from->schema_version, table->schema_version,
+           table->tindex_id);
+
+  return true;
+}
+
 bool Query_block::clone_from(THD *thd, Query_block *from,
                              Item_clone_context *context) {
   uncacheable = from->uncacheable;
@@ -1106,6 +1120,8 @@ bool Query_block::clone_from(THD *thd, Query_block *from,
     TABLE *ftable = ftl->table;
 
     assert(table);
+
+    if (CheckTableDefChange(table, ftable)) return true;
 
     // record of const table has be filled during query optimization.
     if (ftable->const_table) {
