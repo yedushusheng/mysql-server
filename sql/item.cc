@@ -8378,16 +8378,29 @@ bool Item_default_value::init_from(const Item *from,
                                    Item_clone_context *context) {
   if (super::init_from(from, context)) return true;
   auto *item = down_cast<const Item_default_value *>(from);
-  assert(field);
-  if (item->arg) {
-    // arg seems not be used when evalution. Since default value is not pushed
-    // down, we set arg to nullptr
-    arg = nullptr;
-    only_evaluate = true;
-    field->move_field_offset((ptrdiff_t)(item->field->table->s->default_values -
-                                         item->m_rowbuffer_saved));
-    m_rowbuffer_saved = field->table->s->default_values;
+
+  // Currently leader's clone is shallow, it has been set correctly.
+  if (field == item->field) {
+    assert(field->field_ptr() >= field->table->s->default_values &&
+           field->field_ptr() <
+               field->table->s->default_values + field->table->s->reclength);
+    return false;
   }
+
+  // arg seems not be used when evalution. Since default value is not pushed
+  // down, we set arg to nullptr
+
+  arg = nullptr;
+  only_evaluate = true;
+  Field *const def_field = field->clone(context->mem_root());
+  if (def_field == nullptr) return true;
+
+  def_field->move_field_offset(def_field->table->default_values_offset());
+  m_rowbuffer_saved = def_field->table->s->default_values;
+
+  // Assign the cloned field as the one to use hereafter
+  set_field(def_field);
+
   return false;
 }
 
