@@ -277,6 +277,7 @@ class Item_subselect : public Item_result_field {
   Item *replace_item(Item_transformer t, uchar *arg);
 
   friend class Query_result_interceptor;
+  friend class Item_cached_subselect_result;
   friend class Item_in_optimizer;
   friend bool Item_field::fix_fields(THD *, Item **);
   friend int Item_field::fix_outer_field(THD *, Field **, Item **);
@@ -348,6 +349,10 @@ class Item_singlerow_subselect : public Item_subselect {
   bool collect_scalar_subqueries(uchar *) override;
   virtual bool is_maxmin() const { return false; }
 
+  Item_parallel_safe parallel_safe() const override;
+  Item *new_item(Item_clone_context *context) const override;
+  bool init_from(const Item *from, Item_clone_context *context) override;
+
   /**
     Argument for walk method replace_scalar_subquery
   */
@@ -381,6 +386,7 @@ class Item_singlerow_subselect : public Item_subselect {
   */
   SELECT_LEX *invalidate_and_restore_select_lex();
   friend class Query_result_scalar_subquery;
+  friend class Item_cached_subselect_result;
 };
 
 /* used in static ALL/ANY optimization */
@@ -398,6 +404,69 @@ class Item_maxmin_subselect final : public Item_singlerow_subselect {
   void register_value() { was_values = true; }
   void reset_value_registration() override { was_values = false; }
   bool is_maxmin() const override { return true; }
+};
+
+/**
+  Used in parallel query to cached result of a pre-evaluated subselect. The
+  result would be sent to worker in partial query plan. Only
+  Item_singlerow_subselect could be cached, currently.
+*/
+class Item_cached_subselect_result : public Item_result_field {
+ public:
+  Item_cached_subselect_result() = default;
+  Item_cached_subselect_result(Item_subselect *item);
+  static Item_cached_subselect_result *create_from_subselect(
+      Item_subselect *item);
+  Type type() const override { return Item::SUBSELECT_CACHED_RESULT; }
+  bool resolve_type(THD *) override {
+    assert(0);
+    return false;
+  }
+  const char *func_name() const override {
+    assert(0);
+    return nullptr;
+  }
+  double val_real() override;
+  longlong val_int() override;
+  String *val_str(String *) override;
+  my_decimal *val_decimal(my_decimal *) override;
+  bool val_json(Json_wrapper *result) override;
+  bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzydate) override;
+  bool get_time(MYSQL_TIME *ltime) override;
+  bool val_bool() override;
+  uint cols() const override { return columns; }
+  enum Item_result result_type() const override { return res_type; }
+  Item *element_index(uint i) override {
+    return reinterpret_cast<Item *>(row[i]);
+  }
+  Item **addr(uint i) override { return (Item **)row + i; }
+  Item *new_item(Item_clone_context *context) const override;
+  bool init_from(const Item *from, Item_clone_context *context) override;
+  bool cache_subselect(THD *thd);
+  void print(const THD *thd, String *str, enum_query_type query_type) const override;
+  bool walk(Item_processor processor, enum_walk walk, uchar *arg) override {
+    return ((walk & enum_walk::PREFIX) && (this->*processor)(arg)) ||
+           (m_subselect != nullptr ? m_subselect->walk(processor, walk, arg)
+                                  : false) ||
+           ((walk & enum_walk::POSTFIX) && (this->*processor)(arg));
+  }
+  void inc_replacements() { ++m_replacements; }
+  bool has_replacements() { return m_replacements > 0; }
+  uint query_block_number() const;
+  Item_subselect *subselect() const { return m_subselect; }
+
+ protected:
+  bool alloc_row(THD *thd);
+  Item_cache *value{nullptr}, **row{nullptr};
+  bool no_rows{false};
+  uint columns{0};
+  enum Item_result res_type { INVALID_RESULT };
+  uint select_number{0};
+  uint m_replacements{0};
+
+  // Original subselect, it is evaluated on leader, In worker plan it should
+  // be nullptr;
+  Item_subselect *m_subselect{nullptr};
 };
 
 /* exists subselect */

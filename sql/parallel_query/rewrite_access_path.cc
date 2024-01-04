@@ -364,28 +364,30 @@ bool AccessPathParallelizer::rewrite_index_scan(AccessPath *in, AccessPath *out
   return false;
 }
 
-bool AccessPathParallelizer::rewrite_ref(AccessPath *in,
-                                         AccessPath *out [[maybe_unused]]) {
-  assert(out);
-  auto &ref = in->ref();
-  rewrite_index_access_path(ref.table, ref.use_order, ref.reverse);
+template <typename aptype>
+bool AccessPathParallelizer::rewrite_base_ref(aptype &out, bool reverse) {
+  rewrite_index_access_path(out.table, out.use_order, reverse);
+  auto *ref = out.ref;
+  if (!(out.ref = ref->clone(out.table, m_join_out->const_table_map,
+                             m_item_clone_context)))
+    return true;
+
   return false;
 }
 
-bool AccessPathParallelizer::rewrite_ref_or_null(AccessPath *in, AccessPath *out
-                                                 [[maybe_unused]]) {
-  assert(out);
-  auto &ref_or_null = in->ref_or_null();
-  rewrite_index_access_path(ref_or_null.table, ref_or_null.use_order, false);
+bool AccessPathParallelizer::rewrite_ref(AccessPath *, AccessPath *out) {
+  if (rewrite_base_ref(out->ref(), out->ref().reverse)) return true;
   return false;
 }
 
-bool AccessPathParallelizer::rewrite_eq_ref(AccessPath *in,
-                                            AccessPath *out [[maybe_unused]]) {
-  assert(out);
-  auto &eq_ref = in->eq_ref();
+bool AccessPathParallelizer::rewrite_ref_or_null(AccessPath *,
+                                                 AccessPath *out) {
+  if (rewrite_base_ref(out->ref_or_null(), false)) return true;
+  return false;
+}
 
-  rewrite_index_access_path(eq_ref.table, eq_ref.use_order, false);
+bool AccessPathParallelizer::rewrite_eq_ref(AccessPath *, AccessPath *out) {
+  if (rewrite_base_ref(out->eq_ref(), false)) return true;
   return false;
 }
 

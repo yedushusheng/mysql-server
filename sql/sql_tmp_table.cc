@@ -448,6 +448,7 @@ Field *create_tmp_field(THD *thd, TABLE *table, Item *item, Item::Type type,
     case Item::VARBIN_ITEM:
     case Item::PARAM_ITEM:
     case Item::SUM_FUNC_ITEM:
+    case Item::SUBSELECT_CACHED_RESULT:
       if (type == Item::SUM_FUNC_ITEM && !is_wf) {
         Item_sum *item_sum = down_cast<Item_sum *>(item);
         result = item_sum->create_tmp_field(

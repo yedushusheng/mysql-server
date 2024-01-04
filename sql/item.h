@@ -822,7 +822,10 @@ class Item_clone_context {
   virtual bool resolve_view_ref(Item_view_ref *item,
                                 const Item_view_ref *from) = 0;
   virtual void rebind_user_var(Item_func_get_user_var *item [[maybe_unused]]) {}
-
+  bool is_replaceable_item(const Item *item) const;
+  virtual Item *get_replacement_item(const Item *item [[maybe_unused]]) {
+    return nullptr;
+  }
  protected:
   // Target thread descriptor
   THD *m_thd;
@@ -914,7 +917,8 @@ class Item : public Parse_tree_node {
     XPATH_NODESET_CMP,
     VIEW_FIXER_ITEM,
     FIELD_BIT_ITEM,
-    VALUES_COLUMN_ITEM
+    VALUES_COLUMN_ITEM,
+    SUBSELECT_CACHED_RESULT
   };
   //NOTE:Item类型,例如FIELD_ITEM,STRING_ITEM,INT_ITEM等
 
@@ -1134,6 +1138,11 @@ class Item : public Parse_tree_node {
     assert(0);
     return nullptr;
   }
+  /**
+    Called by Item::clone() to initialize current derived class properties.
+    Note this function can be called with context is nullptr, see class
+    Item_cache.
+  */  
   virtual bool init_from(const Item *item, Item_clone_context *context);
   /*
     Checks if the function should return binary result based on the items
@@ -6591,12 +6600,20 @@ class Item_cache : public Item_basic_constant {
      @return true if cached value is non-NULL.
    */
   bool has_value();
+
+  /// Note context could be nullptr which is called by clone_for_cached_value
   bool init_from(const Item *from, Item_clone_context *context) override;
   Item_parallel_safe parallel_safe() const override {
     return example ? example->parallel_safe() : Item_parallel_safe::Safe;
   }
   virtual bool copy_cached_value(const Item_cache *from) = 0;
-
+  /// Just create a new object and clone cached value only, set example to
+  /// nullptr
+  Item_cache *clone_for_cached_value() const {
+    Item_cache *item = down_cast<Item_cache *>(new_item(nullptr));
+    if (item && !item->init_from(this, nullptr)) return item;
+    return nullptr;
+  }
   /**
     If this item caches a field value, return pointer to underlying field.
 
@@ -6841,6 +6858,8 @@ class Item_cache_row final : public Item_cache {
   Item *new_item(Item_clone_context *) const override {
     return new Item_cache_row;
   }
+  /// Note, context is nullptr means that it is called for
+  /// clone_for_cached_value()  
   Item_parallel_safe parallel_safe() const override {
     return GetItemsParallelSafe(items, arg_count);
   }

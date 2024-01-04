@@ -11,6 +11,7 @@
 #include "sql/parallel_query/distribution.h"
 #include "sql/parallel_query/executor.h"
 #include "sql/parallel_query/rewrite_access_path.h"
+#include "sql/sql_list.h"
 #include "sql/sql_optimizer.h"
 #include "sql/tdsql/trans.h"
 
@@ -617,7 +618,7 @@ ItemRefCloneResolver::ItemRefCloneResolver(MEM_ROOT *mem_root,
     : m_refs_to_resolve(mem_root), m_query_block(query_block) {}
 
 bool ItemRefCloneResolver::resolve(Item_ref *item, const Item_ref *from) {
-  assert(from->ref);
+  assert(from->ref_pointer());
   item->context = &m_query_block->context;
   return m_refs_to_resolve.push_back({item, from});
 }
@@ -629,13 +630,13 @@ void ItemRefCloneResolver::final_resolve() {
     auto *from = ref.second;
     for (uint i = 0; i < m_query_block->fields.size(); i++) {
       auto *item = base_ref_items[i];
-      if (item->is_identical(*from->ref)) {
-        item_ref->ref = &base_ref_items[i];
+      if (item->is_identical(from->ref_item())) {
+        item_ref->set_ref_pointer(&base_ref_items[i]);
         break;
       }
     }
 
-    assert(item_ref->ref);
+    assert(item_ref->ref_item());
   }
 }
 
@@ -748,9 +749,33 @@ static bool is_item_field_in_fields(Item_field *item_field,
 }
 
 class PartialItemGenContext : public Item_clone_context {
+ public:
   using Item_clone_context::Item_clone_context;
 
- public:
+  /// Create cached result for each parallel safe single-row subqueries
+  bool BuildCachedSubqueryList(Query_block *source_query_block) {
+    for (auto *unit = source_query_block->first_inner_query_expression(); unit;
+         unit = unit->next_query_expression()) {
+      auto *item = unit->item;
+      if (!item || item->parallel_safe() != Item_parallel_safe::Safe ||
+          item->substype() != Item_subselect::SINGLEROW_SUBS)
+        continue;
+      auto *cached_subselect =
+          Item_cached_subselect_result::create_from_subselect(item);
+      if (!cached_subselect) return true;
+      m_cached_subselects.push_back(cached_subselect);
+    }
+    return false;
+  }
+
+  void CleanUnusedCachedSubqueries() {
+    List_iterator<Item_cached_subselect_result> it(m_cached_subselects);
+    Item_cached_subselect_result *cached_result;
+    while ((cached_result = it++)) {
+      if (!cached_result->has_replacements()) it.remove();
+    }
+  }
+
   void rebind_field(Item_field *item_field,
                     const Item_field *from_field) override {
     // We moved origin table to partial plan, so table_ref is not changed
@@ -766,13 +791,27 @@ class PartialItemGenContext : public Item_clone_context {
   }
   bool resolve_view_ref(Item_view_ref *item,
                         const Item_view_ref *from) override {
+
     // The ref point to another query lex, so it's safe
-    item->ref = from->ref;
+    item->set_ref_pointer(from->ref_pointer());
     if (from->get_first_inner_table())
       item->set_first_inner_table(from->get_first_inner_table());
 
     return false;
   }
+
+  Item *get_replacement_item(const Item *item) override {
+    if (item->type() != Item::SUBSELECT_ITEM) return nullptr;
+    for (auto &subs_item : m_cached_subselects) {
+      if (subs_item.subselect() != item) continue;
+      subs_item.inc_replacements();
+      subs_item.set_id(item->id());
+      return &subs_item;
+    }
+    return nullptr;
+  }
+
+  List<Item_cached_subselect_result> m_cached_subselects;
 };
 
 static bool can_field_push_down(AggregateStrategy agg_strategy, Item *item) {
@@ -977,10 +1016,11 @@ class OriginItemRewriteContext : public Item_clone_context {
   bool resolve_view_ref(Item_view_ref *item,
                         const Item_view_ref *from) override {
     assert(!from->get_first_inner_table());
-    if (!(item->ref = (Item **)new (mem_root()) Item *) ||
-        !(*item->ref = (*from->ref)->clone(this)))
+    Item **ref_item;
+    if (!( ref_item = (Item **) new (mem_root()) Item **) ||
+        !(*ref_item = from->ref_item()->clone(this)))
       return true;
-
+    item->set_ref_pointer(ref_item);
     return false;
   }
 
@@ -1061,7 +1101,7 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
 }
 
 bool ParallelPlan::GeneratePartialPlan(
-    Item_clone_context **partial_clone_context,
+    PartialItemGenContext **partial_clone_context,
     FieldsPushdownDesc *fields_pushdown_desc) {
   JOIN *source_join = SourceJoin();
   Query_block *source_query_block = source_join->query_block;
@@ -1098,11 +1138,14 @@ bool ParallelPlan::GeneratePartialPlan(
 
   auto *ref_clone_resolver =
       new (mem_root) ItemRefCloneResolver(mem_root, partial_query_block);
-  if (!(*partial_clone_context = new (mem_root) PartialItemGenContext(
-            thd, partial_query_block, ref_clone_resolver)))
-    return true;
+  auto *clone_context = new (mem_root)
+      PartialItemGenContext(thd, partial_query_block, ref_clone_resolver);
+  if (!ref_clone_resolver || !clone_context) return true;
+  *partial_clone_context = clone_context;
 
-  if (GenPartialFields(*partial_clone_context, fields_pushdown_desc))
+  if (clone_context->BuildCachedSubqueryList(source_query_block)) return true;
+
+  if (GenPartialFields(clone_context, fields_pushdown_desc))
     return true;
 
   // XXX Set JOIN::select_distinct and JOIN::select_count
@@ -1128,7 +1171,7 @@ bool ParallelPlan::GeneratePartialPlan(
   join->tmp_table_param.precomputed_group_by =
       source_join->tmp_table_param.precomputed_group_by;
 
-  if (m_partial_plan.CollectSJMatInfoList(source_join, *partial_clone_context))
+  if (m_partial_plan.CollectSJMatInfoList(source_join, clone_context))
     return true;
 
   if (CreateCollector(thd)) return true;
@@ -1146,7 +1189,7 @@ bool ParallelPlan::Generate() {
   LEX *lex = thd->lex;
   MEM_ROOT *mem_root = thd->mem_root;
   Query_block *source_query_block = source_join->query_block;
-  Item_clone_context *partial_clone_context;
+  PartialItemGenContext *partial_clone_context;
   FieldsPushdownDesc fields_pushdown_desc(mem_root);
 
   if (GeneratePartialPlan(&partial_clone_context, &fields_pushdown_desc))
@@ -1168,6 +1211,10 @@ bool ParallelPlan::Generate() {
   partial_clone_context->final_resolve_refs();
 
   if (setup_sum_funcs(thd, source_join->sum_funcs)) return true;
+
+  partial_clone_context->CleanUnusedCachedSubqueries();
+  m_collector->SetPreevaluateSubqueries(
+      &partial_clone_context->m_cached_subselects);
 
   if (!lex->is_explain() || lex->is_explain_analyze)
     m_collector->PrepareExecution(thd);

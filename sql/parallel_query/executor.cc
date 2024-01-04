@@ -93,6 +93,11 @@ bool Collector::Init(THD *thd) {
   // in this function and parallel workers are created based on that.
   if (m_partial_plan->InitExecution(m_workers.size())) return true;
 
+  // Execute pre-evaluate subselects before workers launching
+  for (auto &cached_subs : *m_preevaluate_subqueries) {
+    if (cached_subs.cache_subselect(thd)) return true;
+  }
+
   // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
   // you should use m_id - 1
   for (uint widx = 0; widx < m_workers.size(); ++widx) {
@@ -180,6 +185,52 @@ Collector::CollectResult Collector::Read(THD *thd) {
   }
 #endif
   return res;
+}
+
+AccessPath *Collector::Explain(std::vector<std::string> &description) {
+  char buff[64];
+  snprintf(buff, sizeof(buff), "Gather (slice: 1, workers: %zu)",
+           m_workers.size());
+  std::string ret(buff);
+
+  description.push_back(std::move(ret));
+
+  if (m_merge_sort) {
+    std::string str;
+    if (m_merge_sort->m_remove_duplicates)
+      str = "Merge sort with duplicate removal: ";
+    else
+      str = "Merge sort: ";
+
+    bool first = true;
+    for (unsigned i = 0; i < m_merge_sort->sort_order_length(); ++i) {
+      if (first) {
+        first = false;
+      } else {
+        str += ", ";
+      }
+
+      const st_sort_field *order = &m_merge_sort->sortorder[i];
+      str += ItemToString(order->item);
+      if (order->reverse) {
+        str += " DESC";
+      }
+    }
+    description.push_back(std::move(str));
+  }
+  if (m_preevaluate_subqueries->size() > 0) {
+    std::string str("Pre-evaluated subqueries:");
+    for (auto &item : *m_preevaluate_subqueries) {
+      snprintf(buff, sizeof(buff), " select #%u,", item.query_block_number());
+      str += buff;
+    }
+    str.resize(str.size() - 1);
+    description.push_back(std::move(str));
+  }
+  bool hide_partial_tree = false;
+  std::string partial_desc = m_partial_plan->ExplainPlan(&hide_partial_tree);
+  if (partial_desc.size() > 0) description.push_back(std::move(partial_desc));
+  return hide_partial_tree ? nullptr : PartialRootAccessPath();
 }
 
 Diagnostics_area *Collector::combine_workers_stmt_da(THD *thd,
@@ -422,11 +473,6 @@ std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   return str;
 }
 
-std::string ExplainPartialPlan(PartialPlan *partial_plan,
-                               bool *hide_plan_tree) {
-  return partial_plan->ExplainPlan(hide_plan_tree);
-}
-
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector) {
   return new (thd->mem_root) FakeTimingIterator(thd, collector);
 }
@@ -534,9 +580,11 @@ class PartialItemCloneContext : public Item_clone_context {
 
   bool resolve_view_ref(Item_view_ref *item,
                         const Item_view_ref *from) override {
-    if (!(item->ref = (Item **)new (mem_root()) Item *) ||
-        !(*item->ref = (*from->ref)->clone(this)))
+    Item **ref_item;
+    if (!( ref_item = (Item **) new (mem_root()) Item **) ||
+        !(*ref_item = from->ref_item()->clone(this)))
       return true;
+    item->set_ref_pointer(ref_item);
     if (from->get_first_inner_table()) {
       auto *table = find_field_table(from->get_first_inner_table());
       item->set_first_inner_table(table);

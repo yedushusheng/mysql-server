@@ -519,43 +519,12 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
       break;
     }
     case AccessPath::PARALLEL_COLLECTOR_SCAN: {
-      char buff[64];
       pq::Collector *collector = path->parallel_collector_scan().collector;
-      snprintf(buff, sizeof(buff), "Gather (slice: 1, workers: %u)",
-               collector->NumWorkers());
-      string ret(buff);
-      Filesort *merge_sort = collector->MergeSort();
-
-      if (merge_sort) {
-        ret += " with merge sort";
-        if (merge_sort->m_remove_duplicates) ret += " with duplicate removal";
-        ret += ": ";
-
-        bool first = true;
-        for (unsigned i = 0; i < merge_sort->sort_order_length();
-             ++i) {
-          if (first) {
-            first = false;
-          } else {
-            ret += ", ";
-          }
-
-          const st_sort_field *order = &merge_sort->sortorder[i];
-          ret += ItemToString(order->item);
-          if (order->reverse) {
-            ret += " DESC";
-          }
-        }
-      }
-      bool hide_partial_tree = false;
-      std::string partial_desc = pq::ExplainPartialPlan(
-          collector->partial_plan(), &hide_partial_tree);
-      if (partial_desc.size() > 0) ret += partial_desc;
-      description.push_back(move(ret));
-      if (!hide_partial_tree)
-        children.push_back({collector->PartialRootAccessPath()});
+      auto *partial_root_access_path = collector->Explain(description);
+      if (partial_root_access_path)
+        children.push_back({partial_root_access_path});
       break;
-    }  
+    }
     case AccessPath::TABLE_VALUE_CONSTRUCTOR:
     case AccessPath::FAKE_SINGLE_ROW:
       description.emplace_back("Rows fetched before execution");

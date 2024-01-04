@@ -15,6 +15,7 @@ struct AccessPath;
 
 namespace pq {
 class Collector;
+class PartialItemGenContext;
 
 constexpr uint default_max_parallel_degree = 0;
 constexpr uint default_max_parallel_workers = 10000;
@@ -179,7 +180,7 @@ class ParallelPlan {
                         FieldsPushdownDesc *fields_pushdown_desc);
   bool GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc);
   bool setup_partial_base_ref_items();
-  bool GeneratePartialPlan(Item_clone_context **partial_clone_context,
+  bool GeneratePartialPlan(PartialItemGenContext **partial_clone_context,
                            FieldsPushdownDesc *fields_pushdown_desc);
   // Clone ORDER for group list and order by
   bool ClonePartialOrders();

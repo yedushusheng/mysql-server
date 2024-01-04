@@ -2695,6 +2695,147 @@ void Item_allany_subselect::print(const THD *thd, String *str,
   Item_subselect::print(thd, str, query_type);
 }
 
+Item_cached_subselect_result *
+Item_cached_subselect_result::create_from_subselect(Item_subselect *item) {
+  auto *cached_item = new Item_cached_subselect_result(item);
+  if (cached_item->init_from(item, nullptr)) return nullptr;
+  return cached_item;
+}
+
+Item_cached_subselect_result::Item_cached_subselect_result(Item_subselect *item)
+    : m_subselect(item) {
+  columns = item->max_columns;
+  res_type = item->result_type();
+  select_number = item->unit->first_query_block()->select_number;
+}
+
+double Item_cached_subselect_result::val_real() {
+  return !no_rows && !value->null_value ? value->val_real() : error_real();
+}
+
+longlong Item_cached_subselect_result::val_int() {
+  return !no_rows && !value->null_value ? value->val_int() : error_int();
+}
+
+String *Item_cached_subselect_result::val_str(String *str) {
+  return !no_rows && !value->null_value ? value->val_str(str) : error_str();
+}
+
+my_decimal *Item_cached_subselect_result::val_decimal(
+    my_decimal *decimal_value) {
+  return !no_rows && !value->null_value ? value->val_decimal(decimal_value)
+                                        : nullptr;
+}
+
+bool Item_cached_subselect_result::val_json(Json_wrapper *result) {
+  return !no_rows && !value->null_value ? value->val_json(result)
+                                        : current_thd->is_error();
+}
+
+bool Item_cached_subselect_result::get_date(MYSQL_TIME *ltime,
+                                            my_time_flags_t fuzzydate) {
+  return !no_rows && !value->null_value ? value->get_date(ltime, fuzzydate)
+                                        : true;
+}
+
+bool Item_cached_subselect_result::get_time(MYSQL_TIME *ltime) {
+  return !no_rows && !value->null_value ? value->get_time(ltime) : true;
+}
+
+bool Item_cached_subselect_result::val_bool() {
+  return !no_rows && !value->null_value ? value->val_bool() : false;
+}
+
+bool Item_cached_subselect_result::alloc_row(THD *thd) {
+  row =
+      columns == 1 ? &value : thd->mem_root->ArrayAlloc<Item_cache *>(columns);
+  return false;
+}
+
+Item *Item_cached_subselect_result::new_item(Item_clone_context *) const {
+  assert(columns > 0);
+  auto *item = new Item_cached_subselect_result;
+  item->columns = columns;
+  item->res_type = res_type;
+  item->select_number = select_number;
+  return item;
+}
+
+bool Item_cached_subselect_result::init_from(const Item *from,
+                                             Item_clone_context *context) {
+  if (Item::init_from(from, context)) return true;
+  if (!context) {
+    // Called by create_from_subselect() which from is an Item_subselect
+    // instance.
+    return false;
+  }
+  auto *item = down_cast<const Item_cached_subselect_result *>(from);
+  if (alloc_row(context->thd())) return true;
+  for (uint i = 0; i < columns; i++) {
+    if (!(row[i] = down_cast<Item_cache *>(item->row[i]->clone(context))))
+      return true;
+  }
+  return false;
+}
+
+void Item_cached_subselect_result::print(
+    const THD *thd, String *str, enum_query_type query_type) const {
+  if (m_subselect) {
+    m_subselect->print(thd, str, query_type);
+    return;
+  }
+
+  // We don't mind that item name looks like on partial plan because the
+  // output field name is created on leader.
+  str->append('(');
+  str->append("select #");
+  if (select_number >= INT_MAX)
+    str->append("fake");
+  else
+    str->append_ulonglong(select_number);
+  str->append(')');
+}
+
+bool Item_cached_subselect_result::cache_subselect(THD *thd) {
+  if (m_subselect->exec(thd)) return true;
+  // See Item_singlerow_subselect::val_*(), They don't test this->null_value
+  // and check value->null_value instead. So, here we always clone row.
+  if (alloc_row(thd)) return true;
+  for (uint i = 0; i < columns; i++) {
+    if (!(row[i] = down_cast<Item_singlerow_subselect *>(m_subselect)
+                       ->row[i]
+                       ->clone_for_cached_value()))
+      return true;
+  }
+  value = *row;
+  null_value = value->null_value;
+
+  return false;
+}
+
+uint Item_cached_subselect_result::query_block_number() const {
+  return select_number;
+}
+
+Item_parallel_safe Item_singlerow_subselect::parallel_safe() const {
+  if (unit->uncacheable == 0) return Item_parallel_safe::Safe;
+  return Item_parallel_safe::Unsafe;
+}
+
+Item *Item_singlerow_subselect::new_item(Item_clone_context *context) const {
+  // Only called on leader, using same object should be ok
+  return const_cast<Item_singlerow_subselect *>(this)->copy_or_same(
+      context->thd());
+}
+
+bool Item_singlerow_subselect::init_from(const Item *from [[maybe_unused]],
+                                         Item_clone_context *) {
+  // This function prevents parent class' init_from() calling since from is
+  // same object with this.
+  assert(from == this);
+  return false;
+}
+
 bool Item_singlerow_subselect::collect_scalar_subqueries(uchar *arg) {
   auto *info = pointer_cast<Collect_scalar_subquery_info *>(arg);
   const table_map map = used_tables();

@@ -149,6 +149,8 @@ class AccessPathParallelizer : public AccessPathRewriter {
   void post_rewrite_out_path(AccessPath *out) override;
 
   void rewrite_index_access_path(TABLE *table, bool use_order, bool reverse);
+  template <typename aptype>
+  bool rewrite_base_ref(aptype &out, bool reverse);
 
   ParallelPlan *m_parallel_plan;
   TABLE *m_collector_table{nullptr};

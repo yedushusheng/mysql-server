@@ -15,6 +15,7 @@ class Diagnostics_area;
 class Filesort;
 class user_var_entry;
 class Security_context;
+class Item_cached_subselect_result;
 
 namespace pq {
 class PartialPlan;
@@ -43,10 +44,14 @@ class Collector {
   JOIN *PartialJoin() const;
   uint NumWorkers() const { return m_workers.size(); }
   bool CreateMergeSort(JOIN *join, ORDER *merge_order, bool remove_duplicates);
-  Filesort *MergeSort() const { return m_merge_sort; }
   template <class Func>
   void ForEachWorker(Func &&func) {
     for (auto *worker : m_workers) func(worker);
+  }
+  AccessPath *Explain(std::vector<std::string> &description);
+  void SetPreevaluateSubqueries(
+      List<Item_cached_subselect_result> *cached_subselects) {
+    m_preevaluate_subqueries = cached_subselects;
   }
 
  private:
@@ -61,6 +66,7 @@ class Collector {
 #endif
   PartialPlan *m_partial_plan;
   TABLE *m_table{nullptr};
+  List<Item_cached_subselect_result> *m_preevaluate_subqueries{nullptr};
   Filesort *m_merge_sort{nullptr};
   comm::RowExchange m_receiver_exchange;
   comm::RowExchangeReader *m_row_exchange_reader{nullptr};
@@ -125,7 +131,6 @@ class PartialExecutor {
 };
 
 std::string ExplainTableParallelScan(JOIN *join, TABLE *table);
-std::string ExplainPartialPlan(PartialPlan *partial_plan, bool *hide_plan_tree);
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
 }  // namespace pq
 

@@ -128,6 +128,10 @@ MEM_ROOT *Item_clone_context::mem_root() const {
   return m_thd->mem_root;
 }
 
+bool Item_clone_context::is_replaceable_item(const Item *item) const {
+  return item->type() == Item::SUBSELECT_ITEM;
+}
+
 Item::Item()
     : next_free(nullptr),
       str_value(),
@@ -240,10 +244,10 @@ bool Item::init_from(const Item *item, Item_clone_context *context) {
   contextualized = true;
 #endif
 
-  assert(current_thd == context->thd());
+  assert(!context || current_thd == context->thd());
 
   // Constructed by parse-time context-independent constructor.
-  if (context->thd()->item_list() != this) {
+  if (context && context->thd()->item_list() != this) {
     next_free = context->thd()->item_list();  // Put in free list
     context->thd()->set_item_list(this);
   }
@@ -252,6 +256,10 @@ bool Item::init_from(const Item *item, Item_clone_context *context) {
 
 Item *Item::clone(Item_clone_context *context) const {
   Item *item;
+  if (context->is_replaceable_item(this) &&
+      (item = context->get_replacement_item(this)))
+    return item;
+
   if (!(item = new_item(context))) return nullptr;
   assert(typeid(*item) == typeid(*this));
 
@@ -9055,7 +9063,8 @@ bool Item_cache::init_from(const Item *from, Item_clone_context *context) {
   cached_field = item->cached_field;
 
   // Some literal constant when comparing uses cached value, so copy it.
-  if ((item->example && !(example = item->example->clone(context))) ||
+  if ((item->example && context &&
+       !(example = item->example->clone(context))) ||
       copy_cached_value(item))
     return true;
 
@@ -9272,13 +9281,12 @@ bool Item_cache_datetime::get_time(MYSQL_TIME *ltime) {
 
 bool Item_cache_datetime::copy_cached_value(const Item_cache *from) {
   auto *item = down_cast<const Item_cache_datetime *>(from);
-  if (!item->value_cached) return false;
-  value_cached = true;
+  value_cached = item->value_cached;
   null_value = from->null_value;
   int_value = item->int_value;
-  if (!item->str_value_cached) return false;
-  str_value_cached = true;
-  return str_value.clone_from(item->str_value);
+  if ((str_value_cached = item->str_value_cached))
+    return cached_string.clone_from(item->cached_string);
+  return false;
 }
 
 double Item_cache_datetime::val_real() { return val_real_from_decimal(); }
@@ -9427,8 +9435,8 @@ bool Item_cache_json::copy_cached_value(const Item_cache *from) {
   auto *item = down_cast<const Item_cache_json *>(from);
   if (!item->value_cached) return false;
   value_cached = true;
-  null_value = from->null_value;
   m_is_sorted = item->m_is_sorted;
+  if ((null_value = from->null_value)) return false;
   *m_value = *item->m_value;
   // See Item_cache_join::store_value()
   if (!m_value->to_dom(current_thd)) return true;
@@ -9605,7 +9613,7 @@ bool Item_cache_str::copy_cached_value(const Item_cache *from) {
   auto *item = down_cast<const Item_cache_str *>(from);
   if (!item->value_cached) return false;
   value_cached = true;
-  null_value = from->null_value;
+  if ((null_value = from->null_value)) return false;
   value_buff.set(buffer, sizeof(buffer), item->value->charset());
   if (value_buff.copy(*item->value)) return true;
   value = &value_buff;
@@ -9712,8 +9720,11 @@ bool Item_cache_row::init_from(const Item *from, Item_clone_context *context) {
   auto *item = down_cast<const Item_cache_row *>(from);
   item_count = item->item_count;
   if (allocate(item->cols())) return true;
-  for (uint i = 0; i < item_count; i++) {
-    if (!(values[i] = down_cast<Item_cache *>(item->values[i]->clone(context))))
+  for (uint i = 0; i < item_count; ++i) {
+    auto *col_item = item->values[i];
+    if (!(values[i] = context
+                          ? down_cast<Item_cache *>(col_item->clone(context))
+                          : col_item->clone_for_cached_value()))
       return true;
   }
   if (copy_cached_value(item)) return true;
