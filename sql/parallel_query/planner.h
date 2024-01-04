@@ -102,9 +102,16 @@ class PartialPlan {
 class FieldPushdownDesc {
  public:
   enum PushdownAction { Replace, Clone };
-  FieldPushdownDesc(PushdownAction action)
-      : pushdown_action(action) {}
-  PushdownAction pushdown_action;
+  FieldPushdownDesc(Item *item, PushdownAction action)
+      : m_item(item), m_action(action) {}
+
+  inline bool to_replace() const { return m_action == Replace; }
+  inline bool to_clone() const { return m_action == Clone; }
+  inline Item *item() const { return m_item; }
+
+ private:
+  Item *m_item;
+  PushdownAction m_action;
 };
 
 class ParallelDegreeHolder {

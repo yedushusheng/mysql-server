@@ -486,6 +486,16 @@ static void rewrite_temptable_scan_path(AccessPath *table_path, TABLE *table,
 
 #ifndef NDEBUG
 static void _assert_same_rewrite_table(TABLE *orig, TABLE *table) {
+  if (orig->reginfo.qep_tab && orig->reginfo.qep_tab->join()) {
+    // See ParallelPlan::GenPartialFields(), for materialization subselect, we
+    // skip fields added by subqueries transformer since it is no used actually.
+    auto *join = orig->reginfo.qep_tab->join();
+    if (join->query_expression()->item &&
+        join->query_expression()->item->engine_type() ==
+            Item_in_subselect::HASH_SJ_ENGINE)
+      return;
+  }
+
   assert(orig->s->fields == table->s->fields);
   for (uint i = 0; i < table->s->fields; i++) {
     assert(table->field[i]->type() == orig->field[i]->type());

@@ -189,7 +189,6 @@ static bool GetTableParallelScanInfo(QEP_TAB *tab, ulong parallel_degree,
   GetTableAccessInfo(tab, &scan_desc->keynr, &scan_desc->min_key,
                      &scan_desc->max_key, &scan_desc->key_used,
                      &scan_desc->flags);
-
   *ranges = 100 * parallel_degree;
   int res;
   if ((res = table->file->estimate_parallel_scan_ranges(
@@ -472,6 +471,12 @@ bool parallel_query_enable_select_count(THD *thd) {
   return thd->parallel_query_switch_flag(PARALLEL_QUERY_SELECT_COUNT);
 }
 
+static bool skip_no_used_field(Query_expression *unit, Item *item) {
+  if (!unit->item) return false;
+  return unit->item->engine_type() == Item_in_subselect::HASH_SJ_ENGINE &&
+         item->created_by_in2exists();
+}
+
 static void ChooseParallelPlan(JOIN *join) {
   THD *thd = join->thd;
   Opt_trace_context *const trace = &thd->opt_trace;
@@ -569,6 +574,7 @@ static void ChooseParallelPlan(JOIN *join) {
 
   const char *item_refuse_cause;
   for (Item *item : join->query_block->fields) {
+    if (skip_no_used_field(join->query_expression(), item)) continue;
     if (!ItemRefuseParallel(item, &item_refuse_cause)) continue;
     cause = item_refuse_cause ? item_refuse_cause
                               : "include_unsafe_items_in_fields";
@@ -970,12 +976,12 @@ bool ParallelPlan::GenPartialFields(Item_clone_context *context,
   assert(join->rollup_state == JOIN::RollupState::NONE);
 
   m_aggregate_strategy = decide_aggregate_strategy(join);
-
   bool sumfuncs_full_pushdown =
       m_aggregate_strategy == AggregateStrategy::PushedOnePhase;
 
   for (uint i = 0; i < source->fields.size(); i++) {
     Item *new_item, *item = source->fields[i];
+    if (skip_no_used_field(join->query_expression(), item)) continue;
     // if ONLY_FULL_GROUP_BY is turned off, the functions contains
     // aggregation may include some item fields. Sum functions could be
     // const_item(), see optimize_aggregated_query(), it calls make_const()
@@ -994,12 +1000,13 @@ bool ParallelPlan::GenPartialFields(Item_clone_context *context,
         item_sum->item_name = arg->item_name;
       }
       if (partial_query_block->add_item_to_list(new_item)) return true;
-      if (fields_pushdown_desc->push_back(!is_sum_func || sumfuncs_full_pushdown
-                                              ? FieldPushdownDesc::Replace
-                                              : FieldPushdownDesc::Clone))
+      if (fields_pushdown_desc->push_back(
+              FieldPushdownDesc(item, !is_sum_func || sumfuncs_full_pushdown
+                                          ? FieldPushdownDesc::Replace
+                                          : FieldPushdownDesc::Clone)))
         return true;
     } else {
-      FieldPushdownDesc pushdown_desc(FieldPushdownDesc::Clone);
+      FieldPushdownDesc pushdown_desc(item, FieldPushdownDesc::Clone);
       mem_root_deque<Item_field *> field_list(thd()->mem_root);
       enum_walk walk{enum_walk::PREFIX | enum_walk::ITEM_CLONE};
       item->walk(&Item::collect_item_field_processor, walk,
@@ -1157,11 +1164,10 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
       partial_fields);
 
   // Process original fields
-  for (uint i = 0; i < source_query_block->fields.size(); i++) {
-    FieldPushdownDesc &desc = (*fields_pushdown_desc)[i];
-    Item *item = source_query_block->fields[i];
+  for (auto &desc : *fields_pushdown_desc) {
+    Item *item = desc.item();
     Item *new_item = nullptr;
-    if (desc.pushdown_action == FieldPushdownDesc::Replace) {
+    if (desc.to_replace()) {
       for (uint j = 0; j < partial_fields.size(); j++) {
         if (item->is_identical(partial_fields[j])) {
           Field *field = collector_table->field[j];
@@ -1173,7 +1179,7 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
       }
       assert(new_item);
     } else {
-      assert(desc.pushdown_action == FieldPushdownDesc::Clone);
+      assert(desc.to_clone());
       if (!(new_item = item->clone(&clone_context))) return true;
       if (new_item->type() == Item::SUM_FUNC_ITEM) {
         Item_sum *item_sum = down_cast<Item_sum *>(new_item);
