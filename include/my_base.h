@@ -419,7 +419,10 @@ enum ha_extra_function {
   */
   HA_EXTRA_ENABLE_UNIQUE_RECORD_FILTER,
   /* Disable and free unique record filter. */
-  HA_EXTRA_DISABLE_UNIQUE_RECORD_FILTER
+  HA_EXTRA_DISABLE_UNIQUE_RECORD_FILTER,
+  /* Inner parallel scan does not scroll parallel scan ranges distribution
+     forward */
+  HA_EXTRA_TOGGLE_PARALLEL_SCAN_INNER
 };
 
 /* Compatible option, to be deleted in 6.0 */

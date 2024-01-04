@@ -3605,6 +3605,18 @@ class Handler_share {
   virtual ~Handler_share() {}
 };
 
+typedef void *parallel_scan_handle_t;
+
+struct parallel_scan_desc_t {
+  uint keynr;            // Key number for parallel scan
+  key_range *min_key;    // Min key of range scan or ref key for ref scan
+  key_range *max_key;    // Max key of range scan, same with min_key for ref
+                         // scan, null ref key for JT_REF_OR_NULL
+  bool max_key_is_null;  // If true, max_key saves null ref key
+  uint16_t key_used;     // Part of keys used by parallel scan
+  bool is_asc;           // Ascending or descending order
+};
+
 /**
   Wrapper for struct ft_hints.
 */
