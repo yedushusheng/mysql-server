@@ -7102,5 +7102,5 @@ static Sys_var_enum Sys_parallel_worker_handling(
     "parallel_worker_handling",
     "Define workers usage for handling parallel queries, one of "
     "co-threads, sys-threads",
-    READ_ONLY GLOBAL_VAR(pq::Worker::worker_handling), CMD_LINE(REQUIRED_ARG),
-    parallel_worker_handling_names, DEFAULT(pq::default_worker_schedule_type));    
+    READ_ONLY GLOBAL_VAR(pq::worker_handling), CMD_LINE(REQUIRED_ARG),
+    parallel_worker_handling_names, DEFAULT(pq::default_worker_schedule_type));
