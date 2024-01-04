@@ -57,15 +57,19 @@ using TableDistArray = Mem_root_array<TableDist *>;
 /// Distribution specific plan info for TDSQL 2.0 or 3.0
 class PartialDistPlan {
  public:
+  PartialDistPlan(NodeArray *exec_nodes) : m_exec_nodes(exec_nodes) {}
   virtual ~PartialDistPlan() {}
   /// This is called just before workers are started to initialize distribution
   /// specific plan.
-  virtual bool InitExecution(PartialPlan *partial_plan, uint num_workers,
-                             NodeArray *exec_nodes) = 0;
-  virtual std::string ExplainPlan(bool *display_tree) {
-    *display_tree = true;
-    return std::string();
+  virtual bool InitExecution(PartialPlan *partial_plan, uint num_workers) = 0;
+  /// Show custom messages in explain tree, set @param *hide_path_tree to
+  /// true if dist system does not want to show partial plan tree.
+  virtual std::string ExplainPlan(bool *hide_plan_tree [[maybe_unused]]) {
+    return {};
   }
+
+ protected:
+  NodeArray *m_exec_nodes;
 };
 
 /// Adapter for distribution, describe capacities of specific distribution.

@@ -128,7 +128,7 @@ class PartialExecutor {
 };
 
 std::string ExplainTableParallelScan(JOIN *join, TABLE *table);
-std::string ExplainPartialPlan(PartialPlan *partial_plan, bool *display_tree);
+std::string ExplainPartialPlan(PartialPlan *partial_plan, bool *hide_plan_tree);
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
 }  // namespace pq
 

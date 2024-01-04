@@ -6,7 +6,7 @@ namespace dist {
 PartialDistPlan *Adapter::MakePartialDistPlan(PartialPlan *partial_plan,
                                               dist::NodeArray *exec_nodes) {
   auto *dist_plan = DoMakePartialDistPlan(partial_plan, exec_nodes);
-  partial_plan->SetDistPlan(dist_plan);
+  if (dist_plan) partial_plan->SetDistPlan(dist_plan);
   return dist_plan;
 }
 }  // namespace dist

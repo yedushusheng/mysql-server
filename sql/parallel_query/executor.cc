@@ -9,7 +9,7 @@
 #include "sql/opt_explain_traditional.h"
 #include "sql/parallel_query/planner.h"
 #include "sql/parallel_query/row_channel.h"
-#include "sql/parallel_query/local_worker.h"
+#include "sql/parallel_query/worker.h"
 #include "sql/query_result.h"
 #include "sql/sql_optimizer.h"
 #include "sql/sql_tmp_table.h"
@@ -17,8 +17,8 @@
 #include "sql/transaction.h"
 
 namespace pq {
-bool PartialPlan::InitExecution(uint num_workers, dist::NodeArray *exec_nodes) {
-  return m_dist_plan->InitExecution(this, num_workers, exec_nodes);
+bool PartialPlan::InitExecution(uint num_workers) {
+  return m_dist_plan->InitExecution(this, num_workers);
 }
 
 Collector::Collector(dist::Adapter *dist_adapter, dist::NodeArray *exec_nodes,
@@ -90,8 +90,7 @@ bool Collector::Init(THD *thd) {
   // Do initialize parallel scan for the plan with parallel scan before workers
   // are created and started. For 3.0, remote workers assign parallel scan jobs
   // in this function and parallel workers are created based on that.
-  if (m_partial_plan->InitExecution(m_workers.size(), m_exec_nodes))
-    return true;
+  if (m_partial_plan->InitExecution(m_workers.size())) return true;
 
   // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
   // you should use m_id - 1
@@ -106,7 +105,7 @@ bool Collector::Init(THD *thd) {
 
   if (m_receiver_exchange.Init(
           thd->mem_root, m_workers.size(),
-          [this](uint widx) { return m_workers[widx]->receiver_channel(); }))
+          [this](uint widx) { return m_workers[widx]->ReceiverChannel(); }))
     return true;
 
   if (!(m_row_exchange_reader = comm::CreateRowExchangeReader(
@@ -422,8 +421,9 @@ std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   return str;
 }
 
-std::string ExplainPartialPlan(PartialPlan *partial_plan, bool *display_tree) {
-  return partial_plan->ExplainPlan(display_tree);
+std::string ExplainPartialPlan(PartialPlan *partial_plan,
+                               bool *hide_plan_tree) {
+  return partial_plan->ExplainPlan(hide_plan_tree);
 }
 
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector) {

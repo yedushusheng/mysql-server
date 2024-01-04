@@ -544,12 +544,12 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
           }
         }
       }
-      bool display_partial_tree = true;
+      bool hide_partial_tree = false;
       std::string partial_desc = pq::ExplainPartialPlan(
-          collector->partial_plan(), &display_partial_tree);
+          collector->partial_plan(), &hide_partial_tree);
       if (partial_desc.size() > 0) ret += partial_desc;
       description.push_back(move(ret));
-      if (display_partial_tree)
+      if (!hide_partial_tree)
         children.push_back({collector->PartialRootAccessPath()});
       break;
     }  

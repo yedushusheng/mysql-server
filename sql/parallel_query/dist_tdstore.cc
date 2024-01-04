@@ -67,9 +67,9 @@ class TDStoreTableDist : public TableDist {
 
 class TDStorePartialDistPlan : public PartialDistPlan {
  public:
+  using PartialDistPlan::PartialDistPlan;
   bool InitExecution(PartialPlan *partial_plan,
-                     uint num_workers [[maybe_unused]],
-                     NodeArray *exec_nodes [[maybe_unused]]) override {
+                     uint num_workers [[maybe_unused]]) override {
     auto &psinfo = partial_plan->GetParallelScanInfo();
     auto *table = psinfo.table;
     int res;
@@ -173,7 +173,7 @@ class TDStoreAdapter : public Adapter {
                                          [[maybe_unused]]) const override {
     THD *thd = partial_plan->thd();
 
-    return new (thd->mem_root) TDStorePartialDistPlan;
+    return new (thd->mem_root) TDStorePartialDistPlan(exec_nodes);
   }
 
   Worker *CreateParallelWorker(uint worker_id, comm::Event *state_event,

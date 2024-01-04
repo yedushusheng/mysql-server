@@ -62,13 +62,15 @@ class PartialPlan {
     m_dist_plan = dist_plan;
   }
   dist::PartialDistPlan *DistPlan() const { return m_dist_plan; }
-  std::string ExplainPlan(bool *display_tree) {
-    return m_dist_plan->ExplainPlan(display_tree);
+  /// @param set *hide_path_tree to true if dist system does not want to
+  /// show partial plan tree.
+  std::string ExplainPlan(bool *hide_plan_tree) {
+    return m_dist_plan->ExplainPlan(hide_plan_tree);
   }
 
   /// Init execution, called by CollectorIterator::Init(), currently we do
   /// parallel scan initialization in it.
-  bool InitExecution(uint num_workers, dist::NodeArray *exec_nodes);
+  bool InitExecution(uint num_workers);
 
  private:
   Query_block *m_query_block;
