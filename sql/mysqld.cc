@@ -760,6 +760,7 @@
 #include "sql/opt_costconstantcache.h"           // delete_optimizer_cost_module
 #include "sql/opt_range.h"                       // range_optimizer_init
 #include "sql/options_mysqld.h"                  // OPT_THREAD_CACHE_SIZE
+#include "sql/parallel_query/event_service.h"    // StopEventService
 #include "sql/partitioning/partition_handler.h"  // partitioning_init
 #include "sql/persisted_variable.h"              // Persisted_variables_cache
 #include "sql/plugin_table.h"
@@ -2422,6 +2423,8 @@ static void clean_up(bool print_message) {
     LogErr(INFORMATION_LEVEL, ER_BINLOG_END);
   ha_binlog_end(current_thd);
 
+  pq::comm::StopEventService();
+  
   injector::free_instance();
   mysql_bin_log.cleanup();
 
