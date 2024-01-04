@@ -89,18 +89,20 @@ static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
     return "unsupported_access_for_partition_table";
   }
 
-  if (typ < JT_EQ_REF || typ > JT_REF_OR_NULL || typ == JT_FT)
+  assert(typ != JT_UNKNOWN);
+  // Currently, we don't support JT_SYSTEM, JT_FT and JT_INDEX_MERGE.
+  if (typ == JT_SYSTEM || typ == JT_FT || typ == JT_INDEX_MERGE)
     return "table_access_type_is_not_supported";
 
   if (qt->dynamic_range()) {
-    assert(typ == JT_ALL || typ == JT_RANGE || typ == JT_INDEX_MERGE);
+    assert(typ == JT_ALL || typ == JT_RANGE /* || typ == JT_INDEX_MERGE */);
     return "dynamic_range_access_is_not_supported";
   }
 
   if (typ == JT_RANGE && !IsAccessRangeSupported(qt))
     return "unsupported_access_range_type";
 
-  if (typ == JT_REF &&
+  if (qt->type() >= JT_CONST && qt->type() <= JT_REF &&
       qt->ref().parallel_safe(qt->table()) != Item_parallel_safe::Safe)
     return "has_unsafe_items_in_table_ref";
 
@@ -153,6 +155,8 @@ void GetTableAccessInfo(QEP_TAB *tab, uint *keynr, key_range **min_key,
       break;
     case JT_REF_OR_NULL:
       *is_ref_or_null = true;
+      [[fallthrough]];
+    case JT_CONST:
       [[fallthrough]];
     case JT_REF:
       [[fallthrough]];
