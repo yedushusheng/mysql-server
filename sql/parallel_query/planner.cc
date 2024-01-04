@@ -100,15 +100,15 @@ static bool IsAccessRangeSupported(QEP_TAB *qt) {
   auto quick_type = qt->quick()->get_type();
   return quick_type == QUICK_SELECT_I::QS_TYPE_RANGE ||
          quick_type == QUICK_SELECT_I::QS_TYPE_RANGE_DESC ||
-         quick_type == QUICK_SELECT_I::QS_TYPE_SKIP_SCAN ||
-         quick_type == QUICK_SELECT_I::QS_TYPE_GROUP_MIN_MAX;
+         quick_type == QUICK_SELECT_I::QS_TYPE_SKIP_SCAN;
+  // TODO: support GROUP_MIN_MAX;
 }
 
 static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
   auto typ = qt->type();
-  // Temporarily disable range scan and ref scan, plan restore this if parallel
-  // scan is ready.
-  if (typ != JT_ALL && typ != JT_INDEX_SCAN)
+  // TODO: support JT_REF_NULL
+  // if (typ < JT_EQ_REF || typ > JT_REF_OR_NULL || typ == JT_FT)
+  if (typ < JT_EQ_REF || typ > JT_INDEX_SCAN)
     return "table_access_type_is_not_supported";
 
   if (qt->type() == JT_RANGE && !IsAccessRangeSupported(qt))
@@ -449,13 +449,14 @@ SourcePlanChangedStore::~SourcePlanChangedStore() {
   }
 
   if (m_fields) {
-    assert(m_ref_items);
     m_join->fields = m_fields;
     const int num_slices = REF_SLICE_WIN_1 + m_join->m_windows.elements;
-    for (int i = 0; i < num_slices; i++) {
-      if (m_ref_items[i].is_null()) continue;
-      m_join->ref_items[i] = m_ref_items[i];
-      m_join->tmp_fields[i] = m_tmp_fields[i];
+    if (m_ref_items) {
+      for (int i = 0; i < num_slices; i++) {
+        if (m_ref_items[i].is_null()) continue;
+        m_join->ref_items[i] = m_ref_items[i];
+        m_join->tmp_fields[i] = m_tmp_fields[i];
+      }
     }
   }
 

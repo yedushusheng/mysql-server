@@ -73,8 +73,8 @@ class SourcePlanChangedStore {
   Item_sum **m_sum_funcs{nullptr};
   size_t m_sum_funcs_length;
   mem_root_deque<Item *> *m_fields{nullptr};
-  Ref_item_array *m_ref_items;
-  mem_root_deque<Item *> *m_tmp_fields;
+  Ref_item_array *m_ref_items{nullptr};
+  mem_root_deque<Item *> *m_tmp_fields{nullptr};
   AccessPathChangesStore *m_access_path_changes{nullptr};
 
   JOIN *m_join;
