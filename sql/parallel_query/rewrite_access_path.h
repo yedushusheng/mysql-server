@@ -25,7 +25,7 @@ struct AccessPathChanges {
     } table_path;
     struct {
       JOIN *join;
-    } aggregate;
+    } source;
   } u;
   void restore();
 };
@@ -186,7 +186,7 @@ class PartialAccessPathRewriter : public AccessPathRewriter {
   bool clone_and_rewrite(AccessPath *from) { return do_rewrite(from); }
 
  private:
-  TABLE *find_leaf_table(TABLE *) const;
+  TABLE *find_leaf_table(TABLE *table) const;
 
   // Rewrite routines for each access path
   bool rewrite_table_scan(AccessPath *, AccessPath *) override;
@@ -206,8 +206,6 @@ class PartialAccessPathRewriter : public AccessPathRewriter {
   bool rewrite_temptable_aggregate(AccessPath *, AccessPath *out) override;
   bool rewrite_stream(AccessPath *, AccessPath *) override;
   bool rewrite_materialize(AccessPath *in, AccessPath *out) override;
-
-  TABLE *m_leaf_table{nullptr};
 };
 
 }  // namespace pq

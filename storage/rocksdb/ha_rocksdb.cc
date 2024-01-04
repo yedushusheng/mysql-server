@@ -432,7 +432,7 @@ static int rocksdb_prepare(handlerton *const, THD *const thd,
  * is implemented. Temporary leave it empty.
  */
   tdsql::Transaction *tx = tdsql::get_tx_from_thd(thd);
-  if (!tx->is_tx_started()) {
+  if (!tx->TxnStarted()) {
     // nothing to prepare
     return HA_EXIT_SUCCESS;
   }
@@ -615,8 +615,8 @@ static int rocksdb_commit(handlerton *const, THD *const thd,
          - For a COMMIT statement that finishes a multi-statement transaction
          - For a statement that has its own transaction
       */
-      if (tx->is_tx_started()) {
-        uint64 trans_id = tx->get_trans_id();
+      if (tx->TxnStarted()) {
+        uint64 trans_id = tx->trans_id();
 
 #ifndef NDEBUG
         if (thd->variables.fake_commit_fail) {
@@ -668,7 +668,7 @@ static int rocksdb_rollback(handlerton *const, THD *const thd,
 
         Discard the changes made by the transaction
       */
-      if (tx->is_tx_started()) {
+      if (tx->TxnStarted()) {
         rc = tx->rollback();
       }
     } else {
@@ -756,7 +756,7 @@ static int rocksdb_start_tx_and_assign_read_view(
   assert(!IS_NULLPTR(tx));
 
   // assert(!tx->has_snapshot());
-  tx->set_tx_read_only(true);
+  tx->set_tx_read_only();
   rocksdb_register_tx(hton, thd, tx);
 
   if (tx_isolation == ISO_REPEATABLE_READ) {
@@ -869,7 +869,7 @@ static void init_myrocks_psi_keys() {
 static int rocksdb_start_trx_and_clone_read_view(handlerton*, THD* thd, THD* from_thd) {
   assert(thd && from_thd);
   tdsql::Transaction* from_trx = from_thd->get_tdsql_trans();
-  if (!from_trx || !from_trx->is_tx_started()) {
+  if (!from_trx || !from_trx->TxnStarted()) {
     // Reference innobase_start_trx_and_clone_read_view
     push_warning_printf(thd, Sql_condition::SL_WARNING, HA_ERR_UNSUPPORTED,
                         "TDStore: WITH CONSISTENT SNAPSHOT FROM SESSION was "
@@ -880,7 +880,7 @@ static int rocksdb_start_trx_and_clone_read_view(handlerton*, THD* thd, THD* fro
   }
 
   Transaction* trx = thd->get_tdsql_trans();
-  if (trx && trx->is_tx_started()) {
+  if (trx && trx->TxnStarted()) {
     // Reference innobase_start_trx_and_clone_read_view
     push_warning_printf(thd, Sql_condition::SL_WARNING, HA_ERR_UNSUPPORTED,
                         "TDStore: WITH CONSISTENT SNAPSHOT FROM SESSION was "
@@ -889,7 +889,7 @@ static int rocksdb_start_trx_and_clone_read_view(handlerton*, THD* thd, THD* fro
     return 1;
   }
 
-  trx = new tdsql::Transaction_impl(thd);
+  trx = new tdsql::Transaction(thd);
   if (trx->clone_from(from_thd->get_tdsql_trans())) {
     // Return value reference ha_clone_consistent_snapshot
     return 1;
@@ -3593,7 +3593,8 @@ int ha_rocksdb::engine_push(AQP::Table_access *table_aqp) {
 }
 
 bool ha_rocksdb::tdsql_clone_pushed(const handler *from,
-                                    Item_clone_context *context) {
+                                    Item_clone_context *context,
+                                    bool reset_limit_offset) {
   auto *ha = down_cast<const ha_rocksdb *>(from);
 
   assert(!ha->tdstore_pushed_cond_ ||
@@ -3605,7 +3606,17 @@ bool ha_rocksdb::tdsql_clone_pushed(const handler *from,
 
   tdstore_pushed_cond_idx_ = ha->tdstore_pushed_cond_idx_;
 
+  // Clone Limit OFFSET push down if it is enabled
+
+  if (!ha->limit_offset_cond_pushdown.enabled()) return false;
+
   limit_offset_cond_pushdown = ha->limit_offset_cond_pushdown;
+  if (reset_limit_offset && limit_offset_cond_pushdown.offset_num() != 0) {
+    limit_offset_cond_pushdown.set_limit_num(
+        ha->limit_offset_cond_pushdown.limit_num() +
+        ha->limit_offset_cond_pushdown.offset_num());
+    limit_offset_cond_pushdown.set_offset_num(0);
+  }
 
   // pushed_idx_cond cloned in server layer
   return false;
@@ -3810,10 +3821,10 @@ bool ha_rocksdb::index_is_usable(tdsql::Transaction* tx,
   if (tx) {
     LogDebug("current trans_id: %lu, trans ts: %lu, table %s.%s create_ts is %lu, "
              "index <idx: %u, name: %s> create_ts is %lu, query: '%s'",
-          tx->get_trans_id(), tx->get_begin_ts(), table_arg->s->db.str,
+          tx->trans_id(), tx->begin_ts(), table_arg->s->db.str,
           table_arg->s->table_name.str, table_arg->s->create_ts, index,
           get_key_name(index, table_arg, m_tbl_def),
-          create_ts, tx->get_thd()->query().str);
+          create_ts, tx->thd()->query().str);
 
     DBUG_EXECUTE_IF("table_or_index_create_ts_unusable", {
       // Don't block system tables.
@@ -3822,13 +3833,13 @@ bool ha_rocksdb::index_is_usable(tdsql::Transaction* tx,
       }
     });
 
-    if (tx->get_begin_ts() > 0 && tx->get_begin_ts() < create_ts) {
+    if (tx->begin_ts() > 0 && tx->begin_ts() < create_ts) {
       LogError("current trans_id: %lu, trans ts: %lu, table %s.%s create_ts is %lu, "
                "index <idx: %u, name: %s> create_ts is %lu, unusable, query: '%s'",
-          tx->get_trans_id(), tx->get_begin_ts(), table_arg->s->db.str,
+          tx->trans_id(), tx->begin_ts(), table_arg->s->db.str,
           table_arg->s->table_name.str, table_arg->s->create_ts, index,
           get_key_name(index, table_arg, m_tbl_def),
-          create_ts, tx->get_thd()->query().str);
+          create_ts, tx->thd()->query().str);
       my_error(ER_TABLE_DEF_UNUSABLE, MYF(0), table_arg->s->db.str, table_arg->s->table_name.str,
                "begin timestamp of current transaction is too old");
       return false;
@@ -4225,7 +4236,7 @@ int ha_rocksdb::check_and_lock_sk(const uint &key_id,
   tdsql::Iterator* sk_iter = nullptr;
   assert(kd.get_keyno() == key_id);
 
-  rc = tdsql::CreateIterator(row_info.tx->get_thd(), this, 0 /*iterator_id*/,
+  rc = tdsql::CreateIterator(row_info.tx->thd(), this, 0 /*iterator_id*/,
                              CONVERT_TO_TDSQL_SLICE(index_prefix),
                              CONVERT_TO_TDSQL_SLICE(new_slice),
                              CONVERT_TO_TDSQL_SLICE(end_slice),
@@ -4307,7 +4318,7 @@ int ha_rocksdb::check_uniqueness_and_lock(
         LogError("Duplicate entry '%llu' for key 'hidden pk' "
                         "table '%s'. txid:%lu",
                         (ulonglong )(row_info.hidden_pk_id),
-                        m_tbl_def->full_tablename().data(), tx->get_trans_id());
+                        m_tbl_def->full_tablename().data(), tx->trans_id());
         errkey = MAX_KEY;
       } else {
         errkey = key_id;
@@ -4414,7 +4425,7 @@ int ha_rocksdb::update_pk(const Rdb_key_def &kd,
   } else if (rocksdb_enable_bulk_load_api &&
       THDVAR(table->in_use, bulk_load) &&
       !tdsql::IsSystemTable(kd.get_index_number())) {
-    if (in_parallel_task()) {
+    if (in_parallel_data_fillback_task()) {
       rc = bulk_cache_key_in_parallel(row_info.new_pk_slice, value_slice);
     } else {
       rc = bulk_cache_key(row_info.tx, row_info.new_pk_slice, value_slice);
@@ -4539,7 +4550,7 @@ int ha_rocksdb::update_sk(const TABLE *const table_arg, const Rdb_key_def &kd,
   } else if (bulk_load_sk &&
       row_info.old_data == nullptr &&
       !tdsql::IsSystemTable(kd.get_index_number())) {
-    if (in_parallel_task()) {
+    if (in_parallel_data_fillback_task()) {
       rc = bulk_cache_key_in_parallel(new_key_slice, new_value_slice);
     } else {
       rc = bulk_cache_key(row_info.tx, new_key_slice, new_value_slice);
@@ -4599,7 +4610,7 @@ int ha_rocksdb::update_write_row(const uchar *const old_data,
 
   set_last_rowkey(old_data);
 
-  if (!in_parallel_task()) {
+  if (!in_parallel_data_fillback_task()) {
     row_info.tx = tdsql::get_or_create_tx(table->in_use, rc);
     if (rc != HA_EXIT_SUCCESS)
       return rc;
@@ -4647,7 +4658,7 @@ int ha_rocksdb::update_write_row(const uchar *const old_data,
     return rc;
   }
 
-  if (unlikely(in_parallel_task())) {
+  if (unlikely(in_parallel_data_fillback_task())) {
     rc = flush_cache_key_in_parallel();
   } else {
     rc = flush_cache_key(row_info.tx);
@@ -4928,7 +4939,7 @@ int ha_rocksdb::index_init(uint idx, bool sorted [[maybe_unused]]) {
 
   int rc = HA_EXIT_SUCCESS;
   tdsql::Transaction *tx = nullptr;
-  if (unlikely(in_parallel_task())) {
+  if (unlikely(in_parallel_data_fillback_task())) {
     assert(tdsql::IsSystemTable(table->s->db.str, table->s->table_name.str));
   } else {
     tx = tdsql::get_or_create_tx(table->in_use, rc);
@@ -5530,7 +5541,7 @@ int ha_rocksdb::external_lock(THD *const thd, int lock_type) {
     to commit or rollback transaction. Make sure get
     proper lock is enough.
   */
-  if (unlikely(in_parallel_task())) {
+  if (unlikely(in_parallel_data_fillback_task())) {
     if (lock_type == F_WRLCK) {
       m_lock_rows = RDB_LOCK_WRITE;
     }
@@ -5553,22 +5564,11 @@ int ha_rocksdb::external_lock(THD *const thd, int lock_type) {
           for each of them, but that's ok because non-first tx->commit() calls
           will be no-ops.
         */
-        if (tx->is_tx_started() && tx->commit_or_rollback() != HA_EXIT_SUCCESS) {
+        if (tx->TxnStarted() && tx->commit_or_rollback() != HA_EXIT_SUCCESS) {
           set_lock_type(lock_type);
           res = HA_ERR_INTERNAL_ERROR;
         }
       }
-
-      // TODO: uncomment
-
-      //assert((tx->stmt_unlock_read_tables() &&
-      //             thd->in_multi_stmt_transaction_mode()) || !tx->is_stmt_started());
-
-      //if (!((tx->stmt_unlock_read_tables() &&
-      //       thd->in_multi_stmt_transaction_mode()) || !tx->is_stmt_started())) {
-      //  LogError("KillSelf");
-      //  tdsql::KillSelf(false/* no_core */);
-      //}
     }
   } else {
     /* TDSQL: we may meet isolation not supported by TDStore duiring init DD. */
@@ -5594,15 +5594,12 @@ int ha_rocksdb::external_lock(THD *const thd, int lock_type) {
       So, we put this code here.
     */
     tdsql::Transaction *const tx = tdsql::get_or_create_tx(thd, res);
-    if (res != HA_EXIT_SUCCESS)
-      DBUG_RETURN(res);
-    assert(!IS_NULLPTR(tx));
-
+    if (res != HA_EXIT_SUCCESS) return res;
+    assert(tx);
     tx->set_tx_read_without_lock(table);
     tx->set_stmt_optimize_load_data(table);
-
     // Update glsv that bring back by start tx msg from mc.
-    tdsql::update_local_glsv_under_lock(tx->get_schema_version());
+    tdsql::update_local_glsv_under_lock(tx->glsv());
 
     read_thd_vars(thd);
 
@@ -5620,7 +5617,7 @@ int ha_rocksdb::external_lock(THD *const thd, int lock_type) {
     }
 
     if (lock_type == F_WRLCK) {
-      if (tx->is_tx_read_only()) {
+      if (tx->tx_read_only()) {
         my_error(ER_UPDATES_WITH_CONSISTENT_SNAPSHOT, MYF(0));
         DBUG_RETURN(HA_ERR_UNSUPPORTED);
       }
@@ -6323,8 +6320,8 @@ int ha_rocksdb::BuildPushDownPb(uint keyno) {
 
   if (pk_preload_push_) {
     tdsql::Transaction *tx = current_thd->get_tdsql_trans();
-    tdstore_pushed_cond_pb_->set_trans_id(tx->get_trans_id());
-    tdstore_pushed_cond_pb_->set_begin_ts(tx->get_begin_ts());
+    tdstore_pushed_cond_pb_->set_trans_id(tx->trans_id());
+    tdstore_pushed_cond_pb_->set_begin_ts(tx->begin_ts());
   }
 
   // 1) push field info to tdstore,need this to parse the key part of record
@@ -6791,7 +6788,7 @@ int ha_rocksdb::index_fillback_sk() {
     DBUG_RETURN(HA_EXIT_FAILURE);
   }
 
-  assert(tx->get_trans_id() == 0 && tx->get_begin_ts() == 0);
+  assert(tx->trans_id() == 0 && tx->begin_ts() == 0);
 
   retval = tx->start_tx();
   if (unlikely(retval != TDSQL_EXIT_SUCCESS)) {
@@ -6802,11 +6799,11 @@ int ha_rocksdb::index_fillback_sk() {
 
   tx->set_is_index_fillback_tx(true);
 
-  assert(tx->get_trans_id() > 0 && tx->get_begin_ts() > 0 && tx->get_begin_ts() >= tx->get_trans_id());
+  assert(tx->trans_id() > 0 && tx->begin_ts() > 0 && tx->begin_ts() >= tx->trans_id());
 
-  uint64_t fillback_ts = tx->get_begin_ts();
+  uint64_t fillback_ts = tx->begin_ts();
 
-  LogInfo("index fillback_ts is %lu, scan record trans_id: %lu", fillback_ts, tx->get_trans_id());
+  LogInfo("index fillback_ts is %lu, scan record trans_id: %lu", fillback_ts, tx->trans_id());
 
   tdsql::ThomasRulePutCntl thomas_put_cntl(thd, fillback_ts);
 
@@ -6912,7 +6909,7 @@ int ha_rocksdb::index_fillback_sk_by_range(const tdsql::Slice &start,
     DBUG_RETURN(HA_EXIT_FAILURE);
   }
 
-  uint64_t begin_ts = thd->get_tdsql_trans()->get_begin_ts();
+  uint64_t begin_ts = thd->get_tdsql_trans()->begin_ts();
   assert(begin_ts > 0);
   tdsql::ThomasRulePutCntl thomas_put_cntl(thd, begin_ts);
 
@@ -7400,15 +7397,15 @@ int rocksdb_check_bulk_load(THD *const thd,
     return 1;
   }
 
-  tdsql::Transaction* tx = tdsql::get_tx_from_thd(thd);
-  if (tx != nullptr) {
-    // const int rc = tx->finish_bulk_load();
-    const int rc = tx->flush_batch_record();
+  tdsql::Transaction *tx = tdsql::get_tx_from_thd(thd);
+  if (tx) {
+    int rc = tx->FlushBatchRecord();
     if (rc != 0) {
-      LogPluginErrMsg(ERROR_LEVEL, 0,
-                      "Error %d finalizing last cached batch record while setting bulk "
-                      "loading variable",
-                      rc);
+      LogPluginErrMsg(
+          ERROR_LEVEL, 0,
+          "Error %d finalizing last cached batch record while setting bulk "
+          "loading variable",
+          rc);
       THDVAR(thd, bulk_load) = 0;
       return 1;
     }
@@ -7517,12 +7514,6 @@ void ha_rocksdb::print_error(int error, myf errflag) {
 
 void ha_rocksdb::set_write_fence(const Rdb_key_def* kd_in) {
   THD* thd = table->in_use;
-  tdsql::Transaction* tx = nullptr;
-  if (!in_parallel_task()) {
-    tx = thd->get_tdsql_trans();
-  }
-
-  assert(tx || in_parallel_task());
   assert(kd_in);
   uint key_no = kd_in->get_keyno();
 
@@ -7541,14 +7532,9 @@ void ha_rocksdb::set_write_fence(const Rdb_key_def* kd_in) {
   assert(index_id_to_set != tdsql::kInvalidIndexId);
   assert(schema_version_to_set != tdsql::kInvalidSchemaVersion);
 
-  if (likely(tx)) {
-    tx->set_schema_id(index_id_to_set);
-    tx->set_write_fence(schema_version_to_set);
-    tx->set_table(table);
-  } else {
-    thd->rpc_ctx()->set_schema_id(index_id_to_set);
-    thd->rpc_ctx()->set_write_fence(schema_version_to_set);
-  }
+  thd->rpc_ctx()->set_schema_id(index_id_to_set);
+  thd->rpc_ctx()->set_schema_version(schema_version_to_set);
+  thd->rpc_ctx()->set_table(table);
 
   LogDebug(
       "[set_write_fence(const Rdb_key_def*)][table:%s.%s]"
@@ -7560,12 +7546,8 @@ void ha_rocksdb::set_write_fence(const Rdb_key_def* kd_in) {
 
 void ha_rocksdb::set_write_fence(Iterator *iter) {
   THD *thd = table->in_use;
-  tdsql::Transaction *tx = nullptr;
-  if (!in_parallel_task()) tx = thd->get_tdsql_trans();
 
   uint key_no = iter->keyno();
-  assert(tx || in_parallel_task());
-
   assert(iter->tindex_id() != tdsql::kInvalidIndexId);
 
   tdsql::SchemaVersion schema_version_to_set = tdsql::kInvalidSchemaVersion;
@@ -7582,7 +7564,7 @@ void ha_rocksdb::set_write_fence(Iterator *iter) {
 
   assert(schema_version_to_set != tdsql::kInvalidSchemaVersion);
   iter->set_write_fence(schema_version_to_set);
-  if (tx) tx->set_table(table);
+  thd->rpc_ctx()->set_table(table);
 
   LogDebug(
       "[set_write_fence(Iterator*)][table:%s.%s]"
@@ -7600,9 +7582,9 @@ void ha_rocksdb::set_write_fence() {
   assert(get_key_tindex_id() != tdsql::kInvalidIndexId);
   assert(table->schema_version != tdsql::kInvalidSchemaVersion);
 
-  tx->set_schema_id(get_key_tindex_id());
-  tx->set_write_fence(table->schema_version);
-  tx->set_table(table);
+  thd->rpc_ctx()->set_schema_id(get_key_tindex_id());
+  thd->rpc_ctx()->set_schema_version(table->schema_version);
+  thd->rpc_ctx()->set_table(table);
 
   LogDebug(
       "[set_write_fence(void)][table:%s.%s]"
@@ -7628,7 +7610,7 @@ int ha_rocksdb::rpc_put_record(
     const rocksdb::Slice &value_slice,
     tdstore::PutRecordType &&type) {
 
-  if (tdsql::ddl::HandlerCheckInDDTrans(tx->get_thd(), table->tindex_id)) {
+  if (tdsql::ddl::HandlerCheckInDDTrans(tx->thd(), table->tindex_id)) {
     return TDSQL_EXIT_FAILURE;
   }
 
@@ -7647,7 +7629,7 @@ int ha_rocksdb::rpc_put_record(
     return HA_ERR_TABLE_READONLY;
   }
 
-  if (check_or_set_schema_version(tx->get_thd(), table->tindex_id,
+  if (check_or_set_schema_version(tx->thd(), table->tindex_id,
           table->schema_version, table->s->db.str, table->s->table_name.str)) {
     LogError("[check_or_set_schema_version failed] [table: %s.%s]"
              "[tindex_id=%u] [schema_version=%u]", table->s->db.str,
@@ -7656,8 +7638,8 @@ int ha_rocksdb::rpc_put_record(
     return HA_ERR_TABLE_DEF_CHANGED;
   }
 
-  PutRecordCntl cntl(tx->get_thd(), key_slice.ToString(), value_slice.ToString(), type);
-  assert(cntl.get_thd() == tx->get_thd());
+  PutRecordCntl cntl(tx->thd(), key_slice.ToString(), value_slice.ToString(), type);
+  assert(cntl.get_thd() == tx->thd());
   assert(cntl.get_tx() == tx);
 
   return cntl.Execute();
@@ -7666,12 +7648,12 @@ int ha_rocksdb::rpc_put_record(
 int ha_rocksdb::flush_batch_record_in_parallel() {
   DBUG_ENTER_FUNC();
   // Used for parallel task only.
-  assert(in_parallel_task());
+  assert(in_parallel_data_fillback_task());
   assert(m_parallel_thomas_put);
 
   int retval = TDSQL_EXIT_SUCCESS;
 
-  if (in_parallel_task() && m_parallel_thomas_put) {
+  if (in_parallel_data_fillback_task() && m_parallel_thomas_put) {
     if (m_parallel_thomas_put->RecordNum() > 0) {
       retval = m_parallel_thomas_put->Execute();
       m_parallel_thomas_put->Clear();
@@ -7684,7 +7666,7 @@ int ha_rocksdb::flush_batch_record_in_parallel() {
   DBUG_RETURN(retval);
 }
 
-int ha_rocksdb::bulk_cache_key(tdsql::Transaction* tx,
+int ha_rocksdb::bulk_cache_key(tdsql::Transaction *tx,
                                const rocksdb::Slice &key_slice,
                                const rocksdb::Slice &value_slice) {
   assert(tx);
@@ -7695,12 +7677,12 @@ int ha_rocksdb::bulk_cache_key(tdsql::Transaction* tx,
 int ha_rocksdb::bulk_cache_key_in_parallel(const rocksdb::Slice &key_slice,
                                            const rocksdb::Slice &value_slice) {
   // Used for parallel task only.
-  assert(in_parallel_task());
+  assert(in_parallel_data_fillback_task());
   assert(m_parallel_thomas_put);
 
   int rc = TDSQL_EXIT_SUCCESS;
 
-  if (in_parallel_task() && m_parallel_thomas_put) {
+  if (in_parallel_data_fillback_task() && m_parallel_thomas_put) {
     rc = m_parallel_thomas_put->AddKV(CONVERT_TO_TDSQL_SLICE(key_slice),
                                       CONVERT_TO_TDSQL_SLICE(value_slice),
                                       kInvalidIndexId, kInvalidSchemaVersion);
@@ -7713,14 +7695,14 @@ int ha_rocksdb::bulk_cache_key_in_parallel(const rocksdb::Slice &key_slice,
 }
 
 // flush cached batch key-value to tdstore
-int ha_rocksdb::flush_cache_key(tdsql::Transaction* tx) {
-  assert(tx != nullptr);
+int ha_rocksdb::flush_cache_key(tdsql::Transaction *tx) {
   // TODO: consider commit_in_the_middle
   // return commit_in_the_middle() &&
-  int rc = error_ok();
-  if (tx->get_batch_record_count() >= THDVAR(table->in_use, bulk_load_size) ||
-      tx->batch_cache_size_exceed()) {
-    rc = tx->flush_batch_record();
+  assert(tx);
+  int rc = TDSQL_EXIT_SUCCESS;
+  if (tx->BatchRecordCount() >= THDVAR(table->in_use, bulk_load_size) ||
+      tx->BatchRecordSizeExceed()) {
+    rc = tx->FlushBatchRecord();
     if (commit_in_the_middle(table->in_use)) {
       rc = tx->commit();
     }
@@ -7731,12 +7713,12 @@ int ha_rocksdb::flush_cache_key(tdsql::Transaction* tx) {
 int ha_rocksdb::flush_cache_key_in_parallel() {
   DBUG_ENTER_FUNC();
   // Used for parallel task only.
-  assert(in_parallel_task());
+  assert(in_parallel_data_fillback_task());
   assert(m_parallel_thomas_put);
 
   int rc = TDSQL_EXIT_SUCCESS;
 
-  if (in_parallel_task() && m_parallel_thomas_put) {
+  if (in_parallel_data_fillback_task() && m_parallel_thomas_put) {
     if (m_parallel_thomas_put->RecordNum() >=
             THDVAR(table->in_use, bulk_load_size) ||
         m_parallel_thomas_put->BatchSizeExceed())
@@ -7762,7 +7744,7 @@ int ha_rocksdb::rpc_get_record(
     return HA_ERR_TABLE_DEF_CHANGED;
   }
 
-  if (check_or_set_schema_version(tx->get_thd(), table->tindex_id,
+  if (check_or_set_schema_version(tx->thd(), table->tindex_id,
           table->schema_version, table->s->db.str, table->s->table_name.str)) {
     LogError("[check_or_set_schema_version failed] [table: %s.%s]"
              "[tindex_id=%u] [schema_version=%u]", table->s->db.str,
@@ -7782,8 +7764,7 @@ int ha_rocksdb::rpc_get_record(
         }
       };
 
-  THD* thd = tx->get_thd();
-
+  THD* thd = tx->thd();
   if (ReadWithoutTrans(thd)) {
     GetSingleRecordCntl cntl(thd, key_slice.ToString());
     assert(cntl.get_thd() == thd);
@@ -7806,7 +7787,7 @@ int ha_rocksdb::rpc_del_record(
     tdsql::Transaction* tx,
     const rocksdb::Slice &key_slice) {
 
-  if (tdsql::ddl::HandlerCheckInDDTrans(tx->get_thd(), table->tindex_id)) {
+  if (tdsql::ddl::HandlerCheckInDDTrans(tx->thd(), table->tindex_id)) {
     return TDSQL_EXIT_FAILURE;
   }
 
@@ -7823,7 +7804,7 @@ int ha_rocksdb::rpc_del_record(
     return HA_ERR_TABLE_READONLY;
   }
 
-  if (check_or_set_schema_version(tx->get_thd(), table->tindex_id,
+  if (check_or_set_schema_version(tx->thd(), table->tindex_id,
           table->schema_version, table->s->db.str, table->s->table_name.str)) {
     LogError("[check_or_set_schema_version failed] [table: %s.%s]"
              "[tindex_id=%u] [schema_version=%u]", table->s->db.str,
@@ -7832,8 +7813,8 @@ int ha_rocksdb::rpc_del_record(
     return HA_ERR_TABLE_DEF_CHANGED;
   }
 
-  DelRecordCntl cntl(tx->get_thd(), key_slice.ToString());
-  assert(cntl.get_thd() == tx->get_thd());
+  DelRecordCntl cntl(tx->thd(), key_slice.ToString());
+  assert(cntl.get_thd() == tx->thd());
   assert(cntl.get_tx() == tx);
 
   return cntl.Execute();
@@ -7858,7 +7839,8 @@ int ha_rocksdb::init_tdsql_iterator(
     write_fence = table->schema_version;
   else
     write_fence = table->key_info[keyno].schema_version;
-  tx->set_table(table);
+
+  table->in_use->rpc_ctx()->set_table(table);
 
   // Do not need to check readable during DDL execution
   if (!tdsql::ddl::GetDDLJob(table->in_use) &&
@@ -7867,7 +7849,7 @@ int ha_rocksdb::init_tdsql_iterator(
     return HA_ERR_TABLE_DEF_CHANGED;
   }
 
-  if (check_or_set_schema_version(tx->get_thd(), table->tindex_id,
+  if (check_or_set_schema_version(tx->thd(), table->tindex_id,
           table->schema_version, table->s->db.str, table->s->table_name.str)) {
     LogError("[check_or_set_schema_version failed] [table: %s.%s]"
              "[tindex_id=%u] [schema_version=%u]", table->s->db.str,
@@ -7877,7 +7859,7 @@ int ha_rocksdb::init_tdsql_iterator(
   }
 
   rc = tdsql::CreateIterator(
-      tx->get_thd(), this, 0 /*iterator_id*/, CONVERT_TO_TDSQL_SLICE(index_prefix),
+      tx->thd(), this, 0 /*iterator_id*/, CONVERT_TO_TDSQL_SLICE(index_prefix),
       CONVERT_TO_TDSQL_SLICE(start_slice), CONVERT_TO_TDSQL_SLICE(end_slice),
       &m_td_scan_it, is_forward, keyno, tindex_id, write_fence,
       false /*in_parallel_fillback_index*/);
@@ -8110,8 +8092,8 @@ void ha_rocksdb::start_bulk_insert(ha_rows) {
   assert(m_bulk_load_closure == nullptr);
   m_bulk_load_closure = new Bulk_load_closure(table->in_use);
 
-  if (in_parallel_task()) {
-    uint64_t begin_ts = thd->get_tdsql_trans()->get_begin_ts();
+  if (in_parallel_data_fillback_task()) {
+    uint64_t begin_ts = thd->get_tdsql_trans()->begin_ts();
     assert(begin_ts > 0);
     m_parallel_thomas_put.reset(new tdsql::ThomasRulePutCntl(thd, begin_ts));
   }
@@ -8124,13 +8106,13 @@ int ha_rocksdb::end_bulk_insert() {
   if (!table->in_use->variables.tdsql_enable_bulk_insert)
     DBUG_RETURN(retval);
 
-  if (in_parallel_task()) {
+  if (in_parallel_data_fillback_task()) {
     retval = flush_batch_record_in_parallel();
     m_parallel_thomas_put.reset(nullptr);
   } else {
     tdsql::Transaction* tx = table->in_use->get_tdsql_trans();
     if (tx) {
-      retval = tx->flush_batch_record();
+      retval = tx->FlushBatchRecord();
     }
   }
 
@@ -8502,7 +8484,7 @@ int ha_rocksdb::get_row_count_from_key(ha_rows* num_rows, uint index) {
   if(tdstore_pushed_cond_pb_ && index != tdstore_pushed_cond_idx_) {
     *num_rows = HA_POS_ERROR;
     LogError("ha_rocksdb::get_row_count_from_key] plan changed."
-            "trans_id:%lu", tx->get_trans_id());
+            "trans_id:%lu", tx->trans_id());
     return TDSQL_EXIT_FAILURE;
   }
 
@@ -8526,7 +8508,7 @@ int ha_rocksdb::get_row_count_from_key(ha_rows* num_rows, uint index) {
     return HA_ERR_TABLE_DEF_CHANGED;
   }
 
-  if (check_or_set_schema_version(tx->get_thd(), table->tindex_id,
+  if (check_or_set_schema_version(tx->thd(), table->tindex_id,
           table->schema_version, table->s->db.str, table->s->table_name.str)) {
     LogError("[check_or_set_schema_version failed] [table:%s.%s]"
              "[tindex_id=%u] [schema_version=%u]",
@@ -8548,7 +8530,7 @@ int ha_rocksdb::get_row_count_from_key(ha_rows* num_rows, uint index) {
     std::string &start = start_end_keys[i].first;
     std::string &end = start_end_keys[i].second;
 
-    uint64_t iterator_id = tx->generate_iterator_id();
+    uint64_t iterator_id = tx->GenerateIteratorID();
     uint64_t rows = HA_POS_ERROR;
 
     if (current_thd->variables.tdsql_parallel_optim) {
@@ -8562,7 +8544,7 @@ int ha_rocksdb::get_row_count_from_key(ha_rows* num_rows, uint index) {
             "[ha_rocksdb::get_row_count_from_key] ParallelRowCount.Run() "
             "failed. "
             "trans_id:%lu, ret:%d",
-            tx->get_trans_id(), ret);
+            tx->trans_id(), ret);
         return ret;
       }
       ret = paral_count.GetResult(&rows);
@@ -8571,13 +8553,13 @@ int ha_rocksdb::get_row_count_from_key(ha_rows* num_rows, uint index) {
         LogError(
             "[ha_rocksdb::get_row_count_from_key] ParallelRowCount.GetResult() "
             "failed. trans_id:%lu, ret:%d",
-            tx->get_trans_id(), ret);
+            tx->trans_id(), ret);
         return ret;
       }
       LogInfo(
           "[ha_rocksdb::get_row_count_from_key][parallel] "
           "trans_id:%lu, table=%s, index=%s, rows=%lu",
-          tx->get_trans_id(), m_tbl_def->full_tablename().c_str(),
+          tx->trans_id(), m_tbl_def->full_tablename().c_str(),
           key.get_name().c_str(), rows);
     } else {
       tdsql::RowCountCntl cntl(thd, start, end, iterator_id, tdstore_pushed_cond_pb_);
@@ -8588,14 +8570,14 @@ int ha_rocksdb::get_row_count_from_key(ha_rows* num_rows, uint index) {
             "[ha_rocksdb::get_row_count_from_key] RowCountCntl.Execute() "
             "failed. "
             "trans_id:%lu, ret=%d",
-            tx->get_trans_id(), ret);
+            tx->trans_id(), ret);
         return ret;
       }
       rows = cntl.rows();
       LogInfo(
           "[ha_rocksdb::get_row_count_from_key] "
           "trans_id:%lu, table=%s, index=%s, rows=%lu",
-          tx->get_trans_id(), m_tbl_def->full_tablename().c_str(),
+          tx->trans_id(), m_tbl_def->full_tablename().c_str(),
           key.get_name().c_str(), rows);
     }
 
@@ -8631,8 +8613,8 @@ void ha_rocksdb::dbg_assert_part_elem(const TABLE* table) const {
 }
 #endif
 
-bool ha_rocksdb::use_stmt_optimize_load_data(tdsql::Transaction* tx) {
-  if (in_parallel_task()) {
+bool ha_rocksdb::use_stmt_optimize_load_data(tdsql::Transaction *tx) {
+  if (in_parallel_data_fillback_task()) {
     return false;
   }
   assert(tx);
@@ -8648,7 +8630,7 @@ int ha_rocksdb::ValidateSchemaStatusBeforePutRecord(
   assert(table);
   assert(table->s);
 
-  if (tdsql::ddl::HandlerCheckInDDTrans(tx->get_thd(), table->tindex_id)) {
+  if (tdsql::ddl::HandlerCheckInDDTrans(tx->thd(), table->tindex_id)) {
     return TDSQL_EXIT_FAILURE;
   }
 
@@ -8665,7 +8647,7 @@ int ha_rocksdb::ValidateSchemaStatusBeforePutRecord(
     return HA_ERR_TABLE_READONLY;
   }
 
-  if (check_or_set_schema_version(tx->get_thd(), table->tindex_id,
+  if (check_or_set_schema_version(tx->thd(), table->tindex_id,
                                   table->schema_version, table->s->db.str,
                                   table->s->table_name.str)) {
     LogError(
@@ -8755,7 +8737,7 @@ int ha_rocksdb::init_parallel_scan(parallel_scan_handle_t *handle,
     return ret;
   }
   assert(main_txn);
-  assert(main_txn->get_trans_id());
+  assert(main_txn->trans_id());
 
   uint32_t keynr = scan_desc->keynr != MAX_KEY
                        ? scan_desc->keynr
@@ -8766,8 +8748,9 @@ int ha_rocksdb::init_parallel_scan(parallel_scan_handle_t *handle,
   if ((ret = GetParallelScanRegionList(scan_desc, &rgns)) != TDSQL_EXIT_SUCCESS)
     return ret;
 
-  main_txn->set_table(table);
-
+  // Take the concurrency of DDL and parallel query into consideration.
+  table->in_use->rpc_ctx()->set_table(table);
+  assert(!tdsql::ddl::GetDDLJob(table->in_use) && !table->correlate_src_table);
   if (IsUnReadable((Schema_Status)(table->schema_status))) {
     LogError(
         "[init_parallel_scan failed][IsUnReadable][HA_ERR_TABLE_DEF_CHANGED]"
@@ -8777,7 +8760,7 @@ int ha_rocksdb::init_parallel_scan(parallel_scan_handle_t *handle,
     return TDSQL_EXIT_FAILURE;
   }
 
-  if (check_or_set_schema_version(main_txn->get_thd(), table->tindex_id,
+  if (check_or_set_schema_version(main_txn->thd(), table->tindex_id,
                                   table->schema_version, table->s->db.str,
                                   table->s->table_name.str)) {
     LogError(

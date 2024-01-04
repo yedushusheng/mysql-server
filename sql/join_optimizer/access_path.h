@@ -703,6 +703,9 @@ struct AccessPath {
       ha_rows offset;
       bool count_all_rows;
       bool reject_multiple_rows;
+      // Set it to true if LIMIT OFFSET push down to tdstore and OFFSET has been
+      // already moved in engine, and this is just for TDSQL.
+      bool offset_moved_in_engine;      
       // Only used when the LIMIT is on a UNION with SQL_CALC_FOUND_ROWS.
       // See SELECT_LEX_UNIT::send_records.
       ha_rows *send_records_override;
@@ -1012,7 +1015,8 @@ inline AccessPath *NewLimitOffsetAccessPath(THD *thd, AccessPath *child,
                                             ha_rows limit, ha_rows offset,
                                             bool count_all_rows,
                                             bool reject_multiple_rows,
-                                            ha_rows *send_records_override) {
+                                            ha_rows *send_records_override,
+                                            bool offset_moved_in_engine = false) {
   AccessPath *path = new (thd->mem_root) AccessPath;
   path->type = AccessPath::LIMIT_OFFSET;
   path->limit_offset().child = child;
@@ -1021,6 +1025,7 @@ inline AccessPath *NewLimitOffsetAccessPath(THD *thd, AccessPath *child,
   path->limit_offset().count_all_rows = count_all_rows;
   path->limit_offset().reject_multiple_rows = reject_multiple_rows;
   path->limit_offset().send_records_override = send_records_override;
+  path->limit_offset().offset_moved_in_engine = offset_moved_in_engine;
 
   if (child->num_output_rows >= 0.0) {
     path->num_output_rows =

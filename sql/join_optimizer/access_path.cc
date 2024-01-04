@@ -607,8 +607,17 @@ unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
       } else if (join != nullptr) {
         send_records = &join->send_records;
       }
+      auto limit = param.limit;
+      auto offset = param.offset;
+      if (param.offset_moved_in_engine) {
+        // Offset has been moved in engine, let iterator just return correct
+        // rows.
+        assert(offset != 0);
+        limit = limit - offset;
+        offset = 0;
+      }
       iterator = NewIterator<LimitOffsetIterator>(
-          thd, move(child), param.limit, param.offset, param.count_all_rows,
+          thd, move(child), limit, offset, param.count_all_rows,
           param.reject_multiple_rows, send_records);
       break;
     }

@@ -1301,8 +1301,8 @@ public:
 
   int engine_push(AQP::Table_access *table) override;
 
-  bool tdsql_clone_pushed(const handler *from,
-                          Item_clone_context *context) override;
+  bool tdsql_clone_pushed(const handler *from, Item_clone_context *context,
+                          bool reset_limit_offset) override;
 
   uint tdsql_push_cond_keyno() override { return tdstore_pushed_cond_idx_; }
 
@@ -1359,7 +1359,11 @@ public:
   */
   int rnd_range_init(const tdsql::parallel::PartKeyRangeInfo& range_info) override;
 
-  bool in_parallel_task() { return current_thd->is_cloned(); }
+  bool in_parallel_data_fillback_task() const {
+    assert(table && table->in_use && table->in_use == current_thd);
+    return table->in_use->rpc_ctx()->thd_type() == kThdParallelIndexFillback ||
+           table->in_use->rpc_ctx()->thd_type() == kThdParallelOnlineDataCopy;
+  }
 
   /* This function will always return success, therefore no annotation related
    * to checking the return value. Can't change the signature because it's
@@ -1499,14 +1503,13 @@ public:
 
   int flush_batch_record_in_parallel();
 
-  int bulk_cache_key(tdsql::Transaction* tx,
-                     const rocksdb::Slice &key_slice,
+  int bulk_cache_key(tdsql::Transaction *tx, const rocksdb::Slice &key_slice,
                      const rocksdb::Slice &value_slice);
 
   int bulk_cache_key_in_parallel(const rocksdb::Slice &key_slice,
                                  const rocksdb::Slice &value_slice);
 
-  int flush_cache_key(tdsql::Transaction* tx);
+  int flush_cache_key(tdsql::Transaction *tx);
 
   int flush_cache_key_in_parallel();
 
@@ -1618,7 +1621,7 @@ public:
 
   int get_row_count_from_key(ha_rows* num_rows, uint index);
 
-  bool use_stmt_optimize_load_data(tdsql::Transaction* tx);
+  bool use_stmt_optimize_load_data(tdsql::Transaction *tx);
 
  private:
   /** The multi range read session object */

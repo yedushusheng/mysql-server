@@ -30,7 +30,7 @@ static AccessPathChanges NewAccessPathChanges(AccessPath *path, TABLE *table) {
 static AccessPathChanges NewAccessPathChanges(AccessPath *path, JOIN *join) {
   AccessPathChanges changes;
   changes.access_path = path;
-  changes.u.aggregate.join = join;
+  changes.u.source.join = join;
   return changes;
 }
 
@@ -694,9 +694,16 @@ bool AccessPathParallelizer::rewrite_limit_offset(AccessPath *in,
 
   assert(!collector_path_pos());
 
-  out->limit_offset().limit = in->limit_offset().limit;
+  // The collector table engine doesn't move offset for LIMIT.
+  if (in->limit_offset().offset_moved_in_engine) {
+    in->limit_offset().offset_moved_in_engine = false;
+    // Offset could not be pushed down to worker.
+    out->limit_offset().offset_moved_in_engine = false;
+    m_path_changes_store->register_changes(NewAccessPathChanges(in, m_join_in));
+  }
   // Don't push down offset to worker
-  out->limit_offset().offset = 0;
+  if (out->limit_offset().offset != 0) out->limit_offset().offset = 0;
+
   set_collector_path_pos(&in->limit_offset().child);
   m_pushed_limit_offset = true;
   return false;
@@ -724,7 +731,10 @@ void AccessPathChanges::restore() {
       break;
     }
     case AccessPath::AGGREGATE:
-      u.aggregate.join->group_list.clean();
+      u.source.join->group_list.clean();
+      break;
+    case AccessPath::LIMIT_OFFSET:
+      access_path->limit_offset().offset_moved_in_engine = true;
       break;
     case AccessPath::TABLE_SCAN:
       [[fallthrough]];
@@ -763,7 +773,7 @@ static bool clone_handler_pushed_cond(Item_clone_context *context, uint keyno,
     assert(remained_cond == nullptr);
   }
 
-  if (table->file->tdsql_clone_pushed(from->file, context)) return true;
+  if (table->file->tdsql_clone_pushed(from->file, context, true)) return true;
 
   return false;
 }

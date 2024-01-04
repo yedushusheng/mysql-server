@@ -3139,10 +3139,12 @@ AccessPath *JOIN::attach_access_paths_for_having_and_limit(AccessPath *path) {
   // Note: For select_count, LIMIT 0 is handled in JOIN::optimize() for the
   // common case, but not for CALC_FOUND_ROWS. OFFSET also isn't handled there.
   if (unit->select_limit_cnt != HA_POS_ERROR || unit->offset_limit_cnt != 0) {
-    path =
-        NewLimitOffsetAccessPath(thd, path, unit->select_limit_cnt,
-                                 unit->offset_limit_cnt, calc_found_rows, false,
-                                 /*send_records_override=*/nullptr);
+    path = NewLimitOffsetAccessPath(
+        thd, path, query_expression()->select_limit_cnt,
+        query_expression()->offset_limit_cnt, calc_found_rows, false,
+        /*send_records_override=*/nullptr,
+        query_expression()->offset_limit_cnt != 0 &&
+            tdsql::UseLimitOffsetCondPushDown(qep_tab));
   }
 
   return path;

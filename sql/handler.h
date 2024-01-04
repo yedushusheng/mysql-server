@@ -5570,10 +5570,13 @@ class handler {
     in_range_check_pushed_down = false;
   }
 
-  /// Clone tdsql pushed plan stuff, e.g. condition, projection
-  virtual bool tdsql_clone_pushed(const handler *from MY_ATTRIBUTE((unused)),
-                                  Item_clone_context *context
-                                      MY_ATTRIBUTE((unused))) {
+  /// Clone tdsql pushed plan stuff, e.g. condition, projection. Reset target
+  /// LIMIT to LIMIT + OFFSET of @param from and OFFSET to 0 if @param
+  /// reset_limit_offset is set.
+  virtual bool tdsql_clone_pushed(
+      const handler *from MY_ATTRIBUTE((unused)),
+      Item_clone_context *context MY_ATTRIBUTE((unused)),
+      bool reset_limit_offset MY_ATTRIBUTE((unused))) {
     return false;
   }
 
@@ -5605,7 +5608,7 @@ class handler {
       ha_rows *nrows MY_ATTRIBUTE((unused))) {
     return HA_ERR_UNSUPPORTED;
   }
-  
+
   /**
     Reports number of tables included in pushed join which this
     handler instance is part of. ==0 -> Not pushed
