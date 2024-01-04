@@ -89,8 +89,6 @@ static uint32 table_parallel_degree(THD *thd, TABLE_LIST *table,
 static bool IsAccessRangeSupported(QEP_TAB *qt) {
   assert(qt->type() == JT_RANGE);
 
-  if (qt->dynamic_range()) return false;
-
   auto quick_type = qt->quick()->get_type();
   return quick_type == QUICK_SELECT_I::QS_TYPE_RANGE ||
          quick_type == QUICK_SELECT_I::QS_TYPE_RANGE_DESC ||
@@ -112,7 +110,7 @@ static bool IsAccessSupportedForPartition(QEP_TAB *qt) {
   return true;
 }
 
-static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
+static const char * TableAccessTypeRefuseParallel(QEP_TAB *qt) {
   auto typ = qt->type();
 
   if (qt->table()->part_info && !IsAccessSupportedForPartition(qt)) {
@@ -121,6 +119,11 @@ static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
 
   if (typ < JT_EQ_REF || typ > JT_REF_OR_NULL || typ == JT_FT)
     return "table_access_type_is_not_supported";
+
+  if (qt->dynamic_range()) {
+    assert(typ == JT_ALL || typ == JT_RANGE || typ == JT_INDEX_MERGE);
+    return "dynamic_range_access_is_not_supported";
+  }
 
   if (typ == JT_RANGE && !IsAccessRangeSupported(qt))
     return "unsupported_access_range_type";
@@ -286,8 +289,8 @@ static void ChooseParallelPlan(JOIN *join) {
   }
 
   // We just support single table
-  if (join->const_tables > 0 || join->primary_tables != 1) {
-    cause = "not_single_table_or_just_const_tables";
+  if (join->const_tables > 0) {
+    cause = "plan_with_const_tables";
     return;
   }
 
@@ -309,24 +312,62 @@ static void ChooseParallelPlan(JOIN *join) {
     }
   }
 
+  constexpr int parallel_scan_table = 0;
   // Block parallel query based on table properties
-  auto *qt = &join->qep_tab[0];
-  auto *table_ref = qt->table_ref;
+  for (uint i = 0; i < join->primary_tables; i++) {
+    auto *qt = &join->qep_tab[i];
+    auto *table_ref = qt->table_ref;
 
-  if (table_ref->is_placeholder()) {
-    cause = "table_is_not_real_user_table";
-    return;
+    if (table_ref->is_placeholder()) {
+      cause = "table_is_not_real_user_table";
+      return;
+    }
+
+    // Materialization semijoin is blocked by this
+    if (is_temporary_table(table_ref)) {
+      cause = "temporary_table_is_not_supported";
+      return;
+    }
+
+    auto *table = qt->table();
+    if (is_system_table(table->s->db.str, table->s->table_name.str)) {
+      cause = "include_system_tables";
+      return;
+    }
+
+    // Weed out plan execution depends on QEP_TAB, so block it.
+    if (qt->get_sj_strategy() == SJ_OPT_DUPS_WEEDOUT) {
+      cause = "duplicateweedout_semijoin_plan_is_not_supported";
+      return;
+    }
+
+    if ((cause = TableAccessTypeRefuseParallel(qt))) return;
   }
-
-  if (is_temporary_table(table_ref)) {
-    cause = "temporary_table_is_not_supported";
-    return;
-  }
-
-  if ((cause = TableAccessTypeRefuseParallel(qt))) return;
 
   bool specified_by_hint;
-  uint32 parallel_degree =
+  uint32 parallel_degree;
+  // Only support first table do parallel scan.
+  // TODO: we can support other tables for HASH JOIN even there is no parallel
+  // rescan.
+  auto *qt = &join->qep_tab[parallel_scan_table];
+
+  // semi-join inner tables could not do parallel scan because we could
+  // not eliminate duplicates between workers. we need a repartition with
+  // unique.
+  if (qt->first_sj_inner() != NO_PLAN_IDX) {
+    cause = "first_table_is_semijoin_inner_table";
+    return;
+  }
+
+  // First table can not be inner table of outer join.
+  assert(!qt->is_inner_table_of_outer_join());
+
+  // LOOSE SCAN needs to scan to eliminate duplicates, currently we can not
+  // support prefix in PARALLEL SCAN. It should be blocks by
+  // `first_table_is_semijoin_inner_table`
+  assert(!qt->do_loosescan() && !qt->do_firstmatch());
+
+  parallel_degree =
       table_parallel_degree(thd, qt->table_ref, &specified_by_hint);
   if (parallel_degree == parallel_disabled) {
     cause = specified_by_hint ? "forbidden_by_parallel_hint"
@@ -352,13 +393,10 @@ static void ChooseParallelPlan(JOIN *join) {
 
   auto *table = qt->table();
   if (!(table->file->ha_table_flags() & HA_CAN_PARALLEL_SCAN)) {
-    cause = "table_does_not_support_parallel_scan";
+    cause = "first_table_does_not_support_parallel_scan";
     return;
   }
-  if (is_system_table(table->s->db.str, table->s->table_name.str)) {
-    cause = "include_system_tables";
-    return;
-  }
+
   if (table->correlate_src_table) {
     cause = "table_has_correlate_src_table";
     return;
@@ -386,17 +424,29 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  if (qt->condition() &&
-      ItemRefuseParallel(qt->condition(), &item_refuse_cause)) {
-    cause =
-        item_refuse_cause ? item_refuse_cause : "filter_has_unsafe_condition";
-    return;
-  }
-  Item *item = qt->table()->file->pushed_idx_cond;
-  if (item && ItemRefuseParallel(item, &item_refuse_cause)) {
-    cause = item_refuse_cause ? item_refuse_cause
-                              : "filter_pushed_idx_cond_has_unsafe_condition";
-    return;
+  for (uint i = 0; i < join->tables; i++) {
+    auto *qep_tab = &join->qep_tab[i];
+    if (!qep_tab->table()) break;
+
+    if (qep_tab->condition() &&
+        ItemRefuseParallel(qep_tab->condition(), &item_refuse_cause)) {
+      cause =
+          item_refuse_cause ? item_refuse_cause : "filter_has_unsafe_condition";
+      return;
+    }
+    Item *item = qt->table()->file->pushed_idx_cond;
+    if (item && ItemRefuseParallel(item, &item_refuse_cause)) {
+      cause = item_refuse_cause ? item_refuse_cause
+                                : "filter_pushed_idx_cond_has_unsafe_condition";
+      return;
+    }
+
+    if (qep_tab->having &&
+        ItemRefuseParallel(qep_tab->having, &item_refuse_cause)) {
+      cause = item_refuse_cause ? item_refuse_cause
+                                : "table_having_has_unsafe_condition";
+      return;
+    }
   }
 
   if (join->having_cond &&
@@ -563,8 +613,7 @@ bool ParallelPlan::GenPartialFields(Item_clone_context *context,
   JOIN *join = SourceJoin();
 
   // See get_best_group_min_max(), which only support 1 table with no rollup
-  assert(join->primary_tables == 1 &&
-         join->rollup_state == JOIN::RollupState::NONE);
+  assert(join->rollup_state == JOIN::RollupState::NONE);
 
   auto *qt = &join->qep_tab[0];
   bool sumfuncs_full_pushdown =
@@ -910,11 +959,6 @@ void ParallelPlan::DestroyCollector(THD *thd) {
   destroy(m_collector);
 }
 
-AccessPath *ParallelPlan::CreateCollectorAccessPath(THD *thd) {
-  return NewParallelCollectorAccessPath(thd, m_collector,
-                                        m_collector->CollectorTable(), true);
-}
-
 bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   JOIN *source_join = SourceJoin();
   THD *thd = source_join->thd;
@@ -925,18 +969,17 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   Opt_trace_object trace(&thd->opt_trace, "access_path_rewriting");
 
   assert(source_join->root_access_path());
-  rewriter.set_collector_access_path(CreateCollectorAccessPath(thd));
-  if (thd->lex->is_explain_analyze) {
+
+  if (thd->lex->is_explain_analyze)
     rewriter.set_fake_timing_iterator(NewFakeTimingIterator(thd, m_collector));
-  }
-  if (!(parallelized_path =
-            rewriter.parallelize_access_path(source_join->root_access_path())))
+
+  if (!(parallelized_path = rewriter.parallelize_access_path(
+            m_collector, source_join->root_access_path(), partial_path)))
     return true;
-  partial_path = rewriter.out_path();
-  if (source_join->root_access_path() != parallelized_path) {
-    CopyBasicProperties(*partial_path, rewriter.collector_access_path());
+  assert(partial_path != nullptr);
+
+  if (source_join->root_access_path() != parallelized_path)
     source_join->set_root_access_path(parallelized_path);
-  }
 
   if (rewriter.MergeSort() &&
       m_collector->CreateMergeSort(source_join, rewriter.MergeSort()))
@@ -1148,8 +1191,9 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
 
   pq::PartialAccessPathRewriter aprewriter(context, from, this);
 
-  if (aprewriter.clone_and_rewrite(from->root_access_path())) return true;
-  m_root_access_path = aprewriter.out_path();
+  if (!(m_root_access_path =
+            aprewriter.clone_and_rewrite(from->root_access_path())))
+      return true;
 
   if (thd->is_error()) return true;
 

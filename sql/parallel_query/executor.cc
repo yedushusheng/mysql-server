@@ -80,7 +80,7 @@ bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order) {
 }
 
 bool Collector::InitParallelScan() {
-  auto &psinfo = m_partial_plan->TablesParallelScan();
+  auto &psinfo = m_partial_plan->ParallelScan();
   auto *table = psinfo.table;
   int res;
 
@@ -259,6 +259,7 @@ void Collector::End(THD *thd, ha_rows *found_rows) {
   da->set_error_status(combined_da->mysql_errno(), combined_da->message_text(),
                        combined_da->returned_sqlstate());
   da->set_overwrite_status(old_ow_status);
+  da->set_last_error_tdstore(combined_da->last_error_tdstore());
 
   // reset XA state error according to new THD error.
   XID_STATE *xid_state = thd->get_transaction()->xid_state();
@@ -427,7 +428,7 @@ std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   // For the union temporary scan, join is nullptr
   if (!join || !join->partial_plan) return str;
 
-  auto &scaninfo = join->partial_plan->TablesParallelScan();
+  auto &scaninfo = join->partial_plan->ParallelScan();
   if (table != scaninfo.table) return str;
 
   str = ", with parallel scan ranges: " +
@@ -658,14 +659,19 @@ bool PartialExecutor::PrepareQueryPlan(PartialExecutorContext *context) {
 }
 
 bool PartialExecutor::AttachTablesParallelScan() {
-  auto &psinfo = m_query_plan->TablesParallelScan();
+  auto &psinfo = m_query_plan->ParallelScan();
   THD *thd = m_thd;
   auto *query_block = thd->lex->query_block;
   auto *leaf_tables = query_block->leaf_tables;
 
-  // Currently, only support one table
-  assert(leaf_tables && !leaf_tables->next_leaf);
-  TABLE *table = leaf_tables->table;
+  assert(leaf_tables);
+
+  TABLE *table = nullptr;
+  for (TABLE_LIST *tl = leaf_tables; tl; tl = tl->next_leaf) {
+    if (tl->is_identical(psinfo.table->pos_in_table_list)) table = tl->table;
+  }
+  assert(table);
+
   table->parallel_scan_handle = psinfo.table->parallel_scan_handle;
   int res;
   if ((res = table->file->attach_parallel_scan(table->parallel_scan_handle)) !=
