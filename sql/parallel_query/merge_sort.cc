@@ -212,14 +212,17 @@ bool FillToPriorityQueue(MergeSort *merge_sort, MergeSortElement *elem) {
 
 bool MergeSort::Populate(THD *thd) {
   uint nleft = m_num_elements;
-  bool has_row_filled = false;
   while (nleft > 0) {
+    bool has_row_filled = false;
     for (uint i = 0; i < m_num_elements; i++) {
       MergeSortElement *elem = &m_elements[i];
       // skip non-empty elements or finished elements
       if (!elem->IsEmpty() || m_source->IsChannelFinished(i)) continue;
 
-      if (FillElementBuffer(elem, false, &has_row_filled) != Result::SUCCESS)
+      if (FillElementBuffer(
+              elem, false,
+              m_table->s->blob_fields == 0 ? nullptr : &has_row_filled) !=
+          Result::SUCCESS)
         return true;
 
       if (elem->IsEmpty()) {
