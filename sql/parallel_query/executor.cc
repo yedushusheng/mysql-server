@@ -97,10 +97,10 @@ bool Collector::InitParallelScan() {
 bool Collector::Init(THD *thd) {
   // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
   // you should use m_id - 1
-  uint wid = 1;
-  for (auto *&worker : m_workers) {
-    worker =
-      CreateLocalWorker(wid++, &m_worker_state_event, thd, partial_plan());
+  for (uint widx = 0; widx < m_workers.size(); ++widx) {
+    auto *worker =
+        CreateLocalWorker(widx + 1, &m_worker_state_event, thd, partial_plan());
+    m_workers[widx] = worker;
     if (!worker || worker->Init(m_receiver_exchange.event())) return true;
   }
 
@@ -118,24 +118,13 @@ bool Collector::Init(THD *thd) {
 
   DEBUG_SYNC(thd, "before_launch_pqworkers");
 
-  bool has_failed_worker;
-  if (LaunchWorkers(thd, &has_failed_worker)) return true;
+  if (LaunchWorkers(thd)) return true;
 
-  MY_BITMAP closed_queues;
-  if (has_failed_worker) {
-    if (bitmap_init(&closed_queues, nullptr, NumWorkers())) return true;
-    // Close the queues which workers are launched failed.
-    wid = 0;
-    for (auto *worker : m_workers) {
-      if (worker->IsStartFailed()) bitmap_set_bit(&closed_queues, wid++);
-    }
-  }
   // Initialize row exchange reader after workers are started. The reader with
   // merge sort do a block read in Init().
-  bool res = m_row_exchange_reader->Init(thd);
+  if (m_row_exchange_reader->Init(thd)) return true;
 
-  if (has_failed_worker) bitmap_free(&closed_queues);
-  return res;
+  return false;
 }
 
 void Collector::Reset() {
@@ -149,19 +138,28 @@ void Collector::Reset() {
   for (auto *&worker : m_workers) destroy(worker);
 }
 
-bool Collector::LaunchWorkers(THD *thd, bool *has_failed_worker) {
-  *has_failed_worker = false;
+bool Collector::LaunchWorkers(THD *thd) {
+  bool has_failed_worker = false;
   bool all_start_error = true;
 
-  for (auto *worker : m_workers) {
-    SET_DBUG_CS_STACK_CLONE(worker, &dbug_cs_stack_clone);
-    auto res = worker->Start();
-    if (!res && all_start_error) all_start_error = false;
-    *has_failed_worker |= res;
-  }
-  if (all_start_error) return all_start_error;
+  for (uint widx = 0; widx < m_workers.size(); ++widx) {
+    auto *worker = m_workers[widx];
 
-  if (*has_failed_worker) thd->clear_error();
+    SET_DBUG_CS_STACK_CLONE(worker, &dbug_cs_stack_clone);
+    if (!worker->Start()) {
+      if (all_start_error) all_start_error = false;
+      continue;
+    }
+
+    assert(worker->IsStartFailed());
+    // Let row exchange reader skip the worker by closing the queue
+    m_receiver_exchange.CloseChannel(widx);
+    if (!has_failed_worker) has_failed_worker = true;
+  }
+
+  if (all_start_error) return true;
+
+  if (has_failed_worker) thd->clear_error();
 
   return false;
 }

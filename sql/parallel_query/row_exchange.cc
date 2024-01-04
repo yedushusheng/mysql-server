@@ -1,6 +1,5 @@
 #include "sql/parallel_query/row_exchange.h"
 
-#include "my_bitmap.h"
 #include "sql/parallel_query/merge_sort.h"
 #include "sql/parallel_query/row_channel.h"
 #include "sql/parallel_query/row_segment.h"
@@ -14,15 +13,13 @@ bool RowExchange::IsChannelClosed(uint chn) const {
   return m_channel_array[chn]->IsClosed();
 }
 bool RowExchange::Init(MEM_ROOT *mem_root, uint num_channels,
-                       std::function<RowChannel *(uint)> get_channel,
-                       MY_BITMAP *closed_queues) {
+                       std::function<RowChannel *(uint)> get_channel) {
   RowChannel **channels = new (mem_root) RowChannel *[num_channels];
   if (!channels) return true;
 
   m_channel_array.reset(channels, num_channels);
   for (uint i = 0; i < num_channels; i++) {
     auto *channel = get_channel(i);
-    if (closed_queues && bitmap_is_set(closed_queues, i)) channel->Close();
     m_channel_array[i] = channel;
   }
 
@@ -130,6 +127,12 @@ class RowExchangeFIFOReader : public RowExchangeReader{
   }
 
   bool Init(THD *thd) override {
+    // Recalculate left channels because channels of started failed workers
+    // are closed by collector.
+    for (uint chn = 0; chn < m_row_exchange->NumChannels(); ++chn) {
+      if (m_row_exchange->IsChannelClosed(chn)) --m_left_channels;
+    }
+
     if (!(m_row_data = AllocRowDataInfoArray(
               thd->mem_root, m_row_exchange->NumChannels(),
               m_row_segment_codec->NumSegments())))
