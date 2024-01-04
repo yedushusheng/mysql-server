@@ -28,7 +28,9 @@ bool AccessPathRewriter::rewrite_materialize(AccessPath *in, AccessPath *&out,
   param->invalidators = src->invalidators;
   param->table = src->table;
   param->cte = src->cte;
-  param->unit = m_join_out->query_expression();
+  // MaterializeIterator::Init() will clear temporary tables of semi-join by
+  // calling clear_correlated_query_blocks() if unit is set.
+  param->unit = src->unit ? m_join_out->query_expression() : nullptr;
   param->ref_slice = src->ref_slice;
   param->rematerialize = src->rematerialize;
   param->limit_rows = src->limit_rows;
