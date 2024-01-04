@@ -884,6 +884,14 @@ bool PartialAccessPathRewriter::rewrite_unqualified_count(AccessPath *&in,
     TABLE *table = find_leaf_table(orig_table);
     uint keyno = it.second;
     if (count_tables->push_back(std::make_pair(table, keyno))) return true;
+
+    // To call row count RPC, TDSQL 3 could convert some non select_count
+    // queries to select_count. Here we clone tables' pushed down condition.
+    if (clone_handler_pushed_cond(m_item_clone_context, keyno, orig_table,
+                                  table))
+      return true;
+
+    if (orig_table->key_read) table->set_keyread(orig_table->key_read);
   }
   out->unqualified_count().tables = count_tables;
 

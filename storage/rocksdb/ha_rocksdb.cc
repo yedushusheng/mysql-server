@@ -1186,6 +1186,33 @@ static handler *rocksdb_create_handler(my_core::handlerton *const hton,
   return new (mem_root) ha_rocksdb(hton, table_arg);
 }
 
+// serialize pushdown relate stuff
+bool ha_rocksdb::serialize(tdsql::Archive &ar) {
+  ar.Serialize(pushed_idx_cond_keyno);
+  ar.Serialize(in_range_check_pushed_down);
+  ar.Serialize(pushed_idx_cond);
+  ar.Serialize(pushed_cond);
+
+  ar.Serialize(tdstore_pushed_cond_idx_);
+  if (ar.Serialize(tdstore_pushed_cond_)) return true;
+
+  limit_offset_cond_pushdown.serialize(ar);
+
+  ar.Serialize(m_keyread_only);
+
+  if (ar.IsOutput()) {
+    // need change 100,10 to 0,110 for parallel work
+    if (limit_offset_cond_pushdown.offset_num() != 0) {
+      limit_offset_cond_pushdown.set_limit_num(
+          limit_offset_cond_pushdown.limit_num() +
+          limit_offset_cond_pushdown.offset_num());
+      limit_offset_cond_pushdown.set_offset_num(0);
+    }
+  }
+
+  return false;
+}
+
 ha_rocksdb::ha_rocksdb(my_core::handlerton *const hton,
                        my_core::TABLE_SHARE *const table_arg)
     : handler(hton, table_arg),
@@ -2565,14 +2592,9 @@ int ha_rocksdb::read_row_from_primary_key(uchar *const buf) {
   memcpy(m_pk_packed_tuple, pk_data, pk_size);
   m_last_rowkey.copy(pk_data, pk_size, &my_charset_bin);
 
-  if (m_lock_rows != RDB_LOCK_NONE) {
-    /* We need to put a lock and re-read */
-    rc = get_row_by_rowid(buf, m_pk_packed_tuple, pk_size);
-  } else {
-    /* Unpack from the row we've read */
-    const rocksdb::Slice &value = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->value());
-    rc = convert_record_from_storage_format(&rkey, &value, buf);
-  }
+  /* Unpack from the row we've read */
+  const rocksdb::Slice &value = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->value());
+  rc = convert_record_from_storage_format(&rkey, &value, buf);
 
   return rc;
 }
@@ -3496,7 +3518,7 @@ void PrintCondition(const char *info, Item *cond) {
   cond->print(current_thd, &str, QT_ORDINARY);
   str.append('\0');
 
-  LogDebug("%s:%s", info, str.ptr());
+  LogDebug("%s:%s", info, str.c_ptr_safe());
 }
 
 // count push
@@ -3525,9 +3547,7 @@ void ha_rocksdb::SingleSelectPush(const QEP_TAB *qep_tab, int index) {
     // count(f1), f1 can be null, then need to check f1 can unpack from index
     bool can_unpack = false;
     if (item_args0) {
-      Tdstore_cond_traverse_context ctx;
-      ctx.table = table;
-      ctx.keyno = index;
+      Tdstore_cond_traverse_context ctx(table, index);
       ctx.is_hidden_pk = is_hidden_pk(index, table, m_tbl_def);
       if (CanPushToTdstore(item_args0, &ctx)) {
         Item *notnull = new Item_func_isnotnull(item_args0);
@@ -4915,9 +4935,7 @@ void ha_rocksdb::SetCondPush(Item *table_cond,Item *icp_cond,int keyno){
     return;
   }
 
-  Tdstore_cond_traverse_context ctx;
-  ctx.table = table;
-  ctx.keyno = keyno;
+  Tdstore_cond_traverse_context ctx(table, keyno);
   ctx.is_hidden_pk = is_hidden_pk(keyno, table, m_tbl_def);
 
   if (pushed_idx_cond) {
@@ -6031,8 +6049,11 @@ int ha_rocksdb::extra(enum ha_extra_function operation) {
     */
     m_retrieved_record.Reset();
     break;
-  case HA_EXTRA_TOGGLE_PARALLEL_SCAN_INNER:
-    m_parallel_scan_enabled = !m_parallel_scan_enabled;
+  case HA_EXTRA_PAUSE_PARALLEL_SCAN_INNER:
+    m_parallel_scan_enabled = false;
+    break;
+  case HA_EXTRA_RESUME_PARALLEL_SCAN_INNER:
+    m_parallel_scan_enabled = true;
     break;
   default:
     break;
@@ -6368,9 +6389,15 @@ int ha_rocksdb::BuildPushDownPb(uint keyno) {
     tdsql::SerializeContext context(current_thd);
     tdsql::BinaryOutArchive archive_cond(&context);
     tdsql::BinaryOutArchive archive_thd(&context);
-    bool ret = archive_cond.Serialize(tdstore_pushed_cond_);
+    bool ret;
+    try {
+      ret = archive_cond.Serialize(tdstore_pushed_cond_);
 
-    if (!ret) ret = archive_thd.Serialize(*current_thd);
+      if (!ret) ret = archive_thd.Serialize(*current_thd);
+    } catch (cereal::Exception &e) {
+      LogError("Deserialize execption:%s", e.what());
+      ret = TDSQL_EXIT_FAILURE;
+    }
 
     DBUG_EXECUTE_IF("build_tdstore_pushed_cond_pb_fail", { ret = true; });
 
@@ -6378,7 +6405,7 @@ int ha_rocksdb::BuildPushDownPb(uint keyno) {
 #ifndef NDEBUG
       String str;
       tdstore_pushed_cond_->print(current_thd,&str,QT_ORDINARY);
-      LogDebug("push condition to tdstore:%s",str.ptr());
+      LogDebug("push condition to tdstore:%s",str.c_ptr_safe());
 #endif
       tdstore_pushed_cond_pb_->set_condition_serialize(archive_cond.str());
       tdstore_pushed_cond_pb_->set_thd_serialize(archive_thd.str());
@@ -6986,6 +7013,11 @@ int ha_rocksdb::thomas_write_fillback(bool has_unique,
 
   int res = 0;
   int index_found;
+  /*
+    Check if current rnd is empty, used for
+    https://git.woa.com/tdsql3.0/SQLEngine/issues/1281
+  */
+  uint64 record_num = 0;
 
   for (res = rnd_next(table->record[0]); res == 0; res = rnd_next(table->record[0])) {
     longlong hidden_pk_id = 0;
@@ -6995,6 +7027,8 @@ int ha_rocksdb::thomas_write_fillback(bool has_unique,
       ha_rnd_end();
       DBUG_RETURN(HA_EXIT_FAILURE);
     }
+
+    record_num++;
 
     for (tdsql::ddl::IndexInfoCollector::ConstIterator citer = indexes_to_be_added.cbegin();
          citer != indexes_to_be_added.cend(); ++citer) {
@@ -7052,6 +7086,16 @@ int ha_rocksdb::thomas_write_fillback(bool has_unique,
   if (res != HA_ERR_END_OF_FILE) {
     LogError("Error retrieving index entry from primary key. retval=%d", res);
     DBUG_RETURN(res);
+  }
+
+  if (unlikely(record_num == 0)) {
+    LogWarn("[No record found in rnd range scan (%s, %s)]",
+        MemoryDumper::ToHex(get_iterator()->start_key()).data(),
+        MemoryDumper::ToHex(get_iterator()->end_key()).data());
+  } else {
+    LogInfo("[%lu records found in rnd range scan (%s, %s)]",
+        record_num, MemoryDumper::ToHex(get_iterator()->start_key()).data(),
+        MemoryDumper::ToHex(get_iterator()->end_key()).data());
   }
 
   DBUG_RETURN(HA_EXIT_SUCCESS);
@@ -8247,6 +8291,8 @@ int ha_rocksdb::check_index_dup_key(const Rdb_key_def &kd) {
   const rocksdb::Slice& start_key = range.start;
   const rocksdb::Slice& end_key = range.limit;
 
+  tdsql::ddl::ReginfoSetLockReadClosure set_read_lock(table);
+
   if ((rc = init_tdsql_iterator(tx,
                                 start_key, /* index_prefix */
                                 start_key,
@@ -8492,8 +8538,37 @@ int ha_rocksdb::get_row_count_from_index(ha_rows *num_rows, uint index) {
   return get_row_count_from_key(num_rows, index);
 }
 
-int ha_rocksdb::get_row_count_from_key(ha_rows* num_rows, uint index) {
+int ha_rocksdb::request_row_count(THD *thd, uint index, uint64_t *rows,
+                                  const std::string &start,
+                                  const std::string &end) {
+  tdsql::Transaction *const tx = tdsql::get_tx_from_thd(thd);
+  assert(tx);
+  uint64_t iterator_id = tx->GenerateIteratorID();
+  tdsql::RowCountCntl cntl(tx->thd(), start, end, iterator_id,
+                           tdstore_pushed_cond_pb_);
+  int ret = cntl.Execute();
+  if (ret != TDSQL_EXIT_SUCCESS) {
+    LogError(
+        "[ha_rocksdb::get_row_count_from_key] RowCountCntl.Execute() "
+        "failed. "
+        "trans_id:%lu, ret=%d",
+        tx->trans_id(), ret);
+    return ret;
+  }
+  *rows = cntl.rows();
 
+  const Rdb_key_def& key =
+      is_pk(index, table, m_tbl_def) ? *m_pk_descr : *m_key_descr_arr[index];
+  LogInfo(
+      "[ha_rocksdb::get_row_count_from_key] "
+      "trans_id:%lu, table=%s, index=%s, rows=%lu",
+      tx->trans_id(), m_tbl_def->full_tablename().c_str(),
+      key.get_name().c_str(), *rows);
+
+  return ret;
+}
+
+int ha_rocksdb::get_row_count_from_key(ha_rows *num_rows, uint index) {
   DBUG_EXECUTE_IF("myrocks_get_row_count_fail", {
     *num_rows = HA_POS_ERROR;
     return TDSQL_EXIT_FAILURE;
@@ -8565,8 +8640,26 @@ int ha_rocksdb::get_row_count_from_key(ha_rows* num_rows, uint index) {
   }
 
   StartEndKeys start_end_keys;
+  if (use_parallel_scan()) {
+    AttachAParallelScanJob();
+    auto *cur_scan_job = parallel_scan_job();
+    while (cur_scan_job) {
+      uint64_t rows = HA_POS_ERROR;
+      if ((ret = ha_rocksdb::request_row_count(thd, index, &rows,
+                                        cur_scan_job->lower_bound,
+                                               cur_scan_job->upper_bound)) != TDSQL_EXIT_SUCCESS)
+      {
+        *num_rows = HA_POS_ERROR;
+        return TDSQL_EXIT_FAILURE;
+      }
+      *num_rows += rows;
 
-  if (GetStartEndKey(this, &start_end_keys)) {
+      AttachAParallelScanJob();
+      cur_scan_job = parallel_scan_job();
+    }
+
+    return ret;
+  } else if (GetStartEndKey(this, &start_end_keys)) {
     LogError("GetStartEndKey error");
     *num_rows = HA_POS_ERROR;
     return TDSQL_EXIT_FAILURE;
@@ -8576,10 +8669,10 @@ int ha_rocksdb::get_row_count_from_key(ha_rows* num_rows, uint index) {
     std::string &start = start_end_keys[i].first;
     std::string &end = start_end_keys[i].second;
 
-    uint64_t iterator_id = tx->GenerateIteratorID();
     uint64_t rows = HA_POS_ERROR;
 
     if (current_thd->variables.tdsql_parallel_optim) {
+      uint64_t iterator_id = tx->GenerateIteratorID();
       tdsql::parallel::ParallelRowCount paral_count(
           start, end, iterator_id, tdstore_pushed_cond_pb_, tx,
           current_thd->variables.tdsql_parallel_thread_number);
@@ -8608,23 +8701,10 @@ int ha_rocksdb::get_row_count_from_key(ha_rows* num_rows, uint index) {
           tx->trans_id(), m_tbl_def->full_tablename().c_str(),
           key.get_name().c_str(), rows);
     } else {
-      tdsql::RowCountCntl cntl(thd, start, end, iterator_id, tdstore_pushed_cond_pb_);
-      ret = cntl.Execute();
-      if (ret != TDSQL_EXIT_SUCCESS) {
+      if ((ret = request_row_count(thd, index, &rows, start, end)) != TDSQL_EXIT_SUCCESS) {
         *num_rows = HA_POS_ERROR;
-        LogError(
-            "[ha_rocksdb::get_row_count_from_key] RowCountCntl.Execute() "
-            "failed. "
-            "trans_id:%lu, ret=%d",
-            tx->trans_id(), ret);
         return ret;
       }
-      rows = cntl.rows();
-      LogInfo(
-          "[ha_rocksdb::get_row_count_from_key] "
-          "trans_id:%lu, table=%s, index=%s, rows=%lu",
-          tx->trans_id(), m_tbl_def->full_tablename().c_str(),
-          key.get_name().c_str(), rows);
     }
 
     *num_rows += (ha_rows)rows;
@@ -8711,6 +8791,23 @@ int ha_rocksdb::ValidateSchemaStatusBeforePutRecord(
   return TDSQL_EXIT_SUCCESS;
 }
 
+void ha_rocksdb::FixParallelScanRangeIfCrossIndex(const Rdb_key_def& kd) {
+  if (RegionKey::KeyRangeCrossIndexId(
+          CONVERT_TO_TDSQL_SLICE(m_scan_it_lower_bound_slice),
+          CONVERT_TO_TDSQL_SLICE(m_scan_it_upper_bound_slice))) {
+    // max_key may cross tindex id after Rdb_key_def.successor.
+    // Adjust it to the next tindex id.
+    memcpy(m_scan_it_upper_bound, kd.get_index_number_storage_form(),
+           Rdb_key_def::INDEX_NUMBER_SIZE);
+    kd.successor(m_scan_it_upper_bound, Rdb_key_def::INDEX_NUMBER_SIZE);
+    m_scan_it_upper_bound_slice = rocksdb::Slice(
+        (const char *)m_scan_it_upper_bound, Rdb_key_def::INDEX_NUMBER_SIZE);
+  }
+  assert(!RegionKey::KeyRangeCrossIndexId(
+      CONVERT_TO_TDSQL_SLICE(m_scan_it_lower_bound_slice),
+      CONVERT_TO_TDSQL_SLICE(m_scan_it_upper_bound_slice)));
+}
+
 int ha_rocksdb::GetParallelScanRegionListRefOrNull(
     uint keynr, key_range *min_key, key_range *max_key, RegionList *ref_rgns,
     RegionList *null_rgns, MyRocksParallelScan *paral_scan_handle) {
@@ -8731,6 +8828,11 @@ int ha_rocksdb::GetParallelScanRegionListRefOrNull(
   m_scan_it_upper_bound_slice =
       rocksdb::Slice((const char *)m_scan_it_upper_bound, packed_size);
   assert(m_scan_it_lower_bound_slice.compare(m_scan_it_upper_bound_slice) < 0);
+  // myrocks key encoding guarantees that 'IS NULL' cant cross tindex id.
+  // encoding:[tindex id][null bitmap][fields] --> null bitmap is 0 if IS NULL.
+  assert(!RegionKey::KeyRangeCrossIndexId(
+      CONVERT_TO_TDSQL_SLICE(m_scan_it_lower_bound_slice),
+      CONVERT_TO_TDSQL_SLICE(m_scan_it_upper_bound_slice)));
   if (paral_scan_handle) {
     paral_scan_handle->set_null_lower_bound(m_scan_it_lower_bound_slice);
     paral_scan_handle->set_null_upper_bound(m_scan_it_upper_bound_slice);
@@ -8764,6 +8866,7 @@ int ha_rocksdb::GetParallelScanRegionListRefOrNull(
       rocksdb::Slice((const char *)m_scan_it_lower_bound, packed_size);
   m_scan_it_upper_bound_slice =
       rocksdb::Slice((const char *)m_scan_it_upper_bound, packed_size);
+  FixParallelScanRangeIfCrossIndex(kd);
   assert(m_scan_it_lower_bound_slice.compare(m_scan_it_upper_bound_slice) < 0);
   if (paral_scan_handle) {
     paral_scan_handle->set_lower_bound(m_scan_it_lower_bound_slice);
@@ -8866,6 +8969,7 @@ int ha_rocksdb::GetParallelScanRegionList(
     }
     m_scan_it_upper_bound_slice =
         rocksdb::Slice((const char *)m_scan_it_upper_bound, upper_packed_size);
+    FixParallelScanRangeIfCrossIndex(kd);
   }
   assert(m_scan_it_lower_bound_slice.compare(m_scan_it_upper_bound_slice) < 0);
   if (paral_scan_handle) {
@@ -8964,8 +9068,6 @@ int ha_rocksdb::attach_parallel_scan(parallel_scan_handle_t scan_handle) {
   assert(scan_handle);
   assert(!m_parallel_scan_handle);
   assert(!m_parallel_scan_enabled);
-  m_parallel_scan_handle = static_cast<MyRocksParallelScan *>(scan_handle);
-  m_parallel_scan_enabled = true;
 
   if ((static_cast<MyRocksParallelScan *>(scan_handle))
           ->CheckWorkerTable(table)) {
@@ -8977,8 +9079,15 @@ int ha_rocksdb::attach_parallel_scan(parallel_scan_handle_t scan_handle) {
   }
 
 #ifndef NDEBUG
-  return m_parallel_scan_handle->WorkerHandlerAttach();
+  if ((static_cast<MyRocksParallelScan *>(scan_handle))
+          ->WorkerHandlerAttach()) {
+    return TDSQL_EXIT_FAILURE;
+  }
 #endif
+
+  m_parallel_scan_handle = static_cast<MyRocksParallelScan *>(scan_handle);
+  m_parallel_scan_enabled = true;
+
   return TDSQL_EXIT_SUCCESS;
 }
 

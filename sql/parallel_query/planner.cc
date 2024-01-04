@@ -283,11 +283,12 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  // Innodb fake parallel scan does not support parallel scan in records()
-  bool disable_select_count = true;
-  DBUG_EXECUTE_IF("pq_enable_select_count", disable_select_count = false;);
-  if (join->select_count && disable_select_count) {
-    cause = "plan_with_select_count";
+  // Only create parallel scan when tdsql_parallel_optim is off. Multiple tables
+  // can not be supported yet because row count RPC request of non-parallel scan
+  // depends on QEP_TAB deeply see GetStartEndKey() in ha_rocksdb.cc
+  if (join->select_count &&
+      (thd->variables.tdsql_parallel_optim || join->primary_tables > 1)) {
+    cause = "plan_with_unsupported_select_count";
     return;
   }
 

@@ -57,6 +57,8 @@
 #include "sql/tdsql/ddl/ddl_job.h" //IndexInfoCollector
 #include "sql/tdsql/optimizer/aux_iterator.h" // RawRecKvCacheIterator
 #include "storage/rocksdb/tdsql/parallel_query.h"
+#include "mysql/components/services/log_builtins.h"
+#include "sql/tdsql/serialize/serialize_interface.h"
 
 using namespace tdsql;
 
@@ -389,12 +391,12 @@ enum query_type : int {
 #if defined(HAVE_SCHED_GETCPU)
 #define RDB_INDEXER get_sched_indexer_t
 #else
-#define RDB_INDEXER thread_id_indexer_t
+#define RDB_INDEXER bthread_id_indexer_t
 #endif
 
 /* Global statistics struct used inside MyRocks */
 struct st_global_stats {
-  ib_counter_t<ulonglong, 64, RDB_INDEXER> rows[ROWS_MAX];
+  ib_counter_t<ulonglong, 128, RDB_INDEXER> rows[ROWS_MAX];
 
   // system_rows_ stats are only for system
   // tables. They are not counted in rows_* stats.
@@ -460,6 +462,9 @@ struct st_io_stall_stats {
 #include "./rdb_buff.h"
 
 #include "./rdb_datadic.h"
+
+class ha_rockspart;
+
 namespace myrocks {
 
 class rdb_increment_base {
@@ -1289,15 +1294,19 @@ public:
 
   virtual handler *clone(const char *name, MEM_ROOT *mem_root) override {
     ha_rocksdb *new_handler = (ha_rocksdb *)handler::clone(name, mem_root);
+    if (!new_handler) {
+      return nullptr;
+    }
 
     new_handler->pushed_cond = pushed_cond;
     new_handler->tdstore_pushed_cond_ = tdstore_pushed_cond_;
     new_handler->tdstore_pushed_cond_idx_ = tdstore_pushed_cond_idx_;
-    new_handler->m_parallel_scan_handle = m_parallel_scan_handle;
-    new_handler->m_parallel_scan_enabled = m_parallel_scan_enabled;
+    new_handler->clone_parallel_scan(this);
     return new_handler;
   }
+
   void SingleSelectPush(const QEP_TAB *qep_tab, int index);
+
   void IndexMergePush(int index);
 
   void PushDownDone();
@@ -1458,6 +1467,8 @@ public:
                        const TABLE *const table_arg,
                        const Rdb_tbl_def *const tbl_def_arg);
 
+  bool has_gap_locks() const noexcept override { return true; }
+
 #if defined(ROCKSDB_INCLUDE_RFR) && ROCKSDB_INCLUDE_RFR
  public:
   virtual void rpl_before_delete_rows() override;
@@ -1545,6 +1556,8 @@ public:
 
   void set_only_calc_records(bool arg) { m_only_calc_records = arg; }
 
+  bool serialize(tdsql::Archive &ar);
+
  private:
   void set_lock_type(int lock_type) override { m_lock_type = lock_type; }
   bool table_id_equals_pk_id(TABLE *const table_arg);
@@ -1629,6 +1642,9 @@ public:
   int get_row_count_from_index(ha_rows* rows_count, uint index) override;
 
   int get_row_count_from_key(ha_rows* num_rows, uint index);
+  // request to MC by calling row count RPC
+  int request_row_count(THD *thd, uint index, uint64_t *rows,
+                        const std::string &start, const std::string &end);
 
   bool use_stmt_optimize_load_data(tdsql::Transaction *tx);
 
@@ -1702,6 +1718,11 @@ public:
                                     key_range *max_key, bool type_ref_or_null,
                                     ulong *nranges, ha_rows *nrows) override;
 
+  void clone_parallel_scan(ha_rocksdb* from) {
+    m_parallel_scan_handle = from->m_parallel_scan_handle;
+    m_parallel_scan_enabled = from->m_parallel_scan_enabled;
+  }
+
   void AttachAParallelScanJob() {
     m_parallel_scan_job = m_parallel_scan_handle->AttachAJob();
   }
@@ -1724,11 +1745,14 @@ public:
       uint keynr, key_range *min_key, key_range *max_key, RegionList *ref_rgns,
       RegionList *null_rgns, MyRocksParallelScan *paral_scan_handle);
 
+  void FixParallelScanRangeIfCrossIndex(const Rdb_key_def& kd);
+
  private:
   MyRocksParallelScan *m_parallel_scan_handle{nullptr};
   // The running parallel scan job.
   MyRocksParallelScanJob* m_parallel_scan_job{nullptr};
-  // See HA_EXTRA_TOGGLE_PARALLEL_SCAN_INNER.
+  // See HA_EXTRA_PAUSE_PARALLEL_SCAN_INNER and
+  // HA_EXTRA_RESUME_PARALLEL_SCAN_INNER.
   bool m_parallel_scan_enabled{false};
 };
 
