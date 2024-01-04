@@ -426,13 +426,17 @@ class Json_object final : public Json_container {
   /**
     Transfer all of the key/value pairs in the other object into this
     object. The other object is deleted. If this object and the other
-    object share a key, then the two values of the key are merged.
+    object share a key, then the two values of the key are merged if
+    overwrite_dups is false.
 
     @param [in] other    a pointer to the object which will be consumed
+    @param [in] overwrite_dups set it to true to overwrite value with the
+                               other value if this object and the other
+                               object share a key.
     @retval false on success
     @retval true on failure
   */
-  bool consume(Json_object_ptr other);
+  bool consume(Json_object_ptr other, bool overwrite_dups = false);
 
   /**
     Return the value at key. The value is not cloned, so make

@@ -878,7 +878,7 @@ bool Json_object::add_alias(const std::string &key, Json_dom_ptr value) {
 }
 
 #ifdef MYSQL_SERVER
-bool Json_object::consume(Json_object_ptr other) {
+bool Json_object::consume(Json_object_ptr other, bool overwrite_dups) {
   for (auto &other_member : other->m_map) {
     auto &key = other_member.first;
     auto &other_value = other_member.second;
@@ -889,6 +889,10 @@ bool Json_object::consume(Json_object_ptr other) {
       if (add_alias(key, std::move(other_value)))
         return true; /* purecov: inspected */
     } else {
+      if (overwrite_dups) {
+        it->second = std::move(other_value);
+        continue;
+      }
       /*
         Oops. Duplicate key. Merge the values.
         This is where the recursion in JSON_MERGE() occurs.

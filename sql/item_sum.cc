@@ -6389,7 +6389,7 @@ bool Item_sum_json_object::add() {
         is_json_type_null = true;
       else {
         Json_object_ptr value_ptr(down_cast<Json_object *>(dom));
-        res = object->consume(std::move(value_ptr));
+        res = object->consume(std::move(value_ptr), true);
       }
     } else
       res = object->add_alias(key, value_wrapper.to_dom(thd));
