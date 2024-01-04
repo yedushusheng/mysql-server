@@ -2973,14 +2973,6 @@ void Item_sum_variance::update_field() {
   double nr = args[0]->val_real(); /* sets null_value as side-effect */
 
   if (args[0]->null_value) return;
-  ulonglong tmp_field_count;
-  double tmp_field_recurrence_m, tmp_field_recurrence_s;
-  if (m_sum_stage == Item_sum::COMBINE_STAGE) {
-    uchar *arg_ptr = args[0]->get_tmp_table_field()->field_ptr();
-    tmp_field_recurrence_m = float8get(arg_ptr);
-    tmp_field_recurrence_s = float8get(arg_ptr + sizeof(double));
-    tmp_field_count = sint8korr(arg_ptr + sizeof(double) * 2);
-  }
   /* Serialize format is (double)m, (double)s, (longlong)count */
   double field_recurrence_m = float8get(res);
   double field_recurrence_s = float8get(res + sizeof(double));
@@ -2988,10 +2980,15 @@ void Item_sum_variance::update_field() {
   if (m_sum_stage != Item_sum::COMBINE_STAGE)
     variance_fp_recurrence_next(&field_recurrence_m, &field_recurrence_s,
                                 nullptr, &field_count, nr, false, false);
-  else
+  else {
+    uchar *arg_ptr = args[0]->get_tmp_table_field()->field_ptr();
+    double tmp_field_recurrence_m = float8get(arg_ptr);
+    double tmp_field_recurrence_s = float8get(arg_ptr + sizeof(double));
+    ulonglong tmp_field_count = sint8korr(arg_ptr + sizeof(double) * 2);
     combine_variance_fp_recurrence_next(
         &field_recurrence_m, &field_recurrence_s, &field_count,
         tmp_field_recurrence_m, tmp_field_recurrence_s, tmp_field_count);
+  }
 
   float8store(res, field_recurrence_m);
   float8store(res + sizeof(double), field_recurrence_s);
