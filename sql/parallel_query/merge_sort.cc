@@ -1,6 +1,7 @@
 #include "sql/parallel_query/merge_sort.h"
 
 #include "sql/filesort.h"
+#include "sql/item.h"
 #include "sql/parallel_query/row_exchange.h"
 #include "sql/sql_class.h"
 #include "sql/table.h"
@@ -143,6 +144,29 @@ MergeSort::Result MergeSortElement::PushRecord(MergeSortSource *source,
   return result;
 }
 
+/// Each MergeSortElement buffers several records, in order to make
+/// PriorityQueue use the buffer directly, This class repoints the ptr of
+/// all sort fields. See parallel planner the sort fields of merge sort must
+/// be item field.
+class RepointSortFields {
+ public:
+  RepointSortFields(Sort_param *sort_param, ptrdiff_t offset)
+      : m_sort_param(sort_param), m_offset(offset) {
+    repoint_fields(m_offset);
+  }
+  ~RepointSortFields() { repoint_fields(-m_offset); }
+
+ private:
+  inline void repoint_fields(ptrdiff_t offset) {
+    for (const auto &sf : m_sort_param->local_sortorder) {
+      auto *field = down_cast<Item_field *>(sf.item)->field;
+      field->move_field_offset(offset);
+    }
+  }
+  Sort_param *m_sort_param;
+  ptrdiff_t m_offset;
+};
+
 /// Define as a template function to do a little optimization.
 template <bool Push>
 inline void PushPriorityQueue(MergeSort::PriorityQueue *, MergeSortElement *);
@@ -169,16 +193,10 @@ bool FillToPriorityQueue(MergeSort *merge_sort, MergeSortElement *elem) {
   uchar *rec = elem->CurrentRecord(nullptr);
 
   // repoint tmp table's fields to refer to current record in element buffer
-  // TODO: Could we find actual used fields in make_sortkey(), then just
-  // repoint fields that are real used. The used fields should be exactly
-  // *sort_param->sortorder? Are they just item fields of collector table?
-  repoint_field_to_record(table, table->record[0], rec);
-
+  RepointSortFields repoint_sortfields(sort_param, rec - table->record[0]);
   if (elem->alloc_and_make_sortkey(sort_param, table)) return true;
-
   PushPriorityQueue<Push>(merge_sort->m_priority_queue, elem);
 
-  repoint_field_to_record(table, rec, table->record[0]);
   return false;
 }
 
