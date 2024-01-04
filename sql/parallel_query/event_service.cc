@@ -130,7 +130,10 @@ void EventService::unregister_session(EventSession *es) {
       cur_head, es, std::memory_order_relaxed));
 
   uint64_t val = 1;
-  write(control_fd, &val, sizeof(val));
+  // No matter if write fail because other sessions could trigger to
+  // unregistered this session.
+  if (write(control_fd, &val, sizeof(val)) != sizeof(val))
+    MyOsError(errno, ER_OPERATION_PARALLEL_EVENT_SERVICE_ERROR, MYF(0));
 }
 
 void EventService::free_sessions() {
@@ -251,8 +254,11 @@ void EventService::stop() {
   assert(control_fd != -1);
   state = State::Stopping;
   uint64_t val = 1;
-  write(control_fd, &val, sizeof(val));
-  while (state != State::Stopped) my_sleep(1);
+  ssize_t res = write(control_fd, &val, sizeof(val));
+  while (state != State::Stopped) {
+    if (res != sizeof(val)) res = write(control_fd, &val, sizeof(val));
+    my_sleep(1);
+  }
 }
 
 void EventService::mainloop() {
