@@ -50,6 +50,7 @@ struct Semijoin_mat_info {
 */
 class PartialPlan {
  public:
+  ~PartialPlan() { destroy(m_dist_plan); }
   Query_block *QueryBlock() const { return m_query_block; }
   void SetQueryBlock(Query_block *query_block) { m_query_block = query_block; }
   Query_expression *QueryExpression() const;

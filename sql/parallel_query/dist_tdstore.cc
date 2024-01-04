@@ -59,6 +59,10 @@ class TDStoreNode : public Node {
 
 class TDStoreTableDist : public TableDist {
  public:
+  ~TDStoreTableDist() {
+    for (auto *node : m_store_nodes) destroy(node);
+  }
+
   bool Init(MEM_ROOT *mem_root) override {
     m_store_nodes.init(mem_root);
     return false;

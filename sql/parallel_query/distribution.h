@@ -37,6 +37,7 @@ class Node {
   /// Same physical node with the other that from another table.
   virtual bool SameWith(const Node *other) = 0;
 };
+
 using NodeArray = Mem_root_array<Node *>;
 
 /// Table distribution descriptor.
