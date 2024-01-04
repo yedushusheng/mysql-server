@@ -6841,6 +6841,9 @@ class Item_cache_row final : public Item_cache {
   Item *new_item(Item_clone_context *) const override {
     return new Item_cache_row;
   }
+  Item_parallel_safe parallel_safe() const override {
+    return GetItemsParallelSafe(items, arg_count);
+  }
   bool init_from(const Item *from, Item_clone_context *context) override;
   bool copy_cached_value(const Item_cache *from) override;
   
@@ -7125,6 +7128,18 @@ inline Item *GetNthVisibleField(const mem_root_deque<Item *> &fields,
   }
   assert(false);
   return nullptr;
+}
+
+inline Item_parallel_safe GetItemsParallelSafe(Item **items, uint count) {
+  auto res = Item_parallel_safe::Safe;
+  for (uint i = 0; i < count; ++i) {
+    if (items[i]->parallel_safe() > res) {
+      res = items[i]->parallel_safe();
+      if (res == Item_parallel_safe::Unsafe) return res;
+    }
+  }
+
+  return res;
 }
 
 #endif /* ITEM_INCLUDED */

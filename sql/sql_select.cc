@@ -2248,16 +2248,10 @@ TABLE_REF *TABLE_REF::clone(TABLE *table,
 }
 
 Item_parallel_safe TABLE_REF::parallel_safe(TABLE *table) const {
-  auto safe = Item_parallel_safe::Safe;
+  if (!key_copy) return Item_parallel_safe::Safe;
+  if (!(table->key_info + key)) return Item_parallel_safe::Safe;
 
-  if (!key_copy) return safe;
-  if (!(table->key_info + key)) return safe;
-
-  for (uint part_no = 0; part_no < key_parts; part_no++) {
-    auto item_safe = items[part_no]->parallel_safe();
-    if (item_safe > safe) safe = item_safe;
-  }
-  return safe;
+  return GetItemsParallelSafe(items, key_parts);
 }
 
 /**

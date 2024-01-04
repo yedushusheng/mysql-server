@@ -286,9 +286,11 @@ bool AccessPathParallelizer::rewrite_index_range_scan(AccessPath *in,
   return false;
 }
 
-static void rewrite_temptable_scan_path(AccessPath *table_path,
-                                               TABLE *table) {
-  TABLE **table_ptr = nullptr;;
+  /// Rewrite the temporary table scan access path under a materialize access
+/// path, replace its table with @param table
+static void rewrite_temptable_scan_path(AccessPath *table_path, TABLE *table) {
+  TABLE **table_ptr = nullptr;
+
   assert(table_path->type == AccessPath::TABLE_SCAN ||
          table_path->type == AccessPath::INDEX_RANGE_SCAN ||
          table_path->type == AccessPath::FOLLOW_TAIL);
@@ -343,12 +345,12 @@ static void _assert_same_rewrite_table(TABLE *orig, TABLE *table) {
 #define assert_same_rewrite_table(orig, table)
 #endif
 
+/// Recreate a materialize table, new table is returned by @param table
 static bool recreate_materialized_table(THD *thd, JOIN *join, ORDER *group,
-                                        bool distinct,
-                                        bool save_sum_fields,
-                                          int ref_slice, ha_rows limit_rows,
-                                          TABLE **table,
-                                          Temp_table_param **tmp_table_param) {
+                                        bool distinct, bool save_sum_fields,
+                                        int ref_slice, ha_rows limit_rows,
+                                        TABLE **table,
+                                        Temp_table_param **tmp_table_param) {
   mem_root_deque<Item *> *curr_fields = &join->tmp_fields[ref_slice - 1];
   *tmp_table_param =
       new (thd->mem_root) Temp_table_param(join->tmp_table_param);
