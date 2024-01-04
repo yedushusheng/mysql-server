@@ -1,20 +1,14 @@
 #include "sql/parallel_query/planner.h"
 
-#include <atomic>
 #include "scope_guard.h"
 #include "sql/error_handler.h"
-#include "sql/filesort.h"
-#include "sql/item.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
-#include "sql/join_optimizer/walk_access_paths.h"
 #include "sql/opt_range.h"
 #include "sql/opt_trace.h"
 #include "sql/parallel_query/executor.h"
 #include "sql/parallel_query/rewrite_access_path.h"
-#include "sql/sql_join_buffer.h"
 #include "sql/sql_optimizer.h"
-#include "sql/sql_tmp_table.h"
 #include "sql/tdsql/trans.h"
 
 namespace pq {
@@ -106,9 +100,7 @@ static bool IsAccessRangeSupported(QEP_TAB *qt) {
 
 static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
   auto typ = qt->type();
-  // TODO: support JT_REF_NULL
-  // if (typ < JT_EQ_REF || typ > JT_REF_OR_NULL || typ == JT_FT)
-  if (typ < JT_EQ_REF || typ > JT_INDEX_SCAN)
+  if (typ < JT_EQ_REF || typ > JT_REF_OR_NULL || typ == JT_FT)
     return "table_access_type_is_not_supported";
 
   if (qt->type() == JT_RANGE && !IsAccessRangeSupported(qt))
@@ -121,6 +113,103 @@ static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
   return nullptr;
 }
 
+static void get_scan_range_for_ref(MEM_ROOT *mem_root, TABLE_REF *ref,
+                                   uint *keynr,
+                                   key_range **min_key, key_range **max_key,
+                                   bool ref_or_null) {
+  *keynr = ref->key;
+  *min_key = new (mem_root) key_range();
+  (*min_key)->key = (const uchar *)ref->key_buff;
+  (*min_key)->length = ref->key_length;
+  (*min_key)->keypart_map = make_prev_keypart_map(ref->key_parts);
+  (*min_key)->flag = HA_READ_KEY_EXACT;
+  if (!ref_or_null) {
+    *max_key = *min_key;
+    return;
+  }
+  // Construct null ref key for parallel scan, avoid change origin
+  // data, copy it from REF's key_buff (min_key->key point to it)
+  *max_key = new (mem_root) key_range();
+  **max_key = **min_key;
+  bool old_null_ref_key = *ref->null_ref_key;
+  *ref->null_ref_key = true;
+  (*max_key)->key = new (mem_root) uchar[(*min_key)->length];
+  memcpy(const_cast<uchar *>((*max_key)->key), (*min_key)->key,
+         (*min_key)->length);
+  *ref->null_ref_key = old_null_ref_key;
+}
+
+static bool GetTableParallelScanInfo(QEP_TAB *tab, ulong parallel_degree,
+                                     parallel_scan_desc_t *scan_desc,
+                                     ulong *ranges) {
+  auto *table = tab->table();
+  auto *thd = tab->join()->thd;
+
+  scan_desc->is_ref_or_null = false;
+  // Field is_asc set is complicated, set it in access path rewriter by
+  // SetTableParallelScanReverse().
+  scan_desc->is_asc = true;
+  scan_desc->key_used = UINT16_MAX;
+
+  switch (tab->type()) {
+    case JT_ALL:
+      scan_desc->min_key = scan_desc->max_key = nullptr;
+      scan_desc->keynr = table->s->primary_key;
+      break;
+    case JT_INDEX_SCAN:
+      scan_desc->min_key = scan_desc->max_key = nullptr;
+      scan_desc->keynr = tab->index();
+      break;
+    case JT_REF:
+      [[fallthrough]];
+    case JT_EQ_REF:
+      get_scan_range_for_ref(thd->mem_root, &tab->ref(), &scan_desc->keynr,
+                             &scan_desc->min_key, &scan_desc->max_key, false);
+      break;
+    case JT_REF_OR_NULL:
+      get_scan_range_for_ref(thd->mem_root, &tab->ref(), &scan_desc->keynr,
+                             &scan_desc->min_key, &scan_desc->max_key, true);
+      scan_desc->is_ref_or_null = true;
+      break;
+    case JT_RANGE:
+      scan_desc->keynr = tab->quick()->index;
+      scan_desc->key_used = tab->quick()->scan_range_keyused(
+          thd->mem_root, &scan_desc->min_key, &scan_desc->max_key);
+      break;
+    default:
+      assert(false);
+      break;
+  }
+
+  *ranges = 100 * parallel_degree;
+  ha_rows nrows;
+  int res;
+  if ((res = table->file->estimate_parallel_scan_ranges(
+           scan_desc->keynr, scan_desc->min_key, scan_desc->max_key,
+           scan_desc->is_ref_or_null, ranges, &nrows)) != 0) {
+    table->file->print_error(res, MYF(0));
+    return true;
+  }
+
+  return false;
+}
+
+static uint32 ChooseParallelDegreeByScanRange(THD *thd, uint32 parallel_degree,
+                                             ulong ranges) {
+  // Choosing disabled by system variables
+  if (thd->variables.parallel_scan_ranges_threshold == 0 ||
+      parallel_degree == 1)
+    return parallel_degree;
+
+  // parallel disabled by insufficient ranges
+  if (ranges < thd->variables.parallel_scan_ranges_threshold)
+    return parallel_disabled;
+
+  if (parallel_degree > ranges) parallel_degree = ranges;
+
+  return parallel_degree;
+}
+
 static void ChooseParallelPlan(JOIN *join) {
   THD *thd = join->thd;
   Opt_trace_context *const trace = &thd->opt_trace;
@@ -129,9 +218,12 @@ static void ChooseParallelPlan(JOIN *join) {
   bool chosen = false;
   const char *cause = nullptr;
   auto trace_set_guard =
-      create_scope_guard([&trace_choosing, &chosen, &cause]() {
+      create_scope_guard([&trace_choosing, &chosen, &cause, thd]() {
+        assert(chosen || cause || thd->is_error());
         trace_choosing.add("chosen", chosen);
-        if (!chosen) trace_choosing.add_alnum("cause", cause);
+        if (!chosen)
+          trace_choosing.add_alnum(
+              "cause", cause ? cause : "error_when_parallel_plan_choosing");
       });
 
   if (max_parallel_workers == 0) {
@@ -259,6 +351,19 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
+  // Estimate parallel scan ranges, it will be displayed in EXPLAIN
+  ulong scan_ranges;
+  parallel_scan_desc_t scan_desc;
+  if (GetTableParallelScanInfo(qt, parallel_degree, &scan_desc, &scan_ranges))
+    return;
+
+  if (!specified_by_hint &&
+      (parallel_degree = ChooseParallelDegreeByScanRange(
+           thd, parallel_degree, scan_ranges)) == parallel_disabled) {
+    cause = "insufficient_parallel_scan_ranges";
+    return;
+  }
+
   const char *item_refuse_cause;
   // Block parallel query based on item expressions
   for (Item *item : join->query_block->fields) {
@@ -286,9 +391,13 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  chosen = true;
-  if (!(join->parallel_plan = new (thd->mem_root) ParallelPlan(join, parallel_degree)))
+  if (!(join->parallel_plan =
+            new (thd->mem_root) ParallelPlan(join, parallel_degree))) {
     ReleaseParallelWorkers(parallel_degree);
+    return;
+  }
+  join->parallel_plan->SetTableParallelScan(table, scan_ranges, scan_desc);
+  chosen = true;
 }
 
 class ParallelPlanGenErrorIgnoreHandler : public Internal_error_handler {
@@ -465,9 +574,9 @@ SourcePlanChangedStore::~SourcePlanChangedStore() {
 
 JOIN *PartialPlan::Join() const { return m_query_block->join; }
 
-void PartialPlan::SetTablesParallelScan(TABLE *table,
-                                        const parallel_scan_desc_t &psdesc) {
-  m_parallel_scan_info = {table, 0, psdesc};
+void PartialPlan::SetTableParallelScan(TABLE *table, ulong suggested_ranges,
+                                       const parallel_scan_desc_t &psdesc) {
+  m_parallel_scan_info = {table, suggested_ranges, psdesc};
 }
 
 ParallelPlan::ParallelPlan(JOIN *join, uint32 parallel_degree)
@@ -945,20 +1054,6 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   if (rewriter.has_pushed_limit_offset()) m_need_collect_found_rows = true;
 
   PartialJoin()->set_root_access_path(partial_path);
-
-  // Estimate parallel scan ranges for EXPLAIN PLAN. This should be done in
-  // ChooseParallelPlan() if we can compare cost of serial and parallel
-  // plan.
-  auto &scaninfo = m_partial_plan.TablesParallelScan();
-  auto *table = scaninfo.table;
-  scaninfo.suggested_ranges = 100 * m_parallel_degree;
-  ha_rows nrows;
-  int res;
-  if ((res = table->file->estimate_parallel_scan_ranges(
-           &scaninfo.scan_desc, &scaninfo.suggested_ranges, &nrows))) {
-    table->file->print_error(res, MYF(0));
-    return true;
-  }
 
   DBUG_EXECUTE_IF("pq_simulate_access_path_generate_error", {
     { my_error(ER_DA_UNKNOWN_ERROR_NUMBER, MYF(0), 4); };

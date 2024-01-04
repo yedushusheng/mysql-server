@@ -141,12 +141,11 @@ class AccessPathParallelizer : public AccessPathRewriter {
  private:
   bool end_of_out_path() override { return m_collector_path_pos != nullptr; }
   void set_collector_path_pos(AccessPath **path);
-  void set_table_parallel_scan(TABLE *table, uint keynr, bool reverse);
 
   AccessPath **collector_path_pos() const { return m_collector_path_pos; }
 
-  // Rewrite routines for each access path
-  bool rewrite_table_scan(AccessPath *, AccessPath *) override;
+  // Rewrite routines for each access path, Don't need rewrite_table_scan(),
+  // nothing to do
   bool rewrite_index_scan(AccessPath *, AccessPath *) override;
   bool rewrite_ref(AccessPath *, AccessPath *) override;
   bool rewrite_ref_or_null(AccessPath *, AccessPath *) override;
@@ -163,11 +162,7 @@ class AccessPathParallelizer : public AccessPathRewriter {
 
   void post_rewrite_out_path(AccessPath *out) override;
 
-  void rewrite_index_access_path(
-      parallel_scan_desc_t::type_t scan_type, TABLE *table, uint keynr,
-      bool use_order, bool reverse,
-      std::function<void(uint16_t *, key_range **, key_range **)>
-          get_scan_range);
+  void rewrite_index_access_path(bool use_order, bool reverse);
 
   PartialPlan *m_partial_plan;
   AccessPath *m_collector_access_path{nullptr};

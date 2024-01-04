@@ -7104,3 +7104,12 @@ static Sys_var_enum Sys_parallel_worker_handling(
     "co-threads, sys-threads",
     READ_ONLY GLOBAL_VAR(pq::worker_handling), CMD_LINE(REQUIRED_ARG),
     parallel_worker_handling_names, DEFAULT(pq::default_worker_schedule_type));
+
+static Sys_var_ulong Sys_parallel_scan_ranges_threshold(
+    "parallel_scan_ranges_threshold",
+    "estimated ranges threshold for parallel scan. When the number of "
+    "estimated parallel scan ranges is greater or equal to this value, "
+    "parallel scan of this table will be considered.",
+    HINT_UPDATEABLE SESSION_VAR(parallel_scan_ranges_threshold),
+    CMD_LINE(REQUIRED_ARG), VALID_RANGE(0, ULONG_MAX), DEFAULT(2),
+    BLOCK_SIZE(1));

@@ -5618,7 +5618,10 @@ class handler {
     return HA_ERR_UNSUPPORTED;
   }
   virtual int estimate_parallel_scan_ranges(
-      parallel_scan_desc_t *scan_desc MY_ATTRIBUTE((unused)),
+      uint keynr MY_ATTRIBUTE((unused)),
+      key_range *min_key MY_ATTRIBUTE((unused)),
+      key_range *max_key MY_ATTRIBUTE((unused)),
+      bool type_ref_or_null MY_ATTRIBUTE((unused)),
       ulong *nranges MY_ATTRIBUTE((unused)),
       ha_rows *nrows MY_ATTRIBUTE((unused))) {
     return HA_ERR_UNSUPPORTED;

@@ -320,7 +320,8 @@ constexpr uint MAX_INDEX_COL_LEN_SMALL = 767;
 #define HA_ERR_ROCKSDB_STATUS_EXPIRED (HA_ERR_LAST + 24)
 #define HA_ERR_ROCKSDB_STATUS_TRY_AGAIN (HA_ERR_LAST + 25)
 #define HA_ERR_ROCKSDB_CORRELATE_TABLE (HA_ERR_LAST + 26)
-#define HA_ERR_ROCKSDB_LAST HA_ERR_ROCKSDB_CORRELATE_TABLE
+#define HA_ERR_ROCKSDB_PARALLEL_SCAN_FAILED (HA_ERR_LAST + 27)
+#define HA_ERR_ROCKSDB_LAST HA_ERR_ROCKSDB_PARALLEL_SCAN_FAILED
 
 /**
   @brief
@@ -1292,6 +1293,8 @@ public:
     new_handler->pushed_cond = pushed_cond;
     new_handler->tdstore_pushed_cond_ = tdstore_pushed_cond_;
     new_handler->tdstore_pushed_cond_idx_ = tdstore_pushed_cond_idx_;
+    new_handler->m_parallel_scan_handle = m_parallel_scan_handle;
+    new_handler->m_parallel_scan_enabled = m_parallel_scan_enabled;
     return new_handler;
   }
   void SingleSelectPush(const QEP_TAB *qep_tab, int index);
@@ -1522,6 +1525,12 @@ public:
     return false;
   }
 
+  int cmp_ref(const uchar *ref1, const uchar *ref2) const override {
+    assert(ref_length > Rdb_key_def::INDEX_NUMBER_SIZE);
+    return memcmp(ref1 + Rdb_key_def::INDEX_NUMBER_SIZE,
+                  ref2 + Rdb_key_def::INDEX_NUMBER_SIZE,
+                  ref_length - Rdb_key_def::INDEX_NUMBER_SIZE);
+  }
   bool is_partition_table() { return m_part_pos != UINT32_MAX; }
 
   void start_bulk_insert(ha_rows rows) override;
@@ -1689,12 +1698,9 @@ public:
 
   int restart_parallel_scan(parallel_scan_handle_t scan_handle) override;
 
-  int estimate_parallel_scan_ranges(parallel_scan_desc_t *scan_desc,
+  int estimate_parallel_scan_ranges(uint keynr, key_range *min_key,
+                                    key_range *max_key, bool type_ref_or_null,
                                     ulong *nranges, ha_rows *nrows) override;
-
-  bool parallel_scan_attached() const {
-    return m_parallel_scan_handle != nullptr;
-  }
 
   void AttachAParallelScanJob() {
     m_parallel_scan_job = m_parallel_scan_handle->AttachAJob();
@@ -1706,12 +1712,24 @@ public:
 
   MyRocksParallelScanJob *parallel_scan_job() { return m_parallel_scan_job; }
 
+  bool use_parallel_scan() const {
+    return m_parallel_scan_handle != nullptr && m_parallel_scan_enabled;
+  }
+
+  int GetParallelScanRegionList(uint keynr, key_range *min_key,
+                                key_range *max_key, RegionList *rgns,
+                                MyRocksParallelScan *parallel_scan_handle);
+
+  int GetParallelScanRegionListRefOrNull(
+      uint keynr, key_range *min_key, key_range *max_key, RegionList *ref_rgns,
+      RegionList *null_rgns, MyRocksParallelScan *paral_scan_handle);
+
  private:
-  int GetParallelScanRegionList(parallel_scan_desc_t *scan_desc,
-                                RegionList *rgns);
   MyRocksParallelScan *m_parallel_scan_handle{nullptr};
   // The running parallel scan job.
   MyRocksParallelScanJob* m_parallel_scan_job{nullptr};
+  // See HA_EXTRA_TOGGLE_PARALLEL_SCAN_INNER.
+  bool m_parallel_scan_enabled{false};
 };
 
 /*
