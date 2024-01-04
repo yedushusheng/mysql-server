@@ -431,7 +431,7 @@ std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   auto *partial_plan = join->partial_plan;
   if (!partial_plan->IsParallelScanTable(table)) return str;
 
-  auto scaninfo = join->partial_plan->GetParallelScanInfo();
+  auto &scaninfo = join->partial_plan->GetParallelScanInfo();
 
   str = ", with parallel scan ranges: " +
         std::to_string(scaninfo.suggested_ranges);
@@ -670,7 +670,10 @@ bool PartialExecutor::AttachTablesParallelScan() {
 
   TABLE *table = nullptr;
   for (TABLE_LIST *tl = leaf_tables; tl; tl = tl->next_leaf) {
-    if (tl->is_identical(psinfo.table->pos_in_table_list)) table = tl->table;
+    if (tl->is_identical(psinfo.table->pos_in_table_list)) {
+      table = tl->table;
+      break;
+    }
   }
   assert(table);
 

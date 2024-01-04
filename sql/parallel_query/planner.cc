@@ -262,7 +262,7 @@ static void ChooseParallelPlan(JOIN *join) {
   // Block uncacheable subqueries, Note some converted subqueries may also
   // blocked.
   if (!join->query_block->is_cacheable()) {
-    cause = "not_supported_unacheable_subquery";
+    cause = "not_supported_uncacheable_subquery";
     return;
   }
   if (join->query_block->forbid_parallel_by_upper_query_block) {
