@@ -57,12 +57,22 @@ bool AccessPathRewriter::do_rewrite(AccessPath *&path, AccessPath *curjoin,
     case AccessPath::REF:
     case AccessPath::REF_OR_NULL:
     case AccessPath::EQ_REF:
+    // PUSHED_JOIN_REF: ndb only, no need rewrite
+    // FULL_TEXT_SEARCH: not support yet.
     case AccessPath::MRR:
+    // FOLLOW_TAIL: temporary table only see, rewrite_temptable_scan_path()
     case AccessPath::CONST_TABLE:
-    // Note, bka_path is just used by bka iterator and it must be nullptr
-    // since the iterator is not created yet.
     case AccessPath::INDEX_RANGE_SCAN:
+    // DYNAMIC_INDEX_RANGE_SCAN: not support yet
     case AccessPath::PARALLEL_COLLECTOR_SCAN:
+      break;
+    // TABLE_VALUE_CONSTRUCTOR: not support yet
+    // FAKE_SINGLE_ROW: not support yet
+    case AccessPath::ZERO_ROWS:
+      if (do_rewrite(path->zero_rows().child, path, out)) return true;
+      break;
+    case AccessPath::ZERO_ROWS_AGGREGATED:
+    // MATERIALIZED_TABLE_FUNCTION: not support yet.
     case AccessPath::UNQUALIFIED_COUNT:
       break;
     case AccessPath::NESTED_LOOP_JOIN:
@@ -115,10 +125,17 @@ bool AccessPathRewriter::do_rewrite(AccessPath *&path, AccessPath *curjoin,
       if (do_rewrite(query_block.subquery_path, curjoin, out)) return true;
       break;
     }
+    // MATERIALIZE_INFORMATION_SCHEMA_TABLE: not support yet.
+    // APPEND: not support yet.
+    // WINDOW: not support yet.
+    // WEEDOUT: not support yet.
+    // REMOVE_DUPLICATES:  only used in hypergraph, no need.
     case AccessPath::REMOVE_DUPLICATES_ON_INDEX:
       if (do_rewrite(path->remove_duplicates_on_index().child, curjoin, out))
         return true;
       break;
+    // ALTERNATIVE: not support yet.
+    // CACHE_INVALIDATOR: used by recursive CTE, not support yet.
     default:
       assert(false);
   }
@@ -158,11 +175,14 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *&path,
       dup = accesspath_dup(path);
       if (rewrite_eq_ref(path, dup)) return true;
       break;
+    // PUSHED_JOIN_REF: ndb only, no need rewrite
+    // FULL_TEXT_SEARCH: not support yet.
     case AccessPath::MRR:
       assert(!end_of_out_path());
       dup = accesspath_dup(path);
       if (rewrite_mrr(path, dup)) return true;
       break;
+    // FOLLOW_TAIL: temporary table only see, rewrite_temptable_scan_path()
     case AccessPath::CONST_TABLE:
       assert(!end_of_out_path());
       dup = accesspath_dup(path);
@@ -173,11 +193,25 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *&path,
       dup = accesspath_dup(path);
       if (rewrite_index_range_scan(path, dup)) return true;
       break;
+    // DYNAMIC_INDEX_RANGE_SCAN: not support yet
+    // PARALLEL_COLLECTOR_SCAN: no need rewrite
+    // TABLE_VALUE_CONSTRUCTOR: not support yet
+    // FAKE_SINGLE_ROW: not support yet
+    case AccessPath::ZERO_ROWS:
+      assert(!end_of_out_path());
+      dup = accesspath_dup(path);
+      dup->zero_rows().child = out;
+      break;
+    case AccessPath::ZERO_ROWS_AGGREGATED:
+      assert(!end_of_out_path());
+      dup = accesspath_dup(path);
+      break;
     case AccessPath::UNQUALIFIED_COUNT:
       assert(!end_of_out_path());
       dup = accesspath_dup(path);
       if (rewrite_unqualified_count(path, dup)) return true;
       break;
+    // MATERIALIZED_TABLE_FUNCTION: not support yet.
     case AccessPath::NESTED_LOOP_JOIN:
       assert(!end_of_out_path());
       dup = accesspath_dup(path);
@@ -247,13 +281,19 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *&path,
       if (rewrite_materialize(path, dup, curjoin != nullptr)) return true;
       if (dup) dup->materialize().param->query_blocks[0].subquery_path = out;
       break;
-    // REMOVE_DUPLICATES is only used in hypergraph
+    // MATERIALIZE_INFORMATION_SCHEMA_TABLE: not support yet.
+    // APPEND: not support yet.
+    // WINDOW: not support yet.
+    // WEEDOUT: not support yet.
+    // REMOVE_DUPLICATES:  only used in hypergraph, no need.
     case AccessPath::REMOVE_DUPLICATES_ON_INDEX:
       assert(!end_of_out_path());
       dup = accesspath_dup(path);
       if (rewrite_remove_duplicates_on_index(path, dup)) return true;
       dup->remove_duplicates_on_index().child = out;
       break;
+    // ALTERNATIVE: not support yet.
+    // CACHE_INVALIDATOR: used by recursive CTE, not support yet.
     default:
       assert(false);
   }

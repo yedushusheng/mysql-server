@@ -867,6 +867,11 @@ class Item_func_trig_cond final : public Item_bool_func {
   const JOIN *m_join;
   /// Optional: if join!=NULL: index of table
   plan_idx m_idx;
+  /// Used by parallel query to print plan, Only leader use this, so should
+  /// not clone or serialize to workers.
+  TABLE_LIST *first_table_for_print{nullptr};
+  TABLE_LIST *last_table_for_print{nullptr};
+
   /** Type of trig_var; for printing */
   enum_trig_type trig_type;
 
