@@ -159,6 +159,10 @@ std::string TimingIterator<RealIterator>::TimingString(bool binary) const {
           .count() *
       1e3;
   char buf[1024];
+  GetTimingData<RealIterator> timing_data;
+  const uint64_t num_init_calls =
+      timing_data.num_init_calls(m_iterator, m_num_init_calls);
+  const uint64_t num_rows = timing_data.num_rows(m_iterator, m_num_rows);
 
   if (binary) {
     // Following serialized data is used by class pq::FakeTimingIterator. Please

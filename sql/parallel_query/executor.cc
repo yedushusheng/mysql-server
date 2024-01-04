@@ -339,6 +339,7 @@ static std::pair<std::string *, std::string *> GetOutputWorkersTimingData(
     ReadOneIteratorTimingData(timing_data->c_str(), 0, &num_rows,
                               &num_init_calls, &time_spent_in_first_row,
                               &time_spent_in_other_rows);
+    if (num_init_calls == 0) return;
     auto total_all_rows_spent =
         time_spent_in_first_row + time_spent_in_other_rows;
 
@@ -387,9 +388,12 @@ class FakeTimingIterator : public RowIterator {
     duration_type time_spent_in_first_row1, time_spent_in_first_row2,
         time_spent_in_other_rows1, time_spent_in_other_rows2;
 
-    if (m_timing_data_cursor == 0)
+    if (!m_output_workers_chosen) {
+      assert(m_timing_data_cursor == 0);
       const_cast<FakeTimingIterator *>(this)->m_timing_data =
           GetOutputWorkersTimingData(m_collector);
+      const_cast<FakeTimingIterator *>(this)->m_output_workers_chosen = true;
+    }
 
     // Here GetOutputWorkersTimingData() could return {nullptr, nullptr} if
     // there is no worker in colloctor because EXPLAIN ANALYZE prints a query
@@ -430,7 +434,8 @@ class FakeTimingIterator : public RowIterator {
                                       time_spent_in_other_rows2)
             .count() *
         1e3;
-    if (m_collector->NumWorkers() == 1)
+    if (m_collector->NumWorkers() == 1 ||
+        m_timing_data.first == m_timing_data.second)
       snprintf(buf, sizeof(buf),
                "(actual time=%.3f..%.3f rows=%lld loops=%" PRIu64 ")",
                first_row_ms2 / num_init_calls2, last_row_ms2 / num_init_calls2,
@@ -443,8 +448,7 @@ class FakeTimingIterator : public RowIterator {
           "/%" PRIu64 ")",
           num_init_calls1 > 0 ? first_row_ms1 / num_init_calls1 : 0,
           num_init_calls1 > 0 ? last_row_ms1 / num_init_calls1 : 0,
-          first_row_ms2 / num_init_calls2,
-          last_row_ms2 / num_init_calls2,
+          first_row_ms2 / num_init_calls2, last_row_ms2 / num_init_calls2,
           num_init_calls1 > 0
               ? llrintf(static_cast<double>(num_rows1) / num_init_calls1)
               : 0,
@@ -457,6 +461,7 @@ class FakeTimingIterator : public RowIterator {
  private:
   Collector *m_collector;
   std::string::size_type m_timing_data_cursor{0};
+  bool m_output_workers_chosen{false};
   std::pair<std::string *, std::string *> m_timing_data;
 };
 
