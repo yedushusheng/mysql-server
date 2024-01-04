@@ -749,11 +749,13 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
     }
     if (m_fields.push_back(new_item)) return true;
 
-    // Change origin plan: update original base_ref_items with new items
+    // Change origin plan: update original base_ref_items with new items. We
+    // need use THD::change_item_tree() for multiple time execution of
+    // prepare.
     bool found [[maybe_unused]] = false;
     for (size_t j = 0; j < source_query_block->fields.size(); j++) {
       if (source_query_block->base_ref_items[j]->is_identical(new_item)) {
-        source_query_block->base_ref_items[j] = new_item;
+        thd->change_item_tree(&source_query_block->base_ref_items[j], new_item);
 #ifndef NDEBUG
         found = true;
 #endif
