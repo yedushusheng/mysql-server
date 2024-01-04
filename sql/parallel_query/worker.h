@@ -40,7 +40,7 @@ class Worker {
 
   virtual Diagnostics_area *stmt_da(bool finished_collect, ha_rows *found_rows,
                                     ha_rows *examined_rows) = 0;
-  virtual std::string *QueryPlanTimingData() = 0;
+  virtual std::string QueryPlanTimingData() = 0;
   virtual void CollectStatusVars(THD *target_thd) = 0;
 
   comm::RowChannel *ReceiverChannel() const { return m_receiver_channel; }

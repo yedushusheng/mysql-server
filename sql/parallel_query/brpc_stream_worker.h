@@ -63,7 +63,6 @@ class BrpcStreamWorker : public Worker {
 
   std::string QueryPlanTimingData() override;
   void CollectStatusVars(THD *) override;
-  void CollectExecTime(THD *) override;
 
  private:
   PartialPlan *plan_{nullptr};
@@ -82,8 +81,6 @@ class BrpcStreamWorker : public Worker {
   std::string timing_data_;
   ha_rows found_rows_{0};
   ha_rows examined_rows_{0};
-
-  ExecTime exec_time_;
 
   THD *m_leader_thd{nullptr};
 };

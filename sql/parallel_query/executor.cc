@@ -39,6 +39,7 @@ Collector::~Collector() {
   destroy(m_merge_sort);
 
   Reset();
+  ResetWorkersTimingData();
 }
 
 bool Collector::CreateCollectorTable() {
@@ -88,6 +89,8 @@ bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order,
 }
 
 bool Collector::Init(THD *thd) {
+  ResetWorkersTimingData();
+
   // Do initialize parallel scan for the plan with parallel scan before workers
   // are created and started. For 3.0, remote workers assign parallel scan jobs
   // in this function and parallel workers are created based on that.
@@ -270,12 +273,23 @@ void Collector::CollectStatusFromWorkers(THD *thd) {
   }
 }
 
+void Collector::CollectTimingDataFromWorkers(MEM_ROOT *mem_root) {
+  assert(!m_workers_timing_data);
+  m_workers_timing_data = new (mem_root) Mem_root_array<std::string>(mem_root);
+  // Workers could be invalid since the whole query block could not execute at
+  // all. e.g. LIMIT with UNION ALL
+  for (auto *worker : m_workers) {
+    if (worker) m_workers_timing_data->push_back(worker->QueryPlanTimingData());
+  }
+}
+
 void Collector::End(THD *thd, ha_rows *found_rows) {
   if (is_ended) return;
   TerminateWorkers();
 
   // XXX moves this to elsewhere if we support multiple collector
   CollectStatusFromWorkers(thd);
+  if (thd->lex->is_explain_analyze) CollectTimingDataFromWorkers(thd->mem_root);
 
   is_ended = true;
 
@@ -323,36 +337,33 @@ static std::string::size_type ReadOneIteratorTimingData(
   return offset;
 }
 
-static std::pair<std::string *, std::string *> GetOutputWorkersTimingData(
-    Collector *collector) {
+std::pair<std::string *, std::string *> Collector::WorkersTimingData() const {
   std::string *min_worker_timing_data{nullptr},
       *max_worker_timing_data{nullptr};
   duration_type min_total_rows_spent{duration_type::max()},
       max_total_rows_spent{duration_type::zero()};
-
-  collector->ForEachWorker([&](Worker *worker) {
-    auto *timing_data = worker->QueryPlanTimingData();
-    if (!timing_data) return;
+  for (auto &timing_data : *m_workers_timing_data) {
+    if (timing_data.empty()) continue;
     // Only needs check root iterator
     uint64 num_rows, num_init_calls;
     duration_type time_spent_in_first_row, time_spent_in_other_rows;
-    ReadOneIteratorTimingData(timing_data->c_str(), 0, &num_rows,
+    ReadOneIteratorTimingData(timing_data.c_str(), 0, &num_rows,
                               &num_init_calls, &time_spent_in_first_row,
                               &time_spent_in_other_rows);
-    if (num_init_calls == 0) return;
+    if (num_init_calls == 0) continue;
     auto total_all_rows_spent =
         time_spent_in_first_row + time_spent_in_other_rows;
 
     if (total_all_rows_spent < min_total_rows_spent) {
-      min_worker_timing_data = timing_data;
+      min_worker_timing_data = &timing_data;
       min_total_rows_spent = total_all_rows_spent;
     }
 
     if (total_all_rows_spent > max_total_rows_spent) {
-      max_worker_timing_data = timing_data;
+      max_worker_timing_data = &timing_data;
       max_total_rows_spent = total_all_rows_spent;
     }
-  });
+  }
 
   return {min_worker_timing_data, max_worker_timing_data};
 }
@@ -391,11 +402,11 @@ class FakeTimingIterator : public RowIterator {
     if (!m_output_workers_chosen) {
       assert(m_timing_data_cursor == 0);
       const_cast<FakeTimingIterator *>(this)->m_timing_data =
-          GetOutputWorkersTimingData(m_collector);
+          m_collector->WorkersTimingData();
       const_cast<FakeTimingIterator *>(this)->m_output_workers_chosen = true;
     }
 
-    // Here GetOutputWorkersTimingData() could return {nullptr, nullptr} if
+    // Here Collector::WorkersTimingData() could return {nullptr, nullptr} if
     // there is no worker in colloctor because EXPLAIN ANALYZE prints a query
     // plan even the session got killed, see also THD::running_explain_analyze.
     if (m_timing_data.first) {
@@ -629,13 +640,11 @@ class PartialItemCloneContext : public Item_clone_context {
 };
 
 bool PartialExecutor::Init(comm::RowChannel *sender_channel,
-                           comm::RowExchange *sender_exchange,
-                           bool is_explain_analyze) {
+                           comm::RowExchange *sender_exchange) {
   m_sender_channel = sender_channel;
   m_sender_exchange = sender_exchange;
   m_row_exchange_writer.SetExchange(m_sender_exchange);
 
-  if (is_explain_analyze) m_query_plan_timing_data.reset(new std::string);
   return false;
 }
 
@@ -758,7 +767,11 @@ void PartialExecutor::ExecuteQuery(PartialExecutorContext *context) {
     auto *join = unit->first_query_block()->join;
 
     assert(!unit->is_union());
-
+    assert(!m_query_plan_timing_data.get());
+    m_query_plan_timing_data.reset(new std::string);
+    // Here the size of one node is 32 bytes. this prevents it save data in
+    // inline buffer inside of std::string
+    m_query_plan_timing_data->reserve(128);
     PrintQueryPlanTiming(unit->root_access_path(), join, true,
                          m_query_plan_timing_data.get());
   }

@@ -44,12 +44,7 @@ class Collector {
   JOIN *PartialJoin() const;
   uint NumWorkers() const { return m_workers.size(); }
   bool CreateMergeSort(JOIN *join, ORDER *merge_order, bool remove_duplicates);
-  template <class Func>
-  void ForEachWorker(Func &&func) {
-    for (auto *worker : m_workers) {
-      if (worker) func(worker);
-    }
-  }
+  std::pair<std::string *, std::string *> WorkersTimingData() const;
   AccessPath *Explain(std::vector<std::string> &description);
   void SetPreevaluateSubqueries(
       List<Item_cached_subselect_result> *cached_subselects) {
@@ -60,6 +55,12 @@ class Collector {
   bool LaunchWorkers();
   void TerminateWorkers();
   void CollectStatusFromWorkers(THD *thd);
+  void CollectTimingDataFromWorkers(MEM_ROOT *mem_root);
+  void ResetWorkersTimingData() {
+    if (!m_workers_timing_data) return;
+    destroy(m_workers_timing_data);
+    m_workers_timing_data = nullptr;
+  }
   Diagnostics_area *combine_workers_stmt_da(THD *thd, ha_rows *found_rows);
   dist::Adapter *m_dist_adapter;
   dist::NodeArray *m_exec_nodes;
@@ -74,6 +75,11 @@ class Collector {
   comm::RowExchangeReader *m_row_exchange_reader{nullptr};
 
   std::vector<Worker *> m_workers;
+  /// Save timing data of EXPLAIN ANALYZE for each workers, workers are
+  /// destroyed when its parent JOIN is cleared for next execution. However we
+  /// still need to read its timing data after JOIN is cleared if the query
+  /// block is executed in a materialized subquery.
+  Mem_root_array<std::string> *m_workers_timing_data{nullptr};
 
   comm::Event m_worker_state_event;
   bool is_ended{false};
@@ -102,15 +108,15 @@ class PartialExecutor {
       : m_thd(thd), m_query_plan(query_plan), m_cleanup_func(cleanup_func) {}
 
   bool Init(comm::RowChannel *sender_channel,
-            comm::RowExchange *sender_exchange, bool is_explain_analyze);
+            comm::RowExchange *sender_exchange);
 
   void InitExecThd(PartialExecutorContext *ctx, THD *mdl_group_leader);
   void ExecuteQuery(PartialExecutorContext *context);
 
-  std::string *QueryPlanTimingData() {
-    if (m_query_plan_timing_data->size() == 0) return nullptr;
-
-    return m_query_plan_timing_data.get();
+  std::string GetTimingData() {
+    return m_query_plan_timing_data == nullptr
+               ? std::string()
+               : std::move(*m_query_plan_timing_data);
   }
 
  private:

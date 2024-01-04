@@ -17,7 +17,6 @@
 #include "sql/transaction.h"
 #include "storage/rocksdb/ha_rocksdb.h"
 #include "sql/tdsql/buckets.h"
-#include "sql/sql_parse.h"
 
 extern bool thread_attach(THD *thd);
 
@@ -62,15 +61,9 @@ BrpcStreamPartialExecutor::~BrpcStreamPartialExecutor() {
       this, static_cast<std::uint64_t>(group_id_ >> 64),
       static_cast<std::uint64_t>(group_id_));
   owner_->DecExecutor();
-  // DecExecutor may change current_thd
-  thread_attach(&thd_);
 }
 
 TABLE *BrpcStreamPartialExecutor::GroupTable() { return owner_->table(); }
-
-push_down::SerializeData *BrpcStreamPartialExecutor::Data() {
-  return owner_->Data();
-}
 
 bool BrpcStreamPartialExecutor::IsExplainAnalyze() {
   return owner_->IsExplainAnalyze();
@@ -99,8 +92,6 @@ void BrpcStreamPartialExecutor::SendStat() {
   has_send_stat_ = true;
 
   THD *thd = &thd_;
-  // can not rely on release_resources,which is called after SendStat
-  thd->UpdateExecTime();
 
   pq::comm::BrpcStreamRowChannel *sender_channel =
       (pq::comm::BrpcStreamRowChannel *)sender_channel_;
@@ -116,16 +107,6 @@ void BrpcStreamPartialExecutor::SendStat() {
   stat.set_examined_rows(thd->get_examined_row_count());
   LogDebug("send found:%lu,examined:%lu", stat.found_rows(),
            stat.examined_rows());
-
-  stat.mutable_cost_time()->set_query_utime(thd->exec_time_.query_utime);
-  stat.mutable_cost_time()->set_lock_utime(thd->exec_time_.lock_utime);
-  stat.mutable_cost_time()->set_mc_h2_tc(thd->exec_time_.mc_h2_tc);
-  stat.mutable_cost_time()->set_mc_raw_tc(thd->exec_time_.mc_raw_tc);
-  stat.mutable_cost_time()->set_tdstore_rpc_tc(thd->exec_time_.tdstore_rpc_tc);
-  stat.mutable_cost_time()->set_tdstore_wait_lock_tc(
-      thd->exec_time_.tdstore_wait_lock_tc);
-  stat.mutable_cost_time()->set_rpc_cntl_retry_delay_tc(
-      thd->exec_time_.rpc_cntl_retry_delay_tc);
 
   if (thd->is_error()) {
     stat.set_error_msg(thd->get_stmt_da()->message_text());
@@ -257,11 +238,8 @@ BrpcStreamPartialExecutorGroup::~BrpcStreamPartialExecutorGroup() {
 
   // join_free need this to cleanup_table
   leader_thd_.lex->is_brpc_group = true;
-  auto *qb = leader_thd_.lex->query_block;
-  if (qb) {
-    JOIN *join = qb->join;
-    if (join) join->join_free();
-  }
+  JOIN *join = leader_thd_.lex->query_block->join;
+  if (join) join->join_free();
 
   trans_rollback_stmt(&leader_thd_);
   close_thread_tables(&leader_thd_);
@@ -275,22 +253,10 @@ bool BrpcStreamPartialExecutorGroup::Init() {
   thd->set_new_thread_id();
   thread_attach(thd);
 
-  // Broadcast sql
-  if (data_.query_expression().empty()) {
-    if (DeserializeBroadcast(thd, &data_)) {
-      LogError("DeserializeBroadcast in  BrpcStreamPartialExecutorGroup fail");
-      return true;
-    }
-    type_ = SQL_PLAN;
-    return false;
-  }
-
   if (DeserializePlan(thd, &partial_plan_, &data_)) {
     LogError("DeserializePlan in  BrpcStreamPartialExecutorGroup fail");
     return true;
   }
-
-  type_ = PARTIAL_PLAN;
 
   LEX *lex = thd->lex;
   is_explain_analyze_ = thd->lex->is_explain_analyze;
@@ -447,43 +413,6 @@ void CleanExecutorGroup() {
   }
 }
 
-bool StartExecutorUseSql(THD *leader_thd, BrpcStreamPartialExecutor *executor) {
-  THD *thd = executor->get_thd();
-  thread_attach(thd);
-  thd->set_query(leader_thd->query());
-  thd->set_db(leader_thd->db());
-  thd->set_type(KThdForwardStreamSql);
-  thd->security_context()->skip_grants();
-  thd->security_context()->set_user_ptr(STRING_WITH_LEN("(null)"));
-  thd->security_context()->set_host_or_ip_ptr(my_localhost,
-                                              strlen(my_localhost));
-  comm::RowExchangeWriter row_exchange_writer;
-  row_exchange_writer.SetExchange(executor->SenderExchange());
-
-  Temp_table_param tmp_table_param;
-  executor->row_exchange_writer_ = &row_exchange_writer;
-  executor->tmp_table_param_ = &tmp_table_param;
-
-  // used in ChangeForwardQueryResult
-  thd->forward_executor_ = executor;
-
-  Parser_state parser_state;
-  LogDebug("StartExecutorUseSql begin sql:%s", thd->query().str);
-  if (parser_state.init(thd, thd->query().str, thd->query().length)) {
-    LogError("parser_state.init fail");
-    my_error(ER_TDSQL_COMMON, MYF(0), "intra_connection",
-             ErrorNameAndCodeInLog(tdcomm::EC_SQL_COMMON),
-             "parser_state.init fail");
-  } else {
-    dispatch_sql_command(thd, &parser_state, false);
-  }
-
-  executor->SendStat();
-  LogDebug("StartExecutorUseSql end sql:%s",thd->query().str);
-
-  return false;
-}
-
 bool StartExecutorInternal(THD *leader_thd,
                            BrpcStreamPartialExecutor *executor) {
   THD *lthd = leader_thd;
@@ -536,10 +465,7 @@ bool StartExecutor(comm::BrpcStreamConnectionPtr stream_conn,
     LogError("remote_executor.InitChannel fail");
     remote_executor.SendStat();
   } else {
-    if (group->type() == BrpcStreamPartialExecutorGroup::PARTIAL_PLAN)
-      StartExecutorInternal(group->thd(), &remote_executor);
-    else
-      StartExecutorUseSql(group->thd(), &remote_executor);
+    StartExecutorInternal(group->thd(), &remote_executor);
   }
 
   LogDebug("done StartExecutor:%p for group_id:%lu,%lu", &remote_executor,

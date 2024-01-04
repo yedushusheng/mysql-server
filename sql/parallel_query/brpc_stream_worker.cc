@@ -19,7 +19,7 @@ BrpcStreamWorker::BrpcStreamWorker(uint id, comm::Event *state_event, THD *thd,
       group_desc_(group_desc),
       m_leader_thd(thd) {
 #ifndef NDEBUG
-  if (!group_desc_->init_ && (id == 1)) {
+  if (!group_desc_->init_) {
     uint64 query_connection_id =
         ((uint64)GetConnId() << 32) | (m_leader_thd->query_id & 0xffffffff);
     CheckUnique::getInstance().Check(query_connection_id, reinterpret_cast<ulong>(plan_));
@@ -161,17 +161,6 @@ bool BrpcStreamWorker::SetStat() {
   found_rows_ = stat.found_rows();
   examined_rows_ = stat.examined_rows();
 
-  if (stat.has_cost_time()) {
-    exec_time_.query_utime = stat.cost_time().query_utime();
-    exec_time_.lock_utime = stat.cost_time().lock_utime();
-    exec_time_.mc_h2_tc = stat.cost_time().mc_h2_tc();
-    exec_time_.mc_raw_tc = stat.cost_time().mc_raw_tc();
-    exec_time_.tdstore_rpc_tc = stat.cost_time().tdstore_rpc_tc();
-    exec_time_.tdstore_wait_lock_tc = stat.cost_time().tdstore_wait_lock_tc();
-    exec_time_.rpc_cntl_retry_delay_tc =
-        stat.cost_time().rpc_cntl_retry_delay_tc();
-  }
-
   if (stat.mysql_errno()) {
     main_da_.set_error_status(stat.mysql_errno(), stat.error_msg().c_str(),
                               stat.sqlstate().c_str());
@@ -217,10 +206,6 @@ bool BrpcStreamWorker::IsRunning() {
 
 // TODO
 void BrpcStreamWorker::CollectStatusVars(THD *) { return; }
-
-void BrpcStreamWorker::CollectExecTime(THD *target_thd) {
-  target_thd->UpdateWorkerExecTime(exec_time_);
-}
 
 Diagnostics_area *BrpcStreamWorker::stmt_da(bool finished_collect,
                                             ha_rows *found_rows,
