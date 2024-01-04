@@ -9549,6 +9549,9 @@ ER_PARALLEL_ROW_CHANNEL_MESSAGE_TOO_LARGE
 ER_OPERATION_PARALLEL_EVENT_SERVICE_ERROR
   eng "Event service can not add or remove an event. (errno: %d - %s)"
 
+ER_PARALLEL_ROW_CHANNEL_TX_ERROR
+  eng "Parallel query operator failed to send or receive row. (errno: %d - %s)"
+
 ################################################################################
 # DO NOT add messages for the error-log to this file;
 # they go in messages_to_error_log.txt in the same

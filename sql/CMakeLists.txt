@@ -578,6 +578,7 @@ SET(SQL_SHARED_SOURCES
   xa.cc
   parallel_query/message_queue.cc
   parallel_query/row_channel.cc
+  parallel_query/row_channel_tcp.cc
   parallel_query/row_segment.cc
   parallel_query/event_service.cc
   parallel_query/merge_sort.cc

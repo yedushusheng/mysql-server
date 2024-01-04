@@ -127,23 +127,47 @@ bool Worker::Init(comm::Event *comm_event) {
   debug_sync_clone_actions(&m_thd, m_leader_thd);
 #endif
 
+  comm::RowChannel::Type row_channel_type{comm::RowChannel::Type::MEM};
+
+  DBUG_EXECUTE_IF("pq_use_tcp_row_channel",
+                  { row_channel_type = comm::RowChannel::Type::TCP; });
+  DBUG_EXECUTE_IF("pq_use_mixed_row_channel", {
+    row_channel_type = m_id % 2 == 0 ? comm::RowChannel::Type::MEM
+                                     : comm::RowChannel::Type::TCP;
+  });
+
   // Parameter nullptr means allocating message queue in leader's mem_root,
   // This assures leader can read message queue when workers exit.
-  if (!(m_receiver_channel =
-            comm::CreateMemRowChannel(m_leader_thd->mem_root, nullptr)) ||
-      m_receiver_channel->Init(m_leader_thd, comm_event) ||
-      !(m_sender_channel =
-            comm::CreateMemRowChannel(m_thd.mem_root, m_receiver_channel)) ||
-      m_sender_channel->Init(&m_thd, m_sender_exchange.event()))
-    return true;
+  if (row_channel_type == comm::RowChannel::Type::MEM) {
+    if (!(m_receiver_channel =
+              comm::CreateMemRowChannel(m_leader_thd->mem_root, nullptr)) ||
+        m_receiver_channel->Init(m_leader_thd, comm_event, true) ||
+        !(m_sender_channel =
+              comm::CreateMemRowChannel(m_thd.mem_root, m_receiver_channel)) ||
+        m_sender_channel->Init(&m_thd, m_sender_exchange.event(), false))
+      return true;
+  } else {
+    assert(row_channel_type == comm::RowChannel::Type::TCP);
+    int sock = -1;
+    if (!(m_receiver_channel =
+              comm::CreateTcpRowChannel(m_leader_thd->mem_root, &sock)) ||
+        m_receiver_channel->Init(m_leader_thd, comm_event, true) ||
+        !(m_sender_channel =
+              comm::CreateTcpRowChannel(m_thd.mem_root, &sock)) ||
+        m_sender_channel->Init(&m_thd, m_sender_exchange.event(), false))
+      return true;
+  }
 
   if (m_sender_exchange.Init(m_leader_thd->mem_root, 1,
                              [this](uint) { return m_sender_channel; }))
     return true;
 
-  comm::SetPeerEventForMemChannel(m_receiver_channel,
-                                  m_sender_exchange.event());
-  comm::SetPeerEventForMemChannel(m_sender_channel, comm_event);
+  // Only shared memory message queue needs this.
+  if (row_channel_type == comm::RowChannel::Type::MEM) {
+    comm::SetPeerEventForMemChannel(m_receiver_channel,
+                                    m_sender_exchange.event());
+    comm::SetPeerEventForMemChannel(m_sender_channel, comm_event);
+  }
 
   if (m_leader_thd->lex->is_explain_analyze)
     m_query_plan_timing_data.reset(new std::string);
