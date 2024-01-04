@@ -70,7 +70,7 @@ bool MergeSortElement::alloc_and_make_sortkey(Sort_param *param, TABLE *table) {
     m_key_length = m_key_length + inc_len;
 
     if (!(m_key = (uchar *)my_realloc(PSI_NOT_INSTRUMENTED, m_key,
-                                    m_key_length + 1, MYF(0))))
+                                      m_key_length + 1, MYF(MY_WME))))
       return true;
   }
 
@@ -273,7 +273,7 @@ MergeSort::Result MergeSort::Read(uchar **buf, comm::RowDataInfo *&rowdata) {
         return result;
     }
     if (!elem->IsEmpty()) {
-      if (FillToPriorityQueue<false>(this, elem)) return Result::OOM;
+      if (FillToPriorityQueue<false>(this, elem)) return Result::ERROR;
     } else {
       // FillElementBuffer() filled one record at least, current channel must
       // be finished if no record is filled.
@@ -294,7 +294,7 @@ MergeSort::Result MergeSort::Read(uchar **buf, comm::RowDataInfo *&rowdata) {
   // One record is returned, advance read cursor and decrease num_record, fill
   // PQ for next read.
   if (elem->PopRecord() && FillToPriorityQueue<false>(this, elem))
-    return Result::OOM;
+    return Result::ERROR;
 
   return Result::SUCCESS;
 }

@@ -39,10 +39,8 @@ class Query_result_to_collector : public Query_result_interceptor {
 
   void cleanup(THD *thd) override {
     Query_result_interceptor::cleanup(thd);
-    if (!m_row_channel->IsClosed()) {
-      m_row_exchange_writer->WriteEOF();
-      m_row_channel->Close();
-    }
+    if (!m_row_channel->IsClosed()) m_row_channel->Close();
+
     if (m_table) {
       close_tmp_table(m_table);
       free_tmp_table(m_table);
@@ -88,8 +86,7 @@ class Query_result_to_collector : public Query_result_interceptor {
     auto res = m_row_exchange_writer->Write(m_table->record[0],
                                             (size_t)m_table->s->reclength);
 
-    assert(res != comm::RowExchange::Result::ERROR &&
-           res != comm::RowExchange::Result::END);
+    assert(res != comm::RowExchange::Result::END);
 
     if (unlikely(res != comm::RowExchange::Result::SUCCESS)) return true;
 
@@ -520,10 +517,7 @@ void Worker::EndQuery() {
   thd->mem_root->Clear();
 }
 
-void Worker::NotifyAbort() {
-  m_row_exchange_writer.WriteEOF();
-  m_sender_channel->Close();
-}
+void Worker::NotifyAbort() { m_sender_channel->Close(); }
 
 Diagnostics_area *Worker::stmt_da(ha_rows *found_rows, ha_rows *examined_rows) {
   assert(!IsRunning(true));

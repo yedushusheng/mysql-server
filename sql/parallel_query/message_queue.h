@@ -50,6 +50,8 @@ class MessageQueue {
     atomic_thread_fence(std::memory_order_seq_cst);
     endpoint_info->NotifyPeer();
   }
+  /// This function must be called before Detach() so we don't need fence
+  void SetEOF() { m_eof.store(true, std::memory_order_relaxed); }
 
  protected:
   bool IsDetached() const { return m_detached.load(std::memory_order_relaxed); }
@@ -65,6 +67,7 @@ class MessageQueue {
   std::size_t Size() { return m_ring_size; }
 
   std::atomic<bool> m_detached{false};
+  std::atomic<bool> m_eof{false};
   std::atomic<std::uint64_t> m_bytes_written;
   std::atomic<std::uint64_t> m_bytes_read;
   char *m_buffer{nullptr};
@@ -86,12 +89,13 @@ class MessageQueueHandle {
     Notify counterparty that we're detaching from shared message queue.
   */
   void Detach() {
-    assert(!m_closed);
     m_queue->Detach(&m_endpoint_info);
-    SetClosed();
   }
-  inline bool IsClosed() { return m_closed; }
-  inline void SetClosed() { m_closed = true; }
+
+  /**
+    Sender will call this, tell counter-party no messages any more.
+  */
+  void SetEOF() { m_queue->SetEOF(); }
   void SetPeerEvent(MessageQueueEvent *peer_event) {
     m_endpoint_info.SetPeerEvent(peer_event);
   }
@@ -99,11 +103,6 @@ class MessageQueueHandle {
  protected:
   MessageQueue *m_queue;
   MessageQueueEndpointInfo m_endpoint_info;
-  /**
-    The flag is set which means sender/receiver does not send/receive messages
-    any more.
-  */
-  bool m_closed{false};
 
  private:
   /**

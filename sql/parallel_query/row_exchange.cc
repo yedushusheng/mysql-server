@@ -56,7 +56,7 @@ static RowChannel::Result ReadOneRow(RowChannel *channel, uchar *dest,
       break;
 
     if (buffer_all || seg != segments - 1)
-      if (curseg->buffer_data()) return RowChannel::Result::OOM;
+      if (curseg->buffer_data()) return RowChannel::Result::ERROR;
     segcodec->SetSegment(seg, dest, curseg->data, curseg->length);
   }
 
@@ -85,13 +85,11 @@ RowExchange::Result RowExchangeWriter::Write(const uchar *record,
   switch (result) {
     case RowChannel::Result::SUCCESS:
       return Result::SUCCESS;
-    case RowChannel::Result::OOM:
-      return Result::OOM;
-    case RowChannel::Result::KILLED:
-      return Result::KILLED;
     case RowChannel::Result::DETACHED:
       m_row_exchange->CloseChannel(chn);
       return Result::SUCCESS;
+    case RowChannel::Result::ERROR:
+      return Result::ERROR;
     case RowChannel::Result::WOULD_BLOCK:
       assert(0);
   }
@@ -121,9 +119,8 @@ bool RowExchangeWriter::CreateRowSegmentCodec(MEM_ROOT *mem_root,
 /// Normal collect rows from multiple workers for normal gather operator.
 class RowExchangeFIFOReader : public RowExchangeReader{
  public:
-  RowExchangeFIFOReader(RowExchange *row_exchange,
-                        std::function<bool(uint)> queue_detach_handler)
-      : RowExchangeReader(row_exchange, queue_detach_handler),
+  RowExchangeFIFOReader(RowExchange *row_exchange)
+      : RowExchangeReader(row_exchange),
         m_left_channels(row_exchange->NumChannels()) {
     assert(m_left_channels > 0);
   }
@@ -150,14 +147,14 @@ class RowExchangeFIFOReader : public RowExchangeReader{
     assert(m_left_channels > 0);
     uint visited = 0;
     for (;;) {
-      if (thd->killed) return Result::KILLED;
+      if (thd->killed) return Result::ERROR;
       auto result = ReadOneRow(m_row_exchange->Channel(m_next_channel), dest,
                                nbytes, true, false, &m_row_data[m_next_channel],
                                m_row_segment_codec);
       if (result == RowChannel::Result::SUCCESS) return Result::SUCCESS;
 
       if (result == RowChannel::Result::DETACHED) {
-        if (HandleQueueDetach(m_next_channel)) return Result::ERROR;
+        m_row_exchange->CloseChannel(m_next_channel);
         m_left_channels--;
 
         if (unlikely(m_left_channels == 0)) break;
@@ -166,10 +163,8 @@ class RowExchangeFIFOReader : public RowExchangeReader{
         continue;
       }
 
-      // Could be OOM or END
-      if (result == RowChannel::Result::OOM) return Result::OOM;
-      if (result == RowChannel::Result::KILLED) return Result::KILLED;
-
+      // Could be ERROR
+      if (result == RowChannel::Result::ERROR) return Result::ERROR;
       assert(result == RowChannel::Result::WOULD_BLOCK);
 
       /*
@@ -206,9 +201,8 @@ class RowExchangeFIFOReader : public RowExchangeReader{
 /// Collect rows for multiple workers for gather operator with merge sort
 class RowExchangeMergeSortReader : public RowExchangeReader, MergeSortSource {
  public:
-  RowExchangeMergeSortReader(RowExchange *row_exchange, Filesort *filesort,
-                             std::function<bool(uint)> queue_detach_handler)
-      : RowExchangeReader(row_exchange, queue_detach_handler),
+  RowExchangeMergeSortReader(RowExchange *row_exchange, Filesort *filesort)
+      : RowExchangeReader(row_exchange),
         m_filesort(filesort),
         m_mergesort(this) {}
 
@@ -234,10 +228,6 @@ class RowExchangeMergeSortReader : public RowExchangeReader, MergeSortSource {
         return Result::SUCCESS;
       case MergeSort::Result::END:
         return Result::END;
-      case MergeSort::Result::KILLED:
-        return Result::KILLED;
-      case MergeSort::Result::OOM:
-        return Result::OOM;
       case MergeSort::Result::ERROR:
         return Result::ERROR;
       case MergeSort::Result::NODATA:
@@ -259,16 +249,14 @@ class RowExchangeMergeSortReader : public RowExchangeReader, MergeSortSource {
     switch (result) {
       case RowChannel::Result::SUCCESS:
         break;
-      case RowChannel::Result::OOM:
-        return MergeSort::Result::OOM;
-      case RowChannel::Result::KILLED:
-        return MergeSort::Result::KILLED;
       case RowChannel::Result::DETACHED:
-        if (unlikely(HandleQueueDetach(index))) return MergeSort::Result::ERROR;
+        m_row_exchange->CloseChannel(index);
         return MergeSort::Result::NODATA;
       case RowChannel::Result::WOULD_BLOCK:
         // no wait , return now
         return MergeSort::Result::NODATA;
+      case RowChannel::Result::ERROR:
+        return MergeSort::Result::ERROR;
     }
 
     assert(result == RowChannel::Result::SUCCESS);
@@ -281,14 +269,12 @@ class RowExchangeMergeSortReader : public RowExchangeReader, MergeSortSource {
   MergeSort m_mergesort;
 };
 
-RowExchangeReader *CreateRowExchangeReader(
-    MEM_ROOT *mem_root, RowExchange *row_exchange, TABLE *table,
-    Filesort *merge_sort, std::function<bool(uint)> queue_detach_handler) {
+RowExchangeReader *CreateRowExchangeReader(MEM_ROOT *mem_root,
+                                           RowExchange *row_exchange,
+                                           TABLE *table, Filesort *merge_sort) {
   if (merge_sort)
-    return new (mem_root) RowExchangeMergeSortReader(row_exchange, merge_sort,
-                                                     queue_detach_handler);
-  auto *reader =
-      new (mem_root) RowExchangeFIFOReader(row_exchange, queue_detach_handler);
+    return new (mem_root) RowExchangeMergeSortReader(row_exchange, merge_sort);
+  auto *reader = new (mem_root) RowExchangeFIFOReader(row_exchange);
   if (!reader || reader->CreateRowSegmentCodec(mem_root, table)) return nullptr;
   return reader;
 }

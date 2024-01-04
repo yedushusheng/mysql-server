@@ -112,10 +112,8 @@ bool Collector::Init(THD *thd) {
     return true;
 
   if (!(m_row_exchange_reader = comm::CreateRowExchangeReader(
-            thd->mem_root, &m_receiver_exchange, m_table, m_merge_sort,
-            [this](uint worker) { return HandleWorkerExited(worker); })))
+            thd->mem_root, &m_receiver_exchange, m_table, m_merge_sort)))
     return true;
-
 
   // Do initialize parallel scan for tables before workers are started
   if (InitParallelScan()) return true;
@@ -201,41 +199,23 @@ void Collector::TerminateWorkers() {
   mysql_mutex_unlock(&m_worker_state_lock);
 }
 
-bool Collector::HandleWorkerExited(uint windex) {
-  assert(windex < m_workers.size());
-  auto *worker = m_workers[windex];
+Collector::CollectResult Collector::Read(THD *thd) {
+  auto res = m_row_exchange_reader->Read(thd, m_table->record[0],
+                                         m_table->s->reclength);
+  if (res == CollectResult::SUCCESS) ++thd->status_var.pq_rows_exchanged;
 
-  return worker->is_error();
-}
-
-int Collector::Read(THD *thd) {
-  switch (m_row_exchange_reader->Read(thd, m_table->record[0],
-                                      m_table->s->reclength)) {
-  case comm::RowExchange::Result::SUCCESS:
-      ++thd->status_var.pq_rows_exchanged;
-      return 0;
-  case comm::RowExchange::Result::OOM:
-      return HA_ERR_OUT_OF_MEM;
-  case comm::RowExchange::Result::KILLED:
-      return HA_ERR_QUERY_INTERRUPTED;
-  case comm::RowExchange::Result::END:
-      return HA_ERR_END_OF_FILE;
-  case comm::RowExchange::Result::ERROR:
 #ifndef NDEBUG
-    {
-      bool found = false;
-      for (auto *worker : m_workers) {
-        if (worker->is_error()) {
-          found = true;
-        }
+  if (res == CollectResult::ERROR && !thd->killed && !thd->is_error()) {
+    bool found = false;
+    for (auto *worker : m_workers) {
+      if (worker->is_error()) {
+        found = true;
       }
-      assert(found);
     }
-#endif
-      return -1;
+    assert(found);
   }
-
-  return 0;
+#endif
+  return res;
 }
 
 Diagnostics_area *Collector::combine_workers_stmt_da(THD *thd,
@@ -482,7 +462,7 @@ RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector) {
 
 CollectorIterator::CollectorIterator(THD *thd, pq::Collector *collector,
                                      ha_rows *examined_rows)
-    : TableRowIterator(thd, collector->CollectorTable()),
+    : RowIterator(thd),
       m_collector(collector),
       m_examined_rows(examined_rows) {}
 
@@ -494,12 +474,16 @@ bool CollectorIterator::Init() {
 }
 
 int CollectorIterator::Read() {
-  int error;
+  using CollectResult = pq::Collector::CollectResult;
   /* Read data from workers and save it to record[0] of collector table */
-  if ((error = m_collector->Read(thd()))) {
-    // Worker exit with error, it has been processed in Collector::Read()
-    if (error < 0) return 1;
-    return HandleError(error);
+  auto res = m_collector->Read(thd());
+  if (res == CollectResult::END) return -1;
+  if (res == CollectResult::ERROR) {
+    if (thd()->killed) {
+      thd()->send_kill_message();
+      return 1;
+    }
+    return 1;
   }
 
   if (m_examined_rows != nullptr) {
