@@ -34,12 +34,15 @@ class AccessPathRewriter {
     int ref_item_slice;
   };
 
-  bool do_rewrite(AccessPath *path, AccessPath *curjoin, AccessPath *&out);
+  /// Some query can generate new access path for leader, so here @param path
+  /// could be changed by underlying rewrite routines, currently AGGREGATE
+  /// access path from select_count.
+  bool do_rewrite(AccessPath *&path, AccessPath *curjoin, AccessPath *&out);
   virtual bool end_of_out_path() { return false; }
   void set_sorting_info(SortingInfo sorting_info) {
     m_sorting_info = sorting_info;
   }
-  bool rewrite_each_access_path(AccessPath *in, AccessPath *curjoin,
+  bool rewrite_each_access_path(AccessPath *&in, AccessPath *curjoin,
                                 AccessPath *outer_path, AccessPath *&out);
 
   // See access_path.h, rewrite functions are followed same order with it.
@@ -50,6 +53,9 @@ class AccessPathRewriter {
   virtual bool rewrite_eq_ref(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_mrr(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_index_range_scan(AccessPath *, AccessPath *) {
+    return false;
+  }
+  virtual bool rewrite_unqualified_count(AccessPath *&, AccessPath *) {
     return false;
   }
 
@@ -120,6 +126,7 @@ class AccessPathParallelizer : public AccessPathRewriter {
   bool rewrite_ref_or_null(AccessPath *in, AccessPath *out) override;
   bool rewrite_eq_ref(AccessPath *in, AccessPath *out) override;
   bool rewrite_index_range_scan(AccessPath *in, AccessPath *out) override;
+  bool rewrite_unqualified_count(AccessPath *&, AccessPath *) override;
 
   bool rewrite_filter(AccessPath *in, AccessPath *out) override;
   bool rewrite_sort(AccessPath *in, AccessPath *out) override;
@@ -165,6 +172,7 @@ class PartialAccessPathRewriter : public AccessPathRewriter {
   bool rewrite_eq_ref(AccessPath *in, AccessPath *out) override;
   bool rewrite_mrr(AccessPath *in, AccessPath *out) override;
   bool rewrite_index_range_scan(AccessPath *in, AccessPath *out) override;
+  bool rewrite_unqualified_count(AccessPath *&, AccessPath *) override;
   template <typename aptype>
   bool rewrite_base_scan(aptype &out, uint keyno);
   template <typename aptype>
