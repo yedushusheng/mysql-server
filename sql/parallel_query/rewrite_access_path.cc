@@ -125,15 +125,22 @@ bool AccessPathRewriter::do_rewrite(AccessPath *&path, AccessPath *curjoin,
       if (do_rewrite(query_block.subquery_path, curjoin, out)) return true;
       break;
     }
+
     // MATERIALIZE_INFORMATION_SCHEMA_TABLE: not support yet.
-    // APPEND: not support yet.
+    // APPEND: union needs this, not support yet.
     // WINDOW: not support yet.
-    // WEEDOUT: not support yet.
+
+    case AccessPath::WEEDOUT:
+      if (do_rewrite(path->weedout().child, curjoin, out)) return true;
+      break;
+
     // REMOVE_DUPLICATES:  only used in hypergraph, no need.
+
     case AccessPath::REMOVE_DUPLICATES_ON_INDEX:
       if (do_rewrite(path->remove_duplicates_on_index().child, curjoin, out))
         return true;
       break;
+
     // ALTERNATIVE: not support yet.
     // CACHE_INVALIDATOR: used by recursive CTE, not support yet.
     default:
@@ -281,11 +288,20 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *&path,
       if (rewrite_materialize(path, dup, curjoin != nullptr)) return true;
       if (dup) dup->materialize().param->query_blocks[0].subquery_path = out;
       break;
+
     // MATERIALIZE_INFORMATION_SCHEMA_TABLE: not support yet.
     // APPEND: not support yet.
     // WINDOW: not support yet.
-    // WEEDOUT: not support yet.
-    // REMOVE_DUPLICATES:  only used in hypergraph, no need.
+
+    case AccessPath::WEEDOUT:
+      assert(!end_of_out_path());
+      dup = accesspath_dup(path);
+      if (rewrite_weedout(path, dup)) return true;
+      dup->weedout().child = out;
+      break;
+
+     // REMOVE_DUPLICATES:  only used in hypergraph, no need.
+
     case AccessPath::REMOVE_DUPLICATES_ON_INDEX:
       assert(!end_of_out_path());
       dup = accesspath_dup(path);
@@ -1153,6 +1169,33 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
   rewrite_temptable_scan_path(out->materialize().table_path, table,
                               m_item_clone_context);
   post_rewrite_out_path(out->materialize().table_path);
+  return false;
+}
+
+bool PartialAccessPathRewriter::rewrite_weedout(AccessPath *in,
+                                                AccessPath *out) {
+  auto *orig_sjtbl = in->weedout().weedout_table;
+  auto &weedout = out->weedout();
+  assert(orig_sjtbl->tmp_table != nullptr);
+  auto *sjtbl = new (mem_root()) SJ_TMP_TABLE(*orig_sjtbl);
+  if (!sjtbl) return true;
+  sjtbl->tabs = mem_root()->ArrayAlloc<SJ_TMP_TABLE_TAB>(orig_sjtbl->tabs_end -
+                                                         orig_sjtbl->tabs);
+  if (sjtbl->tabs == nullptr) return true;
+  sjtbl->tabs_end = std::uninitialized_copy(orig_sjtbl->tabs,
+                                            orig_sjtbl->tabs_end, sjtbl->tabs);
+  for (auto *tab = sjtbl->tabs; tab != sjtbl->tabs_end; tab++) {
+    tab->qep_tab = nullptr;
+    tab->table = find_leaf_table(tab->table);
+  }
+  sjtbl->tmp_table = create_duplicate_weedout_tmp_table(
+      m_join_out->thd, sjtbl->rowid_len + sjtbl->null_bytes, sjtbl);
+  if (sjtbl->tmp_table == nullptr) return true;
+  if (sjtbl->tmp_table->hash_field)
+    sjtbl->tmp_table->file->ha_index_init(0, false);
+  m_join_out->sj_tmp_tables.push_back(sjtbl->tmp_table);
+
+  weedout.weedout_table = sjtbl;
   return false;
 }
 

@@ -90,6 +90,9 @@ class Mem_root_array;
 */
 struct SJ_TMP_TABLE_TAB {
   QEP_TAB *qep_tab;
+  // Used in row iterator based executor, decouple QEP_TAB for parallel
+  // query execution.
+  TABLE *table;
   uint rowid_offset;
   ushort null_byte;
   uchar null_bit;

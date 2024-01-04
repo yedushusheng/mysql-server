@@ -217,6 +217,42 @@ static uint32 ChooseParallelDegreeByScanRange(
   return parallel_degree;
 }
 
+static bool is_table_for_weedout_rowids(QEP_TAB *qt,
+                                        SJ_TMP_TABLE *sj_tmp_table) {
+  if (sj_tmp_table->is_confluent) return false;
+
+  for (auto *sjt = sj_tmp_table->tabs; sjt != sj_tmp_table->tabs_end; sjt++) {
+    if (qt == sjt->qep_tab) return true;
+  }
+
+  return false;
+}
+
+static QEP_TAB *ReconsiderParallelTableForSemiJoin(QEP_TAB *qep_tab,
+                                                   QEP_TAB *qt) {
+  if (qt->get_sj_strategy() == SJ_OPT_DUPS_WEEDOUT) {
+    auto *sjtbl = qep_tab[qt->first_sj_inner()].flush_weedout_table;
+    if (is_table_for_weedout_rowids(qt, sjtbl)) return qt;
+  }
+
+  // We need rescan support for parallel scan to choose other than the 1st
+  // table. We can support other tables to do parallel scan for HASH JOIN
+  // even there is no parallel rescan. Following code did a bit hack to
+  // allow the second table to do parallel for materialized scan /
+  // duplicates weedout of semi-join testing.
+  qt = qt + 1;
+  if (qt->op_type != QEP_TAB::OT_BNL) return nullptr;
+
+  if (qt->get_sj_strategy() == SJ_OPT_DUPS_WEEDOUT) {
+    auto *sjtbl = qep_tab[qt->first_sj_inner()].flush_weedout_table;
+    if (is_table_for_weedout_rowids(qt, sjtbl)) return qt;
+  }
+
+  if (qt->first_sj_inner() == NO_PLAN_IDX) return qt;
+
+  return nullptr;
+}
+
 static bool ChooseParallelScanTable(ParallelPlan *parallel_plan, QEP_TAB *&qt,
                                     uint32 *parallel_degree,
                                     bool *specified_by_hint,
@@ -226,22 +262,14 @@ static bool ChooseParallelScanTable(ParallelPlan *parallel_plan, QEP_TAB *&qt,
   ulong scan_ranges;
   parallel_scan_desc_t scan_desc;
 
-  // Only support first table do parallel scan.
-
-  // TODO: we need rescan support for parallel scan to choose other than the
-  // 1st table. We can support other tables to do parallel scan for HASH
-  // JOIN even there is no parallel rescan. Following code did a bit hack to
-  // allow the second table to do parallel for semi-join materialized scan
-  // testing.
-  if (qt->materialize_table == QEP_TAB::MATERIALIZE_SEMIJOIN &&
-      (qt + 1)->op_type == QEP_TAB::OT_BNL) {
-    qt += 1;
-  }
-  // semi-join inner tables could not do parallel scan because we could
-  // not eliminate duplicates between workers. we need a repartition with
-  // unique.
-  if (qt->first_sj_inner() != NO_PLAN_IDX) {
-    *cause = "first_table_is_semijoin_inner_table";
+  // Normally, The table is semjoin inner table if first_sj_inner table is
+  // valid, but it is not true for duplicates weedout. It is a temporary
+  // table of semijoin materialization, currently it does not support
+  // parallel scan. So here we try the second to make test case work.
+  if ((qt->first_sj_inner() != NO_PLAN_IDX ||
+       qt->materialize_table == QEP_TAB::MATERIALIZE_SEMIJOIN) &&
+      !(qt = ReconsiderParallelTableForSemiJoin(join->qep_tab, qt))) {
+    *cause = "no_suitable_parallel_table_for_semijoin";
     return true;
   }
 
@@ -265,7 +293,7 @@ static bool ChooseParallelScanTable(ParallelPlan *parallel_plan, QEP_TAB *&qt,
                                                           specified_by_hint);
   if (*parallel_degree == parallel_disabled) {
     *cause = *specified_by_hint ? "forbidden_by_parallel_hint"
-                               : "max_parallel_degree_not_set";
+                                : "max_parallel_degree_not_set";
     return true;
   }
 
@@ -278,8 +306,7 @@ static bool ChooseParallelScanTable(ParallelPlan *parallel_plan, QEP_TAB *&qt,
     }
     // This should be in table_parallel_degree() but currently we only support
     // one table.
-    if (qt->position()->rows_fetched <
-        parallel_scan_records_threshold) {
+    if (qt->position()->rows_fetched < parallel_scan_records_threshold) {
       *cause = "table_records_less_than_threshold";
       return true;
     }
@@ -302,8 +329,8 @@ static bool ChooseParallelScanTable(ParallelPlan *parallel_plan, QEP_TAB *&qt,
 
   if (!*specified_by_hint &&
       (*parallel_degree = ChooseParallelDegreeByScanRange(
-           *parallel_degree, parallel_scan_records_threshold,
-           scan_ranges)) == parallel_disabled) {
+           *parallel_degree, parallel_scan_records_threshold, scan_ranges)) ==
+          parallel_disabled) {
     *cause = "insufficient_parallel_scan_ranges";
     return true;
   }
@@ -487,12 +514,6 @@ static void ChooseParallelPlan(JOIN *join) {
   // Loop on each table to block unsupported query
   for (uint i = 0; i < join->tables; i++) {
     auto *qt = &join->qep_tab[i];
-
-    // Weed out plan execution depends on QEP_TAB, so block it.
-    if (qt->get_sj_strategy() == SJ_OPT_DUPS_WEEDOUT) {
-      cause = "duplicateweedout_semijoin_plan_is_not_supported";
-      return;
-    }
 
     auto *table_ref = qt->table_ref;
     if (table_ref && table_ref->is_placeholder()) {

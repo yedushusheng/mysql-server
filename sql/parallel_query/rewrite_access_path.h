@@ -69,13 +69,14 @@ class AccessPathRewriter {
   virtual bool rewrite_filter(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_sort(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_aggregate(AccessPath *, AccessPath *) { return false; }
-  virtual bool rewrite_temptable_aggregate(AccessPath *, AccessPath *) = 0;
+  virtual bool rewrite_temptable_aggregate(AccessPath *in, AccessPath *out) = 0;
   virtual bool rewrite_limit_offset(AccessPath *, AccessPath *, bool) {
     return false;
   }
-  virtual bool rewrite_stream(AccessPath *, AccessPath *) = 0;
+  virtual bool rewrite_stream(AccessPath *in, AccessPath *out) = 0;
   virtual bool rewrite_materialize(AccessPath *in, AccessPath *out,
                                    bool under_join);
+  virtual bool rewrite_weedout(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_remove_duplicates_on_index(AccessPath *, AccessPath *) {
     return false;
   }
@@ -197,6 +198,7 @@ class PartialAccessPathRewriter : public AccessPathRewriter {
   bool rewrite_stream(AccessPath *in, AccessPath *out) override;
   bool rewrite_materialize(AccessPath *in, AccessPath *out,
                            bool under_join) override;
+  bool rewrite_weedout(AccessPath *in, AccessPath *out) override;
   bool rewrite_remove_duplicates_on_index(AccessPath *in,
                                           AccessPath *out) override;
 };

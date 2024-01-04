@@ -1221,6 +1221,8 @@ static AccessPath *NewWeedoutAccessPathForTables(
     if (!ContainsTable(tables_to_deduplicate, i)) {
       SJ_TMP_TABLE_TAB sj_tab;
       sj_tab.qep_tab = &qep_tabs[i];
+      // Save table for execution, make it independent with QEP_TAB.
+      sj_tab.table = qep_tabs[i].table();      
       sj_tabs.push_back(sj_tab);
 
       // See JOIN::add_sorting_to_table() for rationale.
@@ -3228,9 +3230,10 @@ int do_sj_dups_weedout(THD *thd, SJ_TMP_TABLE *sjtbl) {
 
   // 3. Put the rowids
   for (uint i = 0; tab != tab_end; tab++, i++) {
-    handler *h = tab->qep_tab->table()->file;
-    if (tab->qep_tab->table()->is_nullable() &&
-        tab->qep_tab->table()->has_null_row()) {
+    TABLE *table = tab->table;
+    handler *h = table->file;
+    assert(!tab->qep_tab || tab->qep_tab->table() == tab->table);
+    if (table->is_nullable() && table->has_null_row()) {
       /* It's a NULL-complemented row */
       *(nulls_ptr + tab->null_byte) |= tab->null_bit;
       memset(ptr + tab->rowid_offset, 0, h->ref_length);
