@@ -296,12 +296,11 @@ bool ChooseParallelScanTable(ParallelPlan *parallel_plan, QEP_TAB *&qep_tab,
     if (qt->flush_weedout_table) weedout_tmp_table = qt->flush_weedout_table;
 
     Opt_trace_object trace_qt(trace);
-    const char *choose_cause = nullptr;
     const char *refuse_cause = nullptr;
     auto trace_set_guard =
-        create_scope_guard([&trace_qt, &refuse_cause, &choose_cause]() {
+        create_scope_guard([&trace_qt, &refuse_cause, &table_by_hint]() {
           if (!refuse_cause) {
-            if (choose_cause) trace_qt.add_alnum("cause", choose_cause);
+            if (table_by_hint) trace_qt.add("force_by_parallel_hint", true);
             trace_qt.add("usable", true);
             return;
           }
