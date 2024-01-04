@@ -26,7 +26,7 @@ class Worker {
  public:
   Worker(uint id, comm::Event *state_event)
       : m_id(id), m_state_event(state_event) {}
-  virtual ~Worker();
+  virtual ~Worker() { destroy(m_receiver_channel); }
 
  public:
   // Life-cycle management interfaces
@@ -66,7 +66,6 @@ constexpr ulong default_worker_schedule_type =
     static_cast<ulong>(WorkerScheduleType::bthread);
 extern ulong worker_handling;
 
-Worker *CreateLocalWorker(uint id, comm::Event *state_event, THD *thd,
-                          PartialPlan *plan);
+Worker *CreateLocalWorker(uint id, comm::Event *state_event, PartialPlan *plan);
 }  // namespace pq
 #endif

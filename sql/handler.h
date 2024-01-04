@@ -67,6 +67,7 @@
 #include "sql/sql_const.h"       // SHOW_COMP_OPTION
 #include "sql/sql_list.h"        // SQL_I_List
 #include "sql/sql_plugin_ref.h"  // plugin_ref
+#include "sql/tdsql/parallel/parallel_defs.h"
 #include "thr_lock.h"            // thr_lock_type
 #include "typelib.h"
 
@@ -3606,18 +3607,21 @@ class Handler_share {
 };
 
 typedef void *parallel_scan_handle_t;
+typedef void *parallel_scan_range_info;
+using parallel_scan_range_assign_cbk =
+    std::function<bool(parallel_scan_range_info)>;
 
 struct parallel_scan_desc_t {
-  // REF_OR_NULL is for JT_REF_OR_NULL, there are 2 round scans, first for
-  // value ref key, second for null ref key. INDEX_GROUP_BY is for
-  // QS_TYPE_GROUP_MIN_MAX of JT_RANGE.
-  enum type_t { NORMAL, REF_OR_NULL, INDEX_GROUP_BY } type;
-  uint keynr;          // Key number for parallel scan
-  key_range *min_key;  // Min key of range scan or ref key for ref scan
-  key_range *max_key;  // Max key of range scan, same with min_key for ref
-                       // scan, null ref key for REF_OR_NULL type
-  uint16_t key_used;   // Part of keys used by parallel scan
-  bool is_asc;         // Ascending or descending order
+  uint keynr;           // Key number for parallel scan
+  bool is_ref_or_null;  // True if REF_OR_NULL
+  key_range *min_key;   // Min key of range scan or ref key for ref scan
+  key_range *max_key;   // Max key of range scan, same with min_key for ref
+                        // scan, null ref key for REF_OR_NULL type
+  uint16_t key_used;    // Part of keys used by parallel scan
+  bool is_asc;          // Ascending or descending order
+  // Call this function to assign range if scan_range_assign_fn is not nullptr
+  // otherwise use round robin, Used in init_parallel_scan() only.
+  parallel_scan_range_assign_cbk scan_range_assign_fn;
 };
 
 /**
@@ -5624,6 +5628,16 @@ class handler {
       bool type_ref_or_null MY_ATTRIBUTE((unused)),
       ulong *nranges MY_ATTRIBUTE((unused)),
       ha_rows *nrows MY_ATTRIBUTE((unused))) {
+    return HA_ERR_UNSUPPORTED;
+  }
+
+  using Dist_unit_info = void *;
+  using Fill_dist_info_cbk = std::function<void(Dist_unit_info)>;
+
+  virtual int get_distribution_info_by_scan_range(
+      uint keynr [[maybe_unused]], key_range *min_key [[maybe_unused]],
+      key_range *max_key [[maybe_unused]], bool is_ref_or_null [[maybe_unused]],
+      Fill_dist_info_cbk fill_dist_unit [[maybe_unused]]) {
     return HA_ERR_UNSUPPORTED;
   }
 

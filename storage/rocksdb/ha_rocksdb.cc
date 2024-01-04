@@ -41,6 +41,7 @@
 #include "mysys_err.h"
 #include "sql/dd/dd_onlineddl.h"
 #include "sql/dd/impl/bootstrap/bootstrap_ctx.h" // DD_bootstrap_ctx
+#include "sql/dd/info_schema/table_stats.h"
 #include "sql/debug_sync.h"
 #include "sql/error_handler.h"
 #include "sql/field.h"
@@ -59,6 +60,7 @@
 #include "sql/sql_thd_internal_api.h"
 #include "sql/sql_update.h"  //compare_records
 #include "sql/table.h"
+#include "sql/tdsql/parallel/parallel_defs.h"
 #include "sql/tdsql/ddl/correlate_option.h"
 #include "include/scope_guard.h"
 
@@ -84,6 +86,7 @@
 #include "sql/tdsql/ddl/ddl_trans.h"
 #include "sql/tdsql/ddl/ddl_worker.h"
 #include "sql/tdsql/errno.h"
+#include "sql/tdsql/query.h"
 #include "sql/tdsql/estimated_info_thread.h"
 #include "sql/tdsql/optimizer/optimizer_cond_pushdown.h"
 #include "sql/tdsql/parallel/iterator.h"
@@ -101,8 +104,20 @@
 #include "storage/rocksdb/tdsql/parallel_query.h"
 #include "storage/rocksdb/tdsql/storage_format.h"
 
+#include "sql/tdsql/background_thread.h"
+#include "sql/tdsql/background.h"
+#include "sql/strfunc.h"
+#include "sql/tztime.h"
+
 uint tdsql_max_projection_pct;
+uint tdsql_save_update_time_interval;
+uint tdsql_handler_record_buffer_size;
 extern bool tdsql_optimize_pk_point_select;
+
+namespace native_part {
+extern void part_name(char *out_buf, const char *path,
+                      const char *parent_elem_name, const char *elem_name);
+}  // namespace native_part
 
 PSI_memory_key key_memory_myrocks_estimated_info;
 
@@ -126,6 +141,109 @@ using namespace tdsql;
 #define CONVERT_TO_TDSQL_SLICE(rocksdb_slice) (tdsql::Slice(rocksdb_slice.data(),rocksdb_slice.size()))
 #define CONVERT_TO_ROCKSDB_SLICE(tdsql_slice) (rocksdb::Slice(tdsql_slice.data(),tdsql_slice.size()))
 
+void Rdb_table_handler::update(uint64_t mtcache_count, uint64_t mtcache_size, uint64_t time) {
+  std::lock_guard<tdsql::Mutex> guard(mutex_);
+  m_mtcache_count = mtcache_count;
+  m_mtcache_size = mtcache_size;
+  m_last_update_time_for_check_ = time;
+  m_last_update_time_.store(time);
+  ResetUpdateCount();
+}
+
+void Rdb_table_handler::update_table_stats(const dd::Table_stat *stat) {
+  if (!stat) {
+    return ;
+  }
+  update(stat->table_rows(), stat->data_length(), my_micro_time());
+}
+
+bool Rdb_table_handler::cache_is_expired_no_lock(uint64_t cachetime, uint64_t cur_time) {
+  if (unlikely(!cachetime)) {
+    return true;
+  }
+
+  if (cur_time > m_last_update_time_for_check_ + cachetime + time_rand_fixed_) {
+    return true;
+  }
+  return false;
+}
+
+std::string Rdb_table_handler::ToString() {
+  ardb::Buffer buff;
+  buff.Printf( "Rdb_table_handler [table=%s] [%s.%s] [m_ref_count=%d] [update_time=%llu] [update_count_=%lu] [time_rand_fixed_=%lu] [update_rate_=%.4f] [data_rows=%lu] [datasize=%lu]",
+              m_table_name.c_str(),
+              m_real_db_name.c_str(), m_real_table_name.c_str(),
+              m_ref_count.load(), GetReadableUpdateTime(), update_count_,
+              time_rand_fixed_,
+              GetUpdateRate(),
+              m_mtcache_count,
+              m_mtcache_size);
+  return buff.AsString();
+}
+
+
+std::string Rdb_table_handler::ConStructAnalyzeReloadSql() {
+  ardb::Buffer buff;
+  buff.Printf("analyze table `%s`.`%s` reload ", m_real_db_name.c_str(),
+              m_real_table_name.c_str());
+  return buff.AsString();
+}
+
+bool IsTmpTableForLogService(TABLE* table) {
+  if (table && table->s && table->s->tmp_table==INTERNAL_TMP_TABLE
+      && table->in_use && table->in_use->log_service_thread) {
+    return true;
+  }
+  return false;
+}
+
+std::string Rdb_table_handler::ConStructInsertSql() {
+  time_t now = time(NULL);
+  MYSQL_TIME time;
+  my_tz_SYSTEM->gmt_sec_to_TIME(&time, now);
+  ulonglong update_time = TIME_to_ulonglong_datetime(time);
+
+  ardb::Buffer buff;
+
+  std::lock_guard<tdsql::Mutex> guard(mutex_);
+
+  buff.Printf("insert into mysql.table_stats(schema_name, table_name, table_rows, avg_row_length, data_length, max_data_length, index_length, data_free, auto_increment, update_time, cached_time) "
+                  "values('%s', '%s', %lu, %lu, %lu, %lu, %lu, %lu, %lu, %llu, %llu);",
+      m_real_db_name.c_str(), m_real_table_name.c_str(),
+      m_mtcache_count,
+      (uint64_t)(m_mtcache_count == 0 ? 0 : m_mtcache_size/m_mtcache_count),
+      m_mtcache_size,
+      (uint64_t)(0), (uint64_t)(0), (uint64_t)(0), (uint64_t)(0),
+      update_time,
+      update_time);
+
+  return buff.AsString();
+}
+
+std::string Rdb_table_handler::ConStructUpdateSql() {
+  time_t now = time(NULL);
+  MYSQL_TIME time;
+  my_tz_SYSTEM->gmt_sec_to_TIME(&time, now);
+  ulonglong update_time = TIME_to_ulonglong_datetime(time);
+
+  ardb::Buffer buff;
+
+  std::lock_guard<tdsql::Mutex> guard(mutex_);
+
+  buff.Printf("update mysql.table_stats set table_rows=%lu, data_length=%lu, avg_row_length=%lu, cached_time=%llu "
+              " where schema_name='%s' and table_name='%s' and (cached_time < %llu  or update_time is null);",
+              m_mtcache_count,
+              m_mtcache_size,
+              (uint64_t)(m_mtcache_count == 0 ? 0 : m_mtcache_size/m_mtcache_count),
+              update_time,
+              m_real_db_name.c_str(),
+              m_real_table_name.c_str(),
+              update_time);
+
+  return buff.AsString();
+}
+
+
 /**
   Updates row counters based on the table type and operation type.
 */
@@ -138,6 +256,15 @@ void ha_rocksdb::update_row_stats(const operation_type &type) {
   else
     global_stats.rows[type].inc();
 }
+
+void ha_rocksdb::update_table_stats(const dd::Table_stat *stat) {
+  if (!m_table_handler) {
+    return ;
+  }
+
+  m_table_handler->update_table_stats(stat);
+}
+
 
 static handler *rocksdb_create_handler(my_core::handlerton *hton,
                                        my_core::TABLE_SHARE *table_arg,
@@ -187,12 +314,13 @@ namespace  // anonymous namespace = not visible outside this source file
 
 struct Rdb_open_tables_map {
   /* Hash table used to track the handlers of open tables */
+  // m_hash's Rdb_table_handler don't own refcount
   std::unordered_map<std::string, Rdb_table_handler *> m_hash;
   /* The mutex used to protect the hash table */
   mutable mysql_mutex_t m_mutex;
 
   Rdb_table_handler *get_table_handler(const char *const table_name, bool &is_create);
-  void release_table_handler(Rdb_table_handler *const table_handler);
+  void release_table_handler(Rdb_table_handler *table_handler);
 
   std::vector<std::string> get_table_names(void) const;
 };
@@ -281,6 +409,7 @@ static MYSQL_THDVAR_ULONG(bulk_load_size, PLUGIN_VAR_RQCMDARG,
                           /*default*/ RDB_DEFAULT_BULK_LOAD_SIZE,
                           /*min*/ 1,
                           /*max*/ RDB_MAX_BULK_LOAD_SIZE, 0);
+
 
 static MYSQL_SYSVAR_ULONGLONG(
     force_compute_memtable_stats_cachetime,
@@ -845,14 +974,38 @@ static bool rocksdb_is_supported_system_table(const char *,
 
 static void rocksdb_dict_cache_reset(const char *schema_name,
                                      const char *table_name) {
-  // There is no concurrency control, so just allow calling from dd system
-  // thread
-  if (!current_thd->is_dd_system_thread()) return;
   char name[FN_REFLEN];
   snprintf(name, sizeof name, "%s.%s", schema_name, table_name);
   DdlManagerLockClosure ddl_manager_lock(true);
-  Rdb_tbl_def *const tbl = ddl_manager.find(name, false);
+  std::shared_ptr<Rdb_tbl_def> const tbl = ddl_manager.find(name, false);
   if (tbl) ddl_manager.remove(tbl, false);
+}
+
+void rocksdb_dict_cache_clean_table(TABLE_SHARE *share) {
+  assert(share);
+  char base_name[FN_REFLEN];
+  snprintf(base_name, sizeof base_name, "%s.%s", share->db.str,
+           share->table_name.str);
+  DdlManagerLockClosure ddl_manager_lock(true);
+  if (share->m_part_info) {
+    (void)foreach_partition(
+        share->m_part_info,
+        [&base_name](partition_element *parent_elem,
+                     partition_element *part_elem) -> bool {
+          char name_buff[FN_REFLEN];
+          native_part::part_name(
+              name_buff, base_name,
+              parent_elem ? parent_elem->partition_name : nullptr,
+              part_elem->partition_name);
+          std::shared_ptr<Rdb_tbl_def> const tbl =
+              ddl_manager.find(name_buff, false);
+          if (tbl) ddl_manager.remove(tbl, false);
+          return false;
+        });
+  } else {
+    std::shared_ptr<Rdb_tbl_def> const tbl = ddl_manager.find(base_name, false);
+    if (tbl) ddl_manager.remove(tbl, false);
+  }
 }
 
 #if defined(HAVE_PSI_MEMORY_INTERFACE) || defined(HAVE_TDSQL_MEMORY_INTERFACE)
@@ -898,6 +1051,88 @@ static int rocksdb_start_trx_and_clone_read_view(handlerton*, THD* thd, THD* fro
   thd->set_tdsql_trans(trx);
 
   return 0;
+}
+
+class SaveUpdateTimeThread : public tdsql::BackgroundThread {
+ public:
+  SaveUpdateTimeThread()
+      : tdsql::BackgroundThread(SYSTEM_THREAD_DD_INITIALIZE) {}
+
+  virtual const char *ThreadName() const override {
+    return "myrocks_save_update_time";
+  }
+
+ private:
+  virtual void Run() override;
+};
+
+SaveUpdateTimeThread *save_update_time_thread;
+
+// use update sql to save update_time
+void myrocks_execute_update_sql([[maybe_unused]]THD *thd, const std::string &db_table,
+                                ulong time_sec) {
+  MYSQL_TIME time;
+  my_tz_SYSTEM->gmt_sec_to_TIME(&time, time_sec);
+  ulonglong update_time = TIME_to_ulonglong_datetime(time);
+
+  size_t pos = db_table.find('.');
+  if (pos == std::string::npos) {
+    LogError("db_table:%s is not legal", db_table.c_str());
+    return;
+  }
+
+  std::string db = db_table.substr(0, pos);
+  std::string table = db_table.substr(pos + 1);
+  char sql_buf[1024];
+  snprintf(
+      sql_buf, sizeof(sql_buf),
+      "update mysql.table_stats set update_time =  %llu, cached_time = %llu "
+      "where schema_name = '%s' and table_name = '%s' and (update_time < %llu "
+      "or update_time is null)",
+      update_time, update_time, db.c_str(), table.c_str(), update_time);
+
+  tdsql::global_sql_runner.SubmitSqlTask("mysql.table_stats", sql_buf);
+}
+
+void myrocks_save_update_time(THD *thd) {
+  struct Rdb_table_collector : public Rdb_tables_scanner {
+   public:
+    std::unordered_map<std::string, ulong> update_time;
+    int add_table(const std::shared_ptr<Rdb_tbl_def> &tdef) override {
+      // do not care race condition
+      if (tdef->m_update_time != 0) {
+        if (!tdef->m_is_mysql_system_table)
+          update_time[tdef->full_tablename()] = tdef->m_update_time;
+        tdef->m_update_time = 0;
+      }
+      return HA_EXIT_SUCCESS;
+    }
+  } collector;
+
+  ddl_manager.scan_for_tables(&collector);
+
+  for (auto &update_time : collector.update_time) {
+    myrocks_execute_update_sql(thd, update_time.first, update_time.second);
+  }
+}
+
+void SaveUpdateTimeThread::Run() {
+  tdsql::Bg_thread_cnt_ctx btcc("myrocks_save_update_time thread",
+                                tdsql::BACK_PR);
+  PostInit();
+  while (1) {
+    btcc.Sleep(tdsql_save_update_time_interval * 1000);
+    if (btcc.ToExit()) {
+      break;
+    }
+    myrocks_save_update_time(thd_);
+  }
+
+  Destroy();
+
+  // we do not call Stop,so delete here
+  delete thd_;
+  LogInfo("quit myrocks_save_update_time");
 }
 
 /*
@@ -946,6 +1181,10 @@ static int rocksdb_init_func(void *const p) {
     return HA_EXIT_FAILURE;
   }
 
+  save_update_time_thread = new (std::nothrow) SaveUpdateTimeThread();
+
+  save_update_time_thread->Start();
+
 #if defined(HAVE_PSI_MEMORY_INTERFACE) || defined(HAVE_TDSQL_MEMORY_INTERFACE)
   init_myrocks_psi_keys();
 #endif /* HAVE_PSI_MEMORY_INTERFACE || HAVE_TDSQL_MEMORY_INTERFACE */
@@ -981,6 +1220,8 @@ static int rocksdb_done_func(void *const) {
   // clear the initialized flag and unlock
   rdb_get_hton_init_state()->set_initialized(false);
 
+  delete save_update_time_thread;
+
   DBUG_RETURN(error);
 }
 
@@ -1005,45 +1246,26 @@ Rdb_open_tables_map::get_table_handler(const char *const table_name, bool &is_cr
   const auto &it = m_hash.find(s_table_name);
   if (it != m_hash.end()) {
     table_handler = it->second;
-
-    if (table_handler->m_ref_count++ == 0) {
-      m_hash.erase(it);
-      table_handler = nullptr;
-    }
+    assert(table_handler);
+    table_handler->add_ref();
+    assert(table_handler->m_ref_count >= 1);
+    RDB_MUTEX_UNLOCK_CHECK(m_mutex);
+    return table_handler;
   }
 
-  if (table_handler == nullptr) {
-    is_create = true;
-    // Since we did not find it in the hash map, attempt to create and add it
-    // to the hash map.
-    char *tmp_name;
-#ifdef HAVE_PSI_INTERFACE
-    if (!(table_handler = static_cast<Rdb_table_handler *>(
-              my_multi_malloc(rdb_handler_memory_key, MYF(MY_WME | MY_ZEROFILL),
-                              &table_handler, sizeof(*table_handler), &tmp_name,
-                              s_table_name.length() + 1, NullS)))) {
-#else
-    if (!(table_handler = static_cast<Rdb_table_handler *>(
-              my_multi_malloc(PSI_NOT_INSTRUMENTED, MYF(MY_WME | MY_ZEROFILL),
-                              &table_handler, sizeof(*table_handler), &tmp_name,
-                              s_table_name.length() + 1, NullS)))) {
-#endif
-      // Allocating a new Rdb_table_handler and a new table name failed.
-      RDB_MUTEX_UNLOCK_CHECK(m_mutex);
-      return nullptr;
-    }
-
-    table_handler->m_ref_count = 1;
-    table_handler->m_table_name_length = s_table_name.length();
-    table_handler->m_table_name = tmp_name;
-    my_stpmov(table_handler->m_table_name, s_table_name.c_str());
-
-    m_hash.insert({s_table_name, table_handler});
-
-    thr_lock_init(&table_handler->m_thr_lock);
-    table_handler->m_mtcache_in_queue = 0;
+  is_create = true;
+  // Since we did not find it in the hash map, attempt to create and add it
+  // to the hash map.
+  table_handler = new Rdb_table_handler(s_table_name);
+  if (!table_handler) {
+    // Allocating a new Rdb_table_handler and a new table name failed.
+    RDB_MUTEX_UNLOCK_CHECK(m_mutex);
+    return nullptr;
   }
-  assert(table_handler->m_ref_count > 0);
+
+  m_hash.insert({s_table_name, table_handler});
+
+  assert(table_handler->m_ref_count == 1);
 
   RDB_MUTEX_UNLOCK_CHECK(m_mutex);
 
@@ -1149,23 +1371,31 @@ int ha_rocksdb::read_hidden_pk_id_from_rowkey(longlong *const hidden_pk_id) {
 */
 
 void Rdb_open_tables_map::release_table_handler(
-    Rdb_table_handler *const table_handler) {
+    Rdb_table_handler *table_handler) {
   assert(table_handler != nullptr);
   assert(table_handler->m_ref_count > 0);
 
+  //after --table_handler->m_ref_count,
+  // the table_handler may be not valid,we should not use table_handler,so we use table_name cache table_handler->m_table_name
+  std::string table_name(table_handler->m_table_name);
   if (!--table_handler->m_ref_count) {
-    std::string table_name(table_handler->m_table_name);
+    table_handler = nullptr;//after --m_ref_count, table_handler is not valid
     RDB_MUTEX_LOCK_CHECK(m_mutex);
-    if (m_hash.find(table_name) != m_hash.end() && m_hash[table_name]->m_ref_count == 0) {
-      m_hash.erase(table_name);
+    std::unordered_map<std::string, Rdb_table_handler *>::iterator iter = m_hash.find(table_name);
+    //double check , after m_mutex
+    if (iter != m_hash.end() ) {
+      Rdb_table_handler *tmp = iter->second;
+      assert(tmp);
+      if (!tmp->m_ref_count){
+        m_hash.erase(iter);
+        delete tmp;
+      }
     }
     RDB_MUTEX_UNLOCK_CHECK(m_mutex);
-    my_core::thr_lock_delete(&table_handler->m_thr_lock);
-    my_free(table_handler);
   }
 }
 
-void Rdb_table_handler::release_handler() {
+void Rdb_table_handler::dec_ref_and_release() {
   rdb_open_tables.release_table_handler(this);
 }
 
@@ -1303,7 +1533,7 @@ int ha_rocksdb::convert_record_to_storage_format(
   assert(m_pk_descr != nullptr);
 
   Rdb_string_writer *const pk_unpack_info = row_info.new_pk_unpack_info;
-  int ret = m_tbl_def->ConvertRecordToStorageFormat(table,pk_unpack_info,m_storage_record);
+  int ret = m_tbl_def->ConvertRecordToStorageFormat(table, pk_unpack_info, m_storage_record);
 
   if(ret) return ret;
 
@@ -1551,9 +1781,9 @@ void ha_rocksdb::setup_field_converters() {
   m_null_bytes_in_rec = m_tbl_def->m_null_bytes_in_rec;
 }
 
-int ha_rocksdb::alloc_key_buffers(const TABLE *const table_arg,
-                                  const Rdb_tbl_def *const tbl_def_arg,
-                                  bool alloc_alter_buffers) {
+int ha_rocksdb::alloc_key_buffers(
+    const TABLE *const table_arg,
+    const std::shared_ptr<Rdb_tbl_def> &tbl_def_arg, bool alloc_alter_buffers) {
   DBUG_ENTER_FUNC();
 
   assert(m_pk_tuple == nullptr);
@@ -1724,6 +1954,7 @@ int ha_rocksdb::open(const char *const name, int, uint,
   }
 
   auto init_before_open = [this](const char *const name_, bool &is_create)->int {
+    if (IsTmpTableForLogService(table)) return HA_EXIT_SUCCESS;
     m_table_handler = rdb_open_tables.get_table_handler(name_, is_create);
 
     if (m_table_handler == nullptr) {
@@ -1749,20 +1980,12 @@ int ha_rocksdb::open(const char *const name, int, uint,
   }
 
   /* Find table def from m_ddl_hash and create one if not found. */
-  err = find_and_create_tbl_def(fullname,table_def);
+  bool closed = false;
+  err = find_and_create_tbl_def(fullname, table_def, &closed);
+  if (err) return err;
 
-  if (err) {
-    return err;
-  }
   assert(m_tbl_def);
 
-  /* Update Rdb_tbl_def according to TABLE_SHARE, if necessary. */
-  bool closed = false;
-  err = update_def_from_share_table(&closed,table_def);
-  if (err) {
-    return err;
-  }
-  /* update_def_from_share_table released m_table_handler. */
   if (closed) {
     table_handler_is_create = false;
     err = init_before_open(name, table_handler_is_create);
@@ -1803,8 +2026,21 @@ int ha_rocksdb::open(const char *const name, int, uint,
 
   setup_field_converters();
 
+  //SystemTable should compute range statistics(can't reload table statistics to avoid recursive calls)
+  //for user table ,next info() will reload statistics
   if (table_handler_is_create) {
-    need_update_table_cache(false);
+    if (IsSystemTable(m_table_handler->m_real_db_name.c_str(), m_table_handler->m_real_table_name.c_str())) {
+      need_update_table_cache(false, false);
+    } else {
+      if(!dd::info_schema::reload_table_stats(current_thd, m_table_handler->m_real_db_name.c_str(),
+                                               m_table_handler->m_real_table_name.c_str(), this)) {// if ok, m_table_handler->GetCacheTime() is not 0
+        LogInfo("first init dd::info_schema::reload_table_stats table[%s.%s] status success",
+                m_table_handler->m_real_db_name.c_str(), m_table_handler->m_real_table_name.c_str());
+      } else {
+        LogError("first init dd::info_schema::reload_table_stats table[%s.%s] status fail",
+                 m_table_handler->m_real_db_name.c_str(), m_table_handler->m_real_table_name.c_str());
+      }
+    }
   }
 
   if (info(HA_STATUS_NO_LOCK | HA_STATUS_VARIABLE | HA_STATUS_CONST)) {
@@ -2039,6 +2275,10 @@ int ha_rocksdb::close(void) {
     m_parallel_thomas_put.reset(nullptr);
   }
 
+  if (IsTmpTableForLogService(table) && m_tbl_def) {
+    delete_tbl_def_cache();
+  }
+
   DBUG_RETURN(HA_EXIT_SUCCESS);
 }
 
@@ -2268,28 +2508,29 @@ int ha_rocksdb::create(const char *const name, TABLE *const table_arg,
   std::string str;
   int err;
 
-  Rdb_tbl_def *rdb_tbl_def = get_table_if_exists(name);
-  if (rdb_tbl_def != nullptr) {
-    if (thd->lex->sql_command == SQLCOM_TRUNCATE) {
-      err = delete_table(name, table_def);
-      if (err != HA_EXIT_SUCCESS) {
-        return err;
+  std::shared_ptr<Rdb_tbl_def> rdb_tbl_def = get_table_if_exists(name);
+  if (rdb_tbl_def) {
+    // get_table_if_exists and delete_tbl_def acquire ddl_manager.rwlock
+    // respectively. These two operations are not atomic and acceptable because
+    // ha_rocksdb::create only takes place in CREATE TABLE and DDL is exclusive.
+    err = delete_tbl_def(rdb_tbl_def);
+    bool is_truncate = (thd->lex->sql_command == SQLCOM_TRUNCATE);
+    if (err != HA_EXIT_SUCCESS) {
+      if (!is_truncate) {
+        LogError(
+            "[delete_tbl_def failed][A remaining table def needs to be removed "
+            "from ddl_manager before creating a new table with an identical "
+            "name][table:%s][rdb_tbl_def:%s][query:%s]",
+            name, rdb_tbl_def->to_string().data(), thd->query().str);
       }
-    } else {
-      std::string def_str = rdb_tbl_def->to_string();
-      /* See ha_rocksdb::delete_tbl_def. */
-      err = delete_tbl_def(rdb_tbl_def);
-      if (err != HA_EXIT_SUCCESS) {
-        LogError("delete_tbl_def fail. A remaining table def needs to be "
-            "removed from ddl_manager before creating a new table with an "
-            "identical name. table name:%s, rdb_tbl_def:%s, query=%s",
-            name, def_str.data(), thd->query().str);
-        return err;
-      }
-      LogDebug("delete_tbl_def succeed. A remaining table def needs to be "
-          "removed from ddl_manager before creating a new table with an "
-          "identical name. table name:%s, rdb_tbl_def:%s, query=%s",
-          name, def_str.data(), thd->query().str);
+      return err;
+    }
+    if (!is_truncate) {
+      LogDebug(
+          "[delete_tbl_def OK][A remaining table def needs to be removed "
+          "from ddl_manager before creating a new table with an identical "
+          "name][table:%s][rdb_tbl_def:%s][query:%s]",
+          name, rdb_tbl_def->to_string().data(), thd->query().str);
     }
   }
 
@@ -2302,10 +2543,8 @@ int ha_rocksdb::create(const char *const name, TABLE *const table_arg,
   err = create_tbl_def(name, table_arg, create_info, table_def);
 
   if (err == HA_EXIT_SUCCESS) {
-    LogDebug("Create table. TABLE_SHARE:%s.",
-                     table_arg->to_string().data());
-    LogDebug("Create table. Rdb_tbl_def:%s",
-                     m_tbl_def->to_string().data());
+    LogDebug("[create_tbl_def OK][table:%s][m_tbl_def:%s]",
+             table_arg->to_string().data(), m_tbl_def->to_string().data());
   }
 
   return err;
@@ -2358,14 +2597,14 @@ bool ha_rocksdb::table_id_equals_pk_id(TABLE *const table_arg) {
 
   NOTE: Don't bother cleaning up index data as the server which executed DROP has cleaned it up.
 */
-int ha_rocksdb::delete_tbl_def(Rdb_tbl_def *tbl) {
+int ha_rocksdb::delete_tbl_def(const std::shared_ptr<Rdb_tbl_def> &tbl) {
   assert(tbl != nullptr);
 
   /*
     Remove the table entry in data dictionary (this will also remove it from
     the persistent data dictionary).
   */
-  ddl_manager.remove(tbl, true/*lock*/);
+  ddl_manager.remove(tbl, true /*lock*/);
 
   return HA_EXIT_SUCCESS;
 }
@@ -2399,7 +2638,8 @@ int ha_rocksdb::create_tbl_def(const char *const name, TABLE *const table_arg,
 */
 int ha_rocksdb::create_tbl_def(const std::string &str, TABLE *const table_arg,
                                HA_CREATE_INFO *const create_info,
-                               const dd::Table *table_def, const bool &lock) {
+                               const dd::Table *table_def, const bool lock,
+                               const bool put_in_ddl_manager) {
   assert(!str.empty());
   assert(!IS_NULLPTR(table_arg));
   assert(!IS_NULLPTR(create_info));
@@ -2452,7 +2692,9 @@ int ha_rocksdb::create_tbl_def(const std::string &str, TABLE *const table_arg,
     }
   }
 
-  err = ddl_manager.put(m_tbl_def, lock);
+  if (put_in_ddl_manager && !IsTmpTableForLogService(table)) {
+    err = ddl_manager.put(m_tbl_def, lock);
+  }
   if (err != HA_EXIT_SUCCESS) {
     delete_tbl_def_cache();
     return err;
@@ -2462,43 +2704,136 @@ int ha_rocksdb::create_tbl_def(const std::string &str, TABLE *const table_arg,
 }
 
 int ha_rocksdb::find_and_create_tbl_def(const std::string &fullname,
-                                        const dd::Table *table_def) {
+                                        const dd::Table *table_def,
+                                        bool *closed) {
   int err = HA_EXIT_SUCCESS;
+  /*
+    Compatibility.
+    create_info is used to pass autoinc val and it's meaningless because
+    we are not in a real CREATE TABLE. Only a real CREATE TABLE sets up
+    initial autoinc value.
+  */
+  HA_CREATE_INFO ci;
 
-  DdlManagerLockClosure ddl_mgr_lock_closure(true/*wrlock*/);
+  DdlManagerLockClosure ddl_mgr_lock_closure(true /*wrlock*/);
 
-  m_tbl_def = ddl_manager.find(fullname, false/*lock*/);
+  if (!IsTmpTableForLogService(table)) {
+    m_tbl_def = ddl_manager.find(fullname, false /*lock*/);
+  }
 
   if (m_tbl_def == nullptr) {
     /* Occasion: Server#1 created table t1 and server#2 tries to access it. */
-    LogDebug("Attempt to open a table that is not present in "
-                     "ddl_manager.m_ddl_hash. Try to create one according "
-                     "to server layer dd. table:%s", fullname.data());
-    /*
-      Compatibility.
-      create_info is used to pass autoinc val and it's meaningless because
-      we are not in a real CREATE TABLE. Only a real CREATE TABLE sets up
-      initial autoinc value.
-    */
-    HA_CREATE_INFO ci;
-    err = create_tbl_def(fullname, table, &ci, table_def,false/*lock*/);
+    LogDebug(
+        "Attempt to open a table that is not present in "
+        "ddl_manager.m_ddl_hash. Try to create one according to server layer "
+        "dd. table:%s",
+        fullname.data());
+    err = create_tbl_def(fullname, table, &ci, table_def, false /*lock*/,
+                         true /*put_in_ddl_manger*/);
     if (err) {
-      LogError("Attempt to open a table that is not present in "
-                      "ddl_manager.m_ddl_hash. Failed to create table "
-                      "object according to server layer dd. "
-                      "table:%s", fullname.data());
+      LogError(
+          "Attempt to open a table that is not present in "
+          "ddl_manager.m_ddl_hash. Failed to create table object according to "
+          "server layer dd. table:%s",
+          fullname.data());
       return err;
     }
-    LogDebug("Attempt to open a table that is not present in "
-                     "ddl_manager.m_ddl_hash. Succeed creating table "
-                     "object according to server layer dd. "
-                     "Rdb_tbl_def:%s", m_tbl_def->to_string().data());
+    LogDebug(
+        "Attempt to open a table that is not present in "
+        "ddl_manager.m_ddl_hash. Succeed creating table object according to "
+        "server layer dd. Rdb_tbl_def:%s",
+        m_tbl_def->to_string().data());
+    return err;
+  }
+
+  // Found rdb_tbl_def from ddl_manager.m_ddl_hash.
+  LogDebug("Open table from ddl_manager.m_ddl_hash. table:%s, m_tbl_def:%s",
+           table->to_string().data(), m_tbl_def->to_string().data());
+
+  // Compare table and m_tbl_def.
+  // Table comes from SQL layer.
+  // m_tbl_def comes from ddl_manager.m_ddl_hash.
+  int cmp = cmp_tbl_def_and_table();
+  if (cmp == 0) return err;
+
+  // m_tbl_def is different to table.
+  // Create an Rdb_tbl_def according to TABLE (and TABLE_SHARE) and bind
+  // it to m_tbl_def. If table is newer than m_tbl_def, put the created
+  // rdb_tbl_def into ddl_manager.m_ddl_hash.
+  std::string dbname_tblname = m_tbl_def->full_tablename();
+  err = close();
+  if (err) return err;
+  *closed = true;
+
+  bool put_in_ddl_manager = (cmp < 0);
+  err = create_tbl_def(fullname, table, &ci, table_def, false /*lock*/,
+                       put_in_ddl_manager);
+  if (err) {
+    LogError("[create_tbl_def failed][table is %s than m_tbl_def][query:%s]",
+             put_in_ddl_manager ? "newer" : "older",
+             table->in_use->query().str);
   } else {
-    LogDebug("Open table from ddl_manager.m_ddl_hash. Rdb_tbl_def:%s",
-                     m_tbl_def->to_string().data());
+    LogDebug("[create_tbl_def OK][table is %s than m_tbl_def][query:%s]",
+             put_in_ddl_manager ? "newer" : "older",
+             table->in_use->query().str);
   }
 
   return err;
+}
+
+// Compare tindex_id, schema_version and indexes of m_tbl_def and table.
+// return 0: m_tbl_def == table, equal definition.
+//       -1: m_tbl_def < table, m_tbl_def is older.
+//        1: m_tbl_def > table, m_tbl_def is newer.
+int ha_rocksdb::cmp_tbl_def_and_table() {
+#ifndef NDEBUG
+  if (is_partition_table()) dbg_assert_part_elem(table);
+#endif
+  // Compare tindex_id:
+  // If tindex_id are different, the one with larger tindex_id is the new
+  // version (because tindex_id is not reused).
+  auto table_tindex_id =
+      is_partition_table() ? m_part_elem->tindex_id : table->s->tindex_id;
+  if (m_tbl_def->m_tindex_id < table_tindex_id) return -1;
+  if (m_tbl_def->m_tindex_id > table_tindex_id) return 1;
+
+  // Compare schema_version:
+  // If schema_version are different, the one with larger schema_version is the
+  // new version (because schema_version is always incremented by 1).
+  if (m_tbl_def->m_schema_version < table->schema_version) return -1;
+  if (m_tbl_def->m_schema_version > table->schema_version) return 1;
+
+  // Compare indexes
+  //
+  // Why compare indexes ?
+  // Identical tindex_id and schema_version are not enough to account for
+  // identical Rdb_tbl_def and Table(or TABLE_SHARE).
+  // Please see
+  // https://git.woa.com/tdsql3.0/SQLEngine/issues/1453#note_92526744.
+  //
+  // What if indexes are different ?
+  // If indexes are different, cannot determine which is new or old, treat TABLE
+  // as new version.
+  // - New version TABLE_SHARE, old version Rdb_tbl_def:
+  //   Other nodes did DDL, this node is late to know.
+  //   TABLE_SHARE is updated according to DDL, but rdb_tbl_def is still behind
+  //
+  // - Old version TABLE_SHARE, new version Rdb_tbl_def:
+  //   DML and DDL concurrency.
+  //   A DML holds old version TABLE_SHARE, not reached ha_rocksdb::open yet.
+  //   A DDL updated new version rdb_tbl_def to ddl_manger.m_ddl_hash.
+  //   Then the DML reaches ha_rocksdb::open, sees new version from m_ddl_hash
+  //   and it creates rdb_tbl_def based on old share and puts the rdb_tbl_def
+  //   to m_ddl_hash, then m_ddl_hash becomes old version again.
+  //   A next DML will use new TABLE_SHARE, create a new version rdb_tbl_def and
+  //   put it into m_ddl_hash.
+  if (is_partition_table()) {
+    if (!m_tbl_def->has_the_same_key(table, m_part_elem)) return -1;
+  } else {
+    if (!m_tbl_def->has_the_same_key(table)) return -1;
+  }
+
+  return 0;
 }
 
 /**
@@ -2594,6 +2929,8 @@ int ha_rocksdb::read_row_from_primary_key(uchar *const buf) {
 
   /* Unpack from the row we've read */
   const rocksdb::Slice &value = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->value());
+  m_retrieved_record.Reset();
+  m_retrieved_record.PinSelf(value);
   rc = convert_record_from_storage_format(&rkey, &value, buf);
 
   return rc;
@@ -3810,10 +4147,9 @@ bool ha_rocksdb::commit_in_the_middle(THD *thd) {
 }
 
 /* Returns true if given index number is usable*/
-bool ha_rocksdb::index_is_usable(tdsql::Transaction* tx,
-                                 const uint index,
-                                 const TABLE *const table_arg,
-                                 const Rdb_tbl_def *const tbl_def_arg) {
+bool ha_rocksdb::index_is_usable(
+    tdsql::Transaction *tx, const uint index, const TABLE *const table_arg,
+    const std::shared_ptr<Rdb_tbl_def> &tbl_def_arg) {
   assert(table_arg != nullptr);
   assert(table_arg->s != nullptr);
   assert(tbl_def_arg != nullptr);
@@ -3888,13 +4224,9 @@ bool ha_rocksdb::index_is_usable(tdsql::Transaction* tx,
 
 /* Returns index of primary key */
 uint ha_rocksdb::pk_index(const TABLE *const table_arg,
-                          const Rdb_tbl_def *const tbl_def_arg) {
-  assert(table_arg != nullptr);
-  assert(table_arg->s != nullptr);
-  assert(tbl_def_arg != nullptr);
-
-  return table_arg->s->primary_key == MAX_INDEXES ? tbl_def_arg->m_key_count - 1
-                                                  : table_arg->s->primary_key;
+                          const std::shared_ptr<Rdb_tbl_def> &tbl_def_arg) {
+  assert(tbl_def_arg);
+  return tbl_def_arg->pk_index(table_arg);
 }
 
 uint ha_rocksdb::max_supported_key_part_length(
@@ -3904,9 +4236,9 @@ uint ha_rocksdb::max_supported_key_part_length(
                                    : MAX_INDEX_COL_LEN_SMALL);
 }
 
-const char *ha_rocksdb::get_key_comment(const uint index,
-                                        const TABLE *const table_arg,
-                                        const Rdb_tbl_def *const tbl_def_arg) {
+const char *ha_rocksdb::get_key_comment(
+    const uint index, const TABLE *const table_arg,
+    const std::shared_ptr<Rdb_tbl_def> &tbl_def_arg) {
   assert(table_arg != nullptr);
   assert(tbl_def_arg != nullptr);
 
@@ -4002,6 +4334,7 @@ int ha_rocksdb::write_row(uchar *const buf) {
   }
 
   if (rv == 0) {
+    m_table_handler->AddUpdateCount(1);
     update_row_stats(ROWS_INSERTED);
   }
 
@@ -4026,7 +4359,7 @@ int ha_rocksdb::write_row(uchar *const buf) {
 */
 void ha_rocksdb::set_last_rowkey(const uchar *const old_data) {
   if (old_data && table->correlate_src_table) {
-    set_last_rowkey_inner(old_data);
+    set_last_rowkey_inner(old_data, &m_pk_unpack_info);
   }
 #if defined(ROCKSDB_INCLUDE_RFR) && ROCKSDB_INCLUDE_RFR
   if (old_data && use_read_free_rpl()) {
@@ -4035,10 +4368,11 @@ void ha_rocksdb::set_last_rowkey(const uchar *const old_data) {
 #endif  // defined(ROCKSDB_INCLUDE_RFR) && ROCKSDB_INCLUDE_RFR
 }
 
-void ha_rocksdb::set_last_rowkey_inner(const uchar *const old_data) {
+void ha_rocksdb::set_last_rowkey_inner(const uchar *const old_data,
+                                       Rdb_string_writer *pk_unpack_info) {
   if (old_data) {
     const int old_pk_size = m_pk_descr->pack_record(
-        table, m_pack_buffer, old_data, m_pk_packed_tuple, nullptr, false);
+        table, m_pack_buffer, old_data, m_pk_packed_tuple, pk_unpack_info, false);
     m_last_rowkey.copy((const char *)m_pk_packed_tuple, old_pk_size,
                        &my_charset_bin);
   }
@@ -4311,7 +4645,7 @@ int ha_rocksdb::check_and_lock_sk(const uint &key_id,
       // 7. T1: commit (success)
       // 8. T2: commit (conflict because of T1 and T2 delete [sk_index_id, sk_value])
       set_write_fence(&kd);
-      rc = rpc_del_record(row_info.tx, new_slice);
+      rc = rpc_del_record(row_info.tx, new_slice, false/*with_extra_info*/);
     }
   }
   if (sk_iter) {
@@ -4424,7 +4758,7 @@ int ha_rocksdb::update_pk(const Rdb_key_def &kd,
   /* TDSQL: we skip the optimization of single delete */
   if (!hidden_pk && (pk_changed || ((row_info.old_pk_slice.size() > 0) &&
                                     can_use_single_delete(key_id)))) {
-    rc = rpc_del_record(row_info.tx, row_info.old_pk_slice);
+    rc = rpc_del_record(row_info.tx, row_info.old_pk_slice, true/*with_extra_info*/);
     if (rc != HA_EXIT_SUCCESS) {
       // return row_info.tx->set_status_error(table->in_use, rc, kd, m_tbl_def);
       return rc;
@@ -4456,7 +4790,7 @@ int ha_rocksdb::update_pk(const Rdb_key_def &kd,
     }
 
     rc = row_info.tx->StmtOptimizeLoadDataCacheRecord(
-        CONVERT_TO_TDSQL_SLICE(row_info.new_pk_slice),
+        m_part_pos, CONVERT_TO_TDSQL_SLICE(row_info.new_pk_slice),
         CONVERT_TO_TDSQL_SLICE(value_slice), true /*primary_record*/);
 
   } else if (rocksdb_enable_bulk_load_api &&
@@ -4551,7 +4885,7 @@ int ha_rocksdb::update_sk(const TABLE *const table_arg, const Rdb_key_def &kd,
     */
     old_key_slice = rocksdb::Slice(
         reinterpret_cast<const char *>(m_sk_packed_tuple_old), old_packed_size);
-    rc = rpc_del_record(row_info.tx, old_key_slice);
+    rc = rpc_del_record(row_info.tx, old_key_slice, false/*with_extra_info*/);
     if (rc != HA_EXIT_SUCCESS) {
       return rc;
     }
@@ -4581,7 +4915,7 @@ int ha_rocksdb::update_sk(const TABLE *const table_arg, const Rdb_key_def &kd,
     }
 
     rc = row_info.tx->StmtOptimizeLoadDataCacheRecord(
-        CONVERT_TO_TDSQL_SLICE(new_key_slice),
+        m_part_pos, CONVERT_TO_TDSQL_SLICE(new_key_slice),
         CONVERT_TO_TDSQL_SLICE(new_value_slice), false /*primary_record*/);
 
   } else if (bulk_load_sk &&
@@ -4630,6 +4964,45 @@ int ha_rocksdb::update_indexes(const struct update_row_info &row_info,
   }
 
   return HA_EXIT_SUCCESS;
+}
+
+int ha_rocksdb::HandleStmtOptimizeLoadDataDuplicateEntry(int ret) {
+  assert(ret == HA_ERR_FOUND_DUPP_KEY);
+  THD *thd = table->in_use;
+  tdsql::Transaction *tx = thd->get_tdsql_trans();
+  assert(tx && tx->stmt_optimize_load_data());
+
+  // If OptimizeLoadData returns HA_ERR_FOUND_DUPP_KEY, it's must be the
+  // user-defined primary key and the key number of primary key is 0.
+  m_dupp_errkey = table->s->primary_key;
+  assert(m_dupp_errkey == 0);
+  const Rdb_key_def &kd = *m_key_descr_arr[m_dupp_errkey];
+
+  setup_read_decoders();  // used by convert_record_from_storage_format.
+  DuplicateEntry dup_entry;
+  while (!tx->StmtOptimizeLoadDataPopDuplicateEntry(m_part_pos, &dup_entry)) {
+    rocksdb::Slice dup_entry_key(dup_entry.key.str, dup_entry.key.length);
+    rocksdb::Slice dup_entry_val(dup_entry.val.str, dup_entry.val.length);
+    if (convert_record_from_storage_format(&dup_entry_key, &dup_entry_val,
+                                           table->record[0])) {
+      assert(0);
+      LogError(
+          "[Found duplicate entry but can not unpack it]"
+          "[table:%s.%s][index:%s][key:%s][value:%s]",
+          table->s->db.str, table->s->table_name.str, kd.get_name().data(),
+          dup_entry_key.ToString(true /*hex*/).data(),
+          dup_entry_val.ToString(true /*hex*/).data());
+      return HA_ERR_ROCKSDB_CORRUPT_DATA;
+    }
+    if (!table->in_use->is_error()) {
+      print_keydup_error(table, &table->key_info[kd.get_keyno()], MYF(0));
+    }
+  }
+  if (tx->StmtOptimizeLoadDataIgnore()) {
+    // E.g. INSERT IGNORE INTO t1 VALUES(1,1),(2,2),(3,3),(4,4),(5,5);
+    ret = HA_EXIT_SUCCESS;
+  }
+  return ret;
 }
 
 int ha_rocksdb::update_write_row(const uchar *const old_data,
@@ -4701,13 +5074,7 @@ int ha_rocksdb::update_write_row(const uchar *const old_data,
     rc = flush_cache_key(row_info.tx);
   }
 
-  if (use_stmt_optimize_load_data(row_info.tx)) {
-    rc = row_info.tx->FlushOptimizeLoadDataIfNecessary();
-    if (rc == HA_ERR_FOUND_DUPP_KEY) {
-      // Can't access the accurate dup ref, yet.
-      m_dupp_errkey = -1;
-    }
-  }
+  rc = FlushStmtOptimizeLoadDataIfPossible(row_info.tx, false /*force*/);
 
   if (is_error(rc)) {
      // DBUG_RETURN(HA_ERR_ROCKSDB_BULK_LOAD);
@@ -5086,7 +5453,7 @@ int ha_rocksdb::delete_row(const uchar *const buf) {
 
   // Delete primary key record
   set_write_fence();
-  if ((rc = rpc_del_record(tx, key_slice)) != HA_EXIT_SUCCESS) {
+  if ((rc = rpc_del_record(tx, key_slice, true/*with_extra_info*/)) != HA_EXIT_SUCCESS) {
     return rc;
   }
 
@@ -5116,12 +5483,13 @@ int ha_rocksdb::delete_row(const uchar *const buf) {
           reinterpret_cast<const char *>(m_sk_packed_tuple), packed_size);
       set_write_fence(&kd);
       // Deleting on secondary key doesn't need any locks:
-      if ((rc = rpc_del_record(tx, secondary_key_slice)) != HA_EXIT_SUCCESS) {
+      if ((rc = rpc_del_record(tx, secondary_key_slice, false/*with_extra_info*/)) != HA_EXIT_SUCCESS) {
         return rc;
       }
     }
   }
 
+  m_table_handler->AddUpdateCount(1);
   update_row_stats(ROWS_DELETED);
 
   if (rc == 0 && table->correlate_option
@@ -5154,15 +5522,21 @@ void ha_rocksdb::update_stats(void) {
   DBUG_VOID_RETURN;
 }
 
-void ha_rocksdb::need_update_table_cache(bool async) {
+
+void ha_rocksdb::need_update_table_cache(bool need_persist, bool async) {
+  if (IsTmpTableForLogService(table)) return;
+
+  m_table_handler->ResetWhenSubmitTask();
+
   uchar buf[Rdb_key_def::INDEX_NUMBER_SIZE * 2];
   auto r __attribute__((unused)) = get_range(pk_index(table, m_tbl_def), buf);
 
   uint row_len = m_pk_descr->max_value_length() + m_pk_descr->max_storage_fmt_length();
   if (__builtin_expect(async, 1)) {
-    tdsql::NeedUpdateTableCache(m_table_handler, buf, row_len);
+    tdsql::NeedUpdateTableCache(m_table_handler, buf, row_len, need_persist);
   } else {
-    tdsql::UpdateTableCacheSync(m_table_handler, buf, row_len);
+    tdsql::UpdateTableCacheSync(m_table_handler, buf, row_len, need_persist);
+    stats.update_time = std::max(stats.update_time, m_table_handler->m_last_update_time_.load() /1000/1000);
   }
 }
 
@@ -5176,6 +5550,9 @@ int ha_rocksdb::info(uint flag) {
 
   THD *thd = current_thd;
 
+  if (IsTmpTableForLogService(table))
+    DBUG_RETURN(HA_EXIT_SUCCESS);
+
   if (!table || !table->in_use)
     DBUG_RETURN(HA_EXIT_FAILURE);
 
@@ -5187,67 +5564,47 @@ int ha_rocksdb::info(uint flag) {
                     m_pk_descr->m_stats.m_actual_disk_size =
                         -m_pk_descr->m_stats.m_actual_disk_size;);
 
-    // update_stats();
-
-    /*
-      If any stats are negative due to bad cached stats, re-run analyze table
-      and re-retrieve the stats.
-    */
-    // if (static_cast<longlong>(stats.data_file_length) < 0 ||
-    //     static_cast<longlong>(stats.index_file_length) < 0 ||
-    //     static_cast<longlong>(stats.records) < 0) {
-    //   if (analyze(nullptr, nullptr)) {
-    //     DBUG_RETURN(HA_EXIT_FAILURE);
-    //   }
-
-    //   update_stats();
-    // }
-
-    // if number of records is hardcoded, we do not want to force computation
-    // of memtable cardinalities
-    if (stats.records == 0 || (rocksdb_force_compute_memtable_stats &&
-                               rocksdb_debug_optimizer_n_rows == 0)) {
-      // First, compute SST files stats
-      // uchar buf[Rdb_key_def::INDEX_NUMBER_SIZE * 2];
-      // auto r = get_range(pk_index(table, m_tbl_def), buf);
-      // uint64_t sz = 0;
-
-      // uint8_t include_flags = rocksdb::DB::INCLUDE_FILES;
-      // // recompute SST files stats only if records count is 0
-      // if (stats.records == 0) {
-      //   rdb->GetApproximateSizes(m_pk_descr->get_cf(), &r, 1, &sz,
-      //                            include_flags);
-      //   stats.records += sz / ROCKSDB_ASSUMED_KEY_VALUE_DISK_SIZE;
-      //   stats.data_file_length += sz;
-      // }
-      if (stats.records == 0) {
-        stats.records = tdsql_debug_table_scan_rows;
-      }
-
-      // Second, compute memtable stats. This call is expensive, so cache
-      // values computed for some time.
-      uint64_t cachetime = rocksdb_force_compute_memtable_stats_cachetime;
-      uint64_t time = (cachetime == 0) ? 0 : my_micro_time();
-      if (cachetime == 0 ||
-          time > m_table_handler->m_mtcache_last_update + cachetime) {
-
-        // the stats below are calculated from skiplist wich is a probabilistic
-        // data structure, so the results vary between test runs
-        // it also can return 0 for quite a large tables which means that
-        // cardinality for memtable only indxes will be reported as 0
-
-        need_update_table_cache(true);
-      }
-      ha_rows table_rows;
-      if (!thd->variables.range_estimation_by_histogram ||
-          estimate_table_rows_by_histogram(&table_rows))
-        table_rows = m_table_handler->m_mtcache_count;
-      stats.records = table_rows;
-      stats.data_file_length = m_table_handler->m_mtcache_size;
-
-      if (rocksdb_debug_optimizer_n_rows > 0)
-        stats.records = rocksdb_debug_optimizer_n_rows;
+    if (unlikely(stats.records == 0)) {
+      stats.records = tdsql_debug_table_scan_rows;
     }
+
+    bool need_compute_statistic = false;
+    if (flag & (HA_STATUS_FORCE_UPDATE_CACHE_SYNC |
+                HA_STATUS_FORCE_UPDATE_CACHE_ASYNC)) {
+      need_compute_statistic = true;
+    }
+    if (likely(rocksdb_force_compute_memtable_stats &&
+        rocksdb_debug_optimizer_n_rows == 0)) {
+      uint64_t cur_time = my_micro_time();
+      if ( m_table_handler->cache_is_expired_no_lock(rocksdb_force_compute_memtable_stats_cachetime, cur_time) ||
+          m_table_handler->CheckNeedReComputeAnalyzeWhenUpdate()) {
+        need_compute_statistic = true;
+      }
+    }
+
+    if (need_compute_statistic) {
+      bool need_persist = true;
+      bool async = true;
+      if (flag & HA_STATUS_FORCE_UPDATE_CACHE_SYNC) { //analyze table don't need to do persist,but will use sync mode
+        need_persist = false;
+        async = false;
+      }
+      if (unlikely(!m_table_handler->GetCacheTime() || !m_table_handler->m_mtcache_size)) {
+        async = false;
+      }
+      need_update_table_cache(need_persist, async);
+    }
+
+    ha_rows table_rows;
+    if (!thd->variables.range_estimation_by_histogram ||
+        estimate_table_rows_by_histogram(&table_rows)) {
+      table_rows = m_table_handler->m_mtcache_count;
+    }
+    stats.records = table_rows;
+    stats.data_file_length = m_table_handler->m_mtcache_size;
+
+    if (rocksdb_debug_optimizer_n_rows > 0)
+      stats.records = rocksdb_debug_optimizer_n_rows;
 
     if (stats.records != 0)
       stats.mean_rec_length = stats.data_file_length / stats.records;
@@ -5443,6 +5800,7 @@ int ha_rocksdb::update_row(const uchar *const old_data, uchar *const new_data) {
   int rv = update_write_row(old_data, new_data, false);
 
   if (rv == 0) {
+    m_table_handler->AddUpdateCount(1);
     update_row_stats(ROWS_UPDATED);
   }
 
@@ -5631,13 +5989,9 @@ int ha_rocksdb::external_lock(THD *const thd, int lock_type) {
     tdsql::Transaction *const tx = tdsql::get_or_create_tx(thd, res);
     if (res != HA_EXIT_SUCCESS) DBUG_RETURN(res);
     assert(tx);
-    res = tdsql::SetTransactionAccordingToTable(thd, table);
-    if (res != HA_EXIT_SUCCESS) DBUG_RETURN(res);
     // Update glsv that bring back by start tx msg from mc.
     tdsql::update_local_glsv_under_lock(tx->glsv());
-
     read_thd_vars(thd);
-
     m_update_scope_is_valid = false;
 
     if (skip_unique_check() && !table->correlate_src_table) {
@@ -5667,6 +6021,8 @@ int ha_rocksdb::external_lock(THD *const thd, int lock_type) {
       m_lock_rows = RDB_LOCK_WRITE;
     }
     tx->n_mysql_tables_in_use++;
+    res = tdsql::SetTransactionAccordingToTable(thd, table);
+    if (res != HA_EXIT_SUCCESS) DBUG_RETURN(res);
     rocksdb_register_tx(rocksdb_hton, thd, tx);
   }
 
@@ -5910,7 +6266,8 @@ int drop_index_internal(const tdsql::ddl::IndexInfoCollector* const indexes)
     return ret;
 }
 
-Rdb_tbl_def *ha_rocksdb::get_table_if_exists(const char *const tablename) {
+std::shared_ptr<Rdb_tbl_def> ha_rocksdb::get_table_if_exists(
+    const char *const tablename) {
   assert(tablename != nullptr);
 
   std::string str;
@@ -5941,7 +6298,7 @@ int ha_rocksdb::delete_table(const char *const tablename,
   assert(tablename != nullptr);
 
   /* Find the table in the hash */
-  Rdb_tbl_def *const tbl = get_table_if_exists(tablename);
+  std::shared_ptr<Rdb_tbl_def> const tbl = get_table_if_exists(tablename);
   if (!tbl) {
     LogInfo("Failed to find table '%s' in myrocks dictionary, "
             "it's a sign of inconsistent metadata of myrocks' "
@@ -6591,7 +6948,7 @@ bool ha_rocksdb::prepare_inplace_alter_table(
   assert(ha_alter_info != nullptr);
   assert(table_id_equals_pk_id(altered_table));
 
-  Rdb_tbl_def *new_tdef = nullptr;
+  std::shared_ptr<Rdb_tbl_def> new_tdef(nullptr);
   std::shared_ptr<Rdb_key_def> *old_key_descr = nullptr;
   std::shared_ptr<Rdb_key_def> *new_key_descr = nullptr;
   uint old_n_keys = m_tbl_def->m_key_count;
@@ -6615,9 +6972,11 @@ bool ha_rocksdb::prepare_inplace_alter_table(
     old_key_descr = m_tbl_def->m_key_descr_arr;
     new_key_descr = new std::shared_ptr<Rdb_key_def>[new_n_keys];
 
-    new_tdef = new Rdb_tbl_def(m_tbl_def->full_tablename());
+    new_tdef = std::make_shared<Rdb_tbl_def>(m_tbl_def->full_tablename());
     new_tdef->m_key_descr_arr = new_key_descr;
     new_tdef->m_key_count = new_n_keys;
+    new_tdef->m_tindex_id = m_tbl_def->m_tindex_id;
+    new_tdef->m_schema_version = new_table_def->schema_version();
 
     if (CreateKeyDefs(altered_table, new_tdef, table, m_tbl_def, m_part_pos)) {
       /* Delete the new key descriptors */
@@ -6628,7 +6987,7 @@ bool ha_rocksdb::prepare_inplace_alter_table(
         from data dictionary on cleanup (or cause double delete[]).
         */
       new_tdef->m_key_descr_arr = nullptr;
-      delete new_tdef;
+      new_tdef = nullptr;
 
       my_error(ER_KEY_CREATE_DURING_ALTER, MYF(0));
       DBUG_RETURN(HA_EXIT_FAILURE);
@@ -7197,7 +7556,7 @@ bool ha_rocksdb::commit_inplace_alter_table(
       ctx0->m_new_key_descr = nullptr;
       ctx0->m_new_tdef->m_key_descr_arr = nullptr;
 
-      delete ctx0->m_new_tdef;
+      ctx0->m_new_tdef = nullptr;
     }
 
     /* Remove uncommitted key definitions from ddl_manager */
@@ -7720,7 +8079,8 @@ int ha_rocksdb::rpc_put_record(
   }
 
   if (check_or_set_schema_version(tx->thd(), table->tindex_id,
-          table->schema_version, table->s->db.str, table->s->table_name.str)) {
+                                  table->schema_version, table->s->db.str,
+                                  table->s->table_name.str, m_tbl_def)) {
     LogError("[check_or_set_schema_version failed] [table: %s.%s]"
              "[tindex_id=%u] [schema_version=%u]", table->s->db.str,
              table->s->table_name.str,  table->tindex_id,
@@ -7875,14 +8235,11 @@ int ha_rocksdb::rpc_get_record(
 /* TDSQL: Delete normal records from TDStore */
 int ha_rocksdb::rpc_del_record(
     tdsql::Transaction* tx,
-    const rocksdb::Slice &key_slice) {
+    const rocksdb::Slice &key_slice,
+    bool with_extra_info) {
 
   if (tdsql::ddl::HandlerCheckInDDTrans(tx->thd(), table->tindex_id)) {
     return TDSQL_EXIT_FAILURE;
-  }
-
-  if (IsNoWrite((Schema_Status)(table->schema_status))) {
-    return HA_ERR_TABLE_READONLY;
   }
 
   if (IsNoWrite((Schema_Status)(table->schema_status))) {
@@ -7895,7 +8252,8 @@ int ha_rocksdb::rpc_del_record(
   }
 
   if (check_or_set_schema_version(tx->thd(), table->tindex_id,
-          table->schema_version, table->s->db.str, table->s->table_name.str)) {
+                                  table->schema_version, table->s->db.str,
+                                  table->s->table_name.str, m_tbl_def)) {
     LogError("[check_or_set_schema_version failed] [table: %s.%s]"
              "[tindex_id=%u] [schema_version=%u]", table->s->db.str,
              table->s->table_name.str,  table->tindex_id,
@@ -7904,6 +8262,40 @@ int ha_rocksdb::rpc_del_record(
   }
 
   DelRecordCntl cntl(tx->thd(), key_slice.ToString());
+
+  /*
+    Skip system tables currently, delete rpc can be called directly
+    with out get rpc in some scenes. Remember to get record again
+    just like correlate tables do once the restriction for system
+    tables is removed.
+  */
+  int ret = HA_EXIT_SUCCESS;
+  if (with_extra_info && !tdsql::IsSystemTable(table->tindex_id)) {
+    /*
+      A little tough to handle correlate table, since it would not be here
+      in a normar way(read and delete). m_retrieved_record might be empty here.
+      For example,
+      |-ha_rocksdb::update_row // src table
+      |--CorrelateOption::DeleteRow // correlate table
+      |---delete rpc // m_retrieved_record is not set
+    */
+    if (m_retrieved_record.size() == 0 && table->correlate_src_table) {
+      ret = m_tbl_def->ConvertRecordToStorageFormat(table, &m_pk_unpack_info, m_storage_record);
+      if (ret != HA_EXIT_SUCCESS) return ret;
+      // m_retrieved_record is incomplete, but enough for us.
+      m_retrieved_record.PinSelf(rocksdb::Slice(m_storage_record.ptr(), m_storage_record.length()));
+    }
+
+    if (ret == HA_EXIT_SUCCESS) {
+      uint extra_info_size = 0;
+      ret = m_tbl_def->GetExtraInfo(table, &key_slice, &m_retrieved_record, &extra_info_size);
+
+      if (ret) return ret;
+      cntl.SetExtraInfo(m_retrieved_record.data(), extra_info_size);
+    } else {
+      return ret;
+    }
+  }
   assert(cntl.get_thd() == tx->thd());
   assert(cntl.get_tx() == tx);
 
@@ -8025,150 +8417,11 @@ std::string ha_rocksdb::partition_tindex_ids_to_string() {
   return buff;
 }
 
-int ha_rocksdb::update_def_from_share_table(bool *closed,const dd::Table *table_def) {
-  assert(!IS_NULLPTR(table));
-  assert(table_id_equals_pk_id(table));
-  TABLE_SHARE *const share = table->s;
-  assert(!IS_NULLPTR(share));
-  assert(!IS_NULLPTR(m_tbl_def));
-  assert(!IS_NULLPTR(closed));
-
-  int err = HA_EXIT_SUCCESS;
-
-  /*
-    If tindex_id and schema_version of 'm_tbl_def' are different from
-    that of 'table', a new rdb_tbl_def object is to be created.
-
-    If tindex_id and schema_verson of 'm_tbl_def' are identical to
-    that of 'table' while keys' definitions are different, a new
-    rdb_tbl_def object is to be created, too.
-
-    The occasion where 'm_tbl_def' and 'table' get the same version but
-    different keys' definition is like:
-    Assume there was a table 't' with its initial schema_version being 1.
-    Added an index i1 on t and t's schema_version became 2. (Name it t(2) for an easy illustration.)
-    Inserted a record R into t. (The record version of R is 2.)
-    Removed the index i1 from t and t's schema version became 3.
-    Added an index i2 on t and t's schema version became 4.
-    Removed the index i2 from t and t's schema version became 5.
-    Now t is of version 5.
-    Do a 'SELECT * FROM t' and R in key-value format is fetched.
-    R is of version 2 so an old-styled table of version 2
-    is required to resolve the key-value R. Now that the current table's
-    version is 5, t(2) is to be constructed in accordance with dd.
-    However, in dd, there is no i1 anymore for it's gone as
-    index removal sql is finished. So, the constructed t(2) without i1
-    is not literally an old-styled table in version 2 and let's call
-    it t(2'). Using t(2') to resolve R is OK because the removed keys
-    are not to be used any longer.
-
-    The above is all about server layer TABLE object.
-    'table' can be considered t(2').
-
-    When it comes to myrocks, all versions are cached as a list in m_ddl_hash.
-    m_tbl_def can be considered t(2).
-
-    t(2) and t(2') get the identical tindex_id and schema_version but
-    different keys' definition.
-  */
-  if (!is_partition_table()) {
-    if (m_tbl_def->m_tindex_id == share->tindex_id &&
-        m_tbl_def->m_schema_version == table->schema_version &&
-        m_tbl_def->has_the_same_key(table)) {
-      return err;
-    }
-  } else {
-#ifndef NDEBUG
-    dbg_assert_part_elem(table);
-#endif
-    if (m_tbl_def->m_tindex_id == m_part_elem->tindex_id &&
-        m_tbl_def->m_schema_version == table->schema_version &&
-        m_tbl_def->has_the_same_key(table, m_part_elem)) {
-      return err;
-    }
-  }
-
-  std::string dbname_tblname = m_tbl_def->full_tablename();
-
-  err = close();
-  if (err) {
-    return err;
-  }
-  *closed = true;
-
-  /*
-    True iff m_ddl_hash caches a table def whose tindex id, schema version and
-    key's definitions are quite the same with that of table.
-  */
-  bool found = false;
-
-  { // Destruct ddl_mgr_lock_closure ASAP.
-    DdlManagerLockClosure ddl_mgr_lock_closure(true/*wrlock*/);
-
-    if (!is_partition_table()) {
-      m_tbl_def = ddl_manager.find_by_id_version_key(
-          dbname_tblname, share->tindex_id, table->schema_version, table, false/*lock*/);
-    } else {
-#ifndef NDEBUG
-      dbg_assert_part_elem(table);
-#endif
-      m_tbl_def = ddl_manager.find_by_id_version_key(
-          dbname_tblname, m_part_elem, table->schema_version, table, false/*lock*/);
-    }
-    found = (m_tbl_def != nullptr);
-
-    if (!found) {
-      /*
-        Compatibility.
-        create_info is used to pass autoinc val and it's meaningless because
-        we are not in a real CREATE TABLE. Only a real CREATE TABLE sets up
-        initial autoinc value.
-      */
-      HA_CREATE_INFO ci;
-      err = create_tbl_def(dbname_tblname, table, &ci,table_def, false/*lock*/);
-    }
-  }
-
-  if (err) {
-    LogError("Failed to create_tbl_def, name:%s, errcode:%d",
-             dbname_tblname.data(), err);
-    return err;
-  }
-
-  if (!found) {
-    if (is_partition_table()) {
-      LogDebug("Update Rdb_tbl_def from TABLE. TABLE:%s. "
-        "Partition_tindex_ids:%s.",
-        table->to_string().data(),
-        partition_tindex_ids_to_string().data());
-    } else {
-      LogDebug("Update Rdb_tbl_def from TABLE. TABLE:%s.",
-        table->to_string().data());
-    }
-    LogDebug("Update Rdb_tbl_def from TABLE. Rdb_tbl_def:%s",
-      m_tbl_def->to_string().data());
-  } else {
-    if (is_partition_table()) {
-      LogDebug("Found correct Rdb_tbl_def cache. TABLE:%s. "
-        "Partition_tindex_ids:%s.", table->to_string().data(),
-        partition_tindex_ids_to_string().data());
-    } else {
-      LogDebug("Found correct Rdb_tbl_def cache. TABLE:%s.",
-        table->to_string().data());
-    }
-    LogDebug("Found correct Rdb_tbl_def cache. Rdb_tbl_def:%s",
-      m_tbl_def->to_string().data());
-  }
-
-  return err;
-}
-
 /*
   Release m_tbl_def if create_tbl_def failed.
 */
 void ha_rocksdb::delete_tbl_def_cache() {
   assert(m_tbl_def);
-  delete m_tbl_def;
   m_tbl_def = nullptr;
   m_key_descr_arr = nullptr;
 }
@@ -8244,6 +8497,7 @@ int ha_rocksdb::open_init_hidden_pk(TABLE *const table_arg) {
 }
 
 int ha_rocksdb::open_init_auto_incr(TABLE *const table_arg) {
+   if (IsTmpTableForLogService(table)) return 0;
   assert(table_arg);
   assert(table_arg->found_next_number_field);
   assert(table_arg->s);
@@ -9152,6 +9406,66 @@ int ha_rocksdb::estimate_parallel_scan_ranges(uint keynr, key_range *min_key,
   }
 
   return ret;
+}
+
+int ha_rocksdb::FlushStmtOptimizeLoadDataIfPossible(tdsql::Transaction *txn,
+                                                    bool force) {
+  int ret = HA_EXIT_SUCCESS;
+  if (txn && use_stmt_optimize_load_data(txn) &&
+      (force || txn->StmtOptimizeLoadDataBatchSizeExceed(m_part_pos))) {
+    ret = txn->StmtOptimizeLoadDataFlush(m_part_pos);
+    if (ret == HA_ERR_FOUND_DUPP_KEY) {
+      ret = HandleStmtOptimizeLoadDataDuplicateEntry(ret);
+    } else if (ret != HA_EXIT_SUCCESS) {
+      LogError("[OptimizeLoadDataBatch::Flush failed][ret:%d][query:%s]", ret,
+               table->in_use->query().str);
+      my_error(
+          ER_SQLENGINE_SYSTEM, MYF(0),
+          "Failed to flush optimize load data batch, please check error log");
+    }
+  }
+  return ret;
+}
+
+void ha_rocksdb::FreeRecordBufferIfNecessary() {
+  if (m_storage_record.length() > tdsql_handler_record_buffer_size) {
+    m_storage_record.mem_free();
+  }
+
+  if (m_last_rowkey.length() > tdsql_handler_record_buffer_size) {
+    m_last_rowkey.mem_free();
+  }
+}
+
+int ha_rocksdb::get_distribution_info_by_scan_range(
+    uint keynr, key_range *min_key, key_range *max_key, bool is_ref_or_null,
+    Fill_dist_info_cbk fill_dist_unit) {
+  int res;
+  RegionList rgns, null_rgns;
+  if (unlikely(is_ref_or_null))
+    res = GetParallelScanRegionListRefOrNull(keynr, min_key, max_key, &rgns,
+                                             &null_rgns, nullptr);
+  else
+    res = GetParallelScanRegionList(keynr, min_key, max_key, &rgns, nullptr);
+
+  if (res != TDSQL_EXIT_SUCCESS) return res;
+
+  std::unordered_map<std::string, table_node_storage_info> aggregated_rgninfo;
+
+  for (auto &rgn : rgns) {
+    table_node_storage_info &tnsi = aggregated_rgninfo[rgn.tdstore_addr];
+    ++tnsi.num_region;
+  }
+
+  for (auto &rgn : null_rgns) {
+    table_node_storage_info &tnsi = aggregated_rgninfo[rgn.tdstore_addr];
+    ++tnsi.num_region;
+  }
+
+  for (auto &pair : aggregated_rgninfo)
+    fill_dist_unit(pointer_cast<Dist_unit_info>(&pair.second));
+
+  return res;
 }
 
 std::string rdb_corruption_marker_file_name() {

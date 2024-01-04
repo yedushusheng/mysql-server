@@ -49,6 +49,9 @@
 #include <string>
 #include <map>
 
+#include "boost/noncopyable.hpp"
+#include "butil/strings/string_split.h"
+
 /* TDSQL include */
 #include "sql/tdsql/tdstore.h" //for table scan
 #include "sql/tdsql/mc.h"
@@ -63,6 +66,10 @@
 using namespace tdsql;
 
 extern PSI_memory_key key_memory_myrocks_estimated_info;
+
+extern double tdstore_auto_stat_when_update_rate ;
+extern uint64_t tdstore_auto_stat_min_update_num ;
+extern uint64_t tdstore_auto_stat_min_interval_microsecond ;
 
 /**
   @note MyRocks Coding Conventions:
@@ -332,24 +339,99 @@ constexpr uint MAX_INDEX_COL_LEN_SMALL = 767;
 
   //TODO: join this with Rdb_tbl_def ?
 */
-struct Rdb_table_handler {
-  char *m_table_name;
-  uint m_table_name_length;
-  std::atomic_int m_ref_count;
+struct Rdb_table_handler : public boost::noncopyable{
+ public:
+  Rdb_table_handler(const std::string &name) :m_table_name(name){
+    thr_lock_init(&m_thr_lock);
+    time_rand_fixed_ = (butil::fast_rand() % 120) * 1000 * 1000; //all sqlengine has rand time fixed (microseconds)
+    //adjust [0.0000 ~ 0.0099]
+    update_rate_fixed_ = 1.0 * (butil::fast_rand() % 99) / 10000;
+
+    std::vector<std::string> vec;
+    butil::SplitString(m_table_name, '/', &vec);
+    if (vec.size() >= 2) {
+      m_real_db_name = vec[vec.size()-2];
+      m_real_table_name = vec[vec.size()-1];
+    }
+  }
+
+  ~Rdb_table_handler(){
+    my_core::thr_lock_delete(&m_thr_lock);
+  }
+
+  const std::string m_table_name;//./db/table_name
+  std::string m_real_db_name;
+  std::string m_real_table_name;
+
+  std::atomic_int m_ref_count {1};
 
   my_core::THR_LOCK m_thr_lock;  ///< MySQL latch needed by m_db_lock
 
-  /* Stores cached memtable estimate statistics */
-  std::atomic_uint m_mtcache_lock;
   /* EstimatedThread, 0: not in queue, 1: in queue */
-  std::atomic_int m_mtcache_in_queue;
-  uint64_t m_mtcache_count;
-  uint64_t m_mtcache_size;
-  uint64_t m_mtcache_last_update;
+  std::atomic_int m_mtcache_in_queue {0};
+  uint64_t m_mtcache_count {0};
+  uint64_t m_mtcache_size {0};
 
-  void get_handler() { m_ref_count++; }
+  //Heuristic update, no need for precision, no atomic variables
+  uint64_t update_count_ {0}; //
+  uint64_t m_last_update_time_for_check_{0}; //microsecond, multiple bthread shared this variable, no need for precision, don't need atomic
 
-  void release_handler();
+  std::atomic<uint64_t> m_last_update_time_ {0};//microsecond, when call update,will update this variable
+
+  uint64_t time_rand_fixed_ {0}; //all sqlengine may be use diff time_rand_fixed_
+  double update_rate_fixed_ {0};
+
+
+  inline void AddUpdateCount(uint64_t n) {
+    update_count_ += n;
+  }
+  inline void ResetUpdateCount() {
+    update_count_ = 0;
+  }
+  inline void ResetWhenSubmitTask() {
+    m_last_update_time_for_check_ = my_micro_time();
+    ResetUpdateCount();
+  }
+  inline double GetUpdateRate() const {
+    return tdstore_auto_stat_when_update_rate + update_rate_fixed_;
+  }
+
+  //check the m_mtcache_last_update whether expired
+  bool cache_is_expired_no_lock(uint64_t cachetime, uint64_t cur_time = my_micro_time());
+  inline bool CheckNeedReComputeAnalyzeWhenUpdate(uint64_t cur_time = my_micro_time()) {
+    //if table row count is too small,update count / m_mtcache_count should > tdstore_auto_stat_when_update_rate easy,so we check update count
+    if (update_count_ <= tdstore_auto_stat_min_update_num) {
+      return false;
+    }
+    volatile uint64_t count = m_mtcache_count; //m_mtcache_count may be updated by other thread
+    if (!count) { //if update_count_ is large,but m_mtcache_count is 0, we should compute table statistics
+      return true;
+    }
+    if (cur_time >=
+        m_last_update_time_for_check_ + tdstore_auto_stat_min_interval_microsecond) { //control update interval(exceed tdstore_auto_stat_min_interval_microsecond microsecond)
+      return (1.0 * update_count_ / count) >= GetUpdateRate(); //update rate >= 10%
+    }
+    return false;
+  }
+  bool ControlTimeRate(uint64_t cur_time ) {
+    //now ,we use atomic update_time_
+    if (cur_time >= m_last_update_time_.load() + tdstore_auto_stat_min_interval_microsecond) {
+      return false;
+    } else {
+      return true;
+    }
+  }
+
+  ulonglong GetReadableUpdateTime() {
+    time_t now = m_last_update_time_for_check_ /1000 / 1000;
+    MYSQL_TIME time;
+    my_tz_SYSTEM->gmt_sec_to_TIME(&time, now);
+    return TIME_to_ulonglong_datetime(time);
+  }
+
+  inline void add_ref() { m_ref_count++; }
+  inline uint64_t GetCacheTime() {return m_last_update_time_.load();}
+  void dec_ref_and_release();
 
   bool enqueue_if_not_in() {
     if (m_mtcache_in_queue++ == 0) {
@@ -361,6 +443,22 @@ struct Rdb_table_handler {
   }
 
   void dequeue() { m_mtcache_in_queue--; }
+
+  void update(uint64_t mtcache_count, uint64_t mtcache_size, uint64_t time);
+  void update_table_stats(const dd::Table_stat *stat);
+
+  inline bool IsMySqlTableStatsTable() {
+    return IsSystemTableStats(m_real_db_name.c_str(), m_real_table_name.c_str());
+  }
+
+  std::string ToString();
+  std::string ConStructAnalyzeReloadSql();
+  std::string ConStructInsertSql();
+  std::string ConStructUpdateSql();
+
+ private:
+  /* Stores cached memtable estimate statistics */
+  tdsql::Mutex mutex_;
 };
 
 class Rdb_key_def;
@@ -613,7 +711,7 @@ class ha_rocksdb : public my_core::handler {
   rocksdb::Slice m_scan_it_lower_bound_slice;
   rocksdb::Slice m_scan_it_upper_bound_slice;
 
-  Rdb_tbl_def *m_tbl_def;
+  std::shared_ptr<Rdb_tbl_def> m_tbl_def;
 
   /* Primary Key encoder from KeyTupleFormat to StorageFormat */
   std::shared_ptr<Rdb_key_def> m_pk_descr;
@@ -735,12 +833,6 @@ class ha_rocksdb : public my_core::handler {
   */
   int m_dupp_errkey;
 
-  int create_key_defs(const TABLE *const table_arg,
-                      Rdb_tbl_def *const tbl_def_arg,
-                      const TABLE *const old_table_arg = nullptr,
-                      const Rdb_tbl_def *const old_tbl_def_arg = nullptr) const
-      MY_ATTRIBUTE((__warn_unused_result__));
-
   bool is_ascending(const Rdb_key_def &keydef,
                     enum ha_rkey_function find_flag) const
       MY_ATTRIBUTE((__nonnull__, __warn_unused_result__));
@@ -778,10 +870,12 @@ class ha_rocksdb : public my_core::handler {
   bool commit_in_the_middle(THD *thd) MY_ATTRIBUTE((__warn_unused_result__));
 
   void update_row_stats(const operation_type &type);
+  virtual void update_table_stats(const dd::Table_stat *stat) override;
 
   void set_last_rowkey(const uchar *const old_data);
 
-  void set_last_rowkey_inner(const uchar *const old_data);
+  void set_last_rowkey_inner(const uchar *const old_data,
+                             Rdb_string_writer *pk_unpack_info = nullptr);
 
   bool tdsql_keyno_changed(QEP_TAB* tab,uint keyno) override;
 
@@ -824,7 +918,7 @@ public:
 
   void setup_field_converters();
   int alloc_key_buffers(const TABLE *const table_arg,
-                        const Rdb_tbl_def *const tbl_def_arg,
+                        const std::shared_ptr<Rdb_tbl_def> &tbl_def_arg,
                         bool alloc_alter_buffers = false)
       MY_ATTRIBUTE((__warn_unused_result__));
   void free_key_buffers();
@@ -969,16 +1063,16 @@ public:
   static const std::string generate_schema_key(const std::string& db_name,
                                                 const std::string& table_name);
 
-  static const char *get_key_comment(const uint index,
-                                     const TABLE *const table_arg,
-                                     const Rdb_tbl_def *const tbl_def_arg)
+  static const char *get_key_comment(
+      const uint index, const TABLE *const table_arg,
+      const std::shared_ptr<Rdb_tbl_def> &tbl_def_arg)
       MY_ATTRIBUTE((__warn_unused_result__));
 
   static const std::string get_table_comment(const TABLE *const table_arg)
       MY_ATTRIBUTE((__warn_unused_result__));
 
   static uint pk_index(const TABLE *const table_arg,
-                       const Rdb_tbl_def *const tbl_def_arg)
+                       const std::shared_ptr<Rdb_tbl_def> &tbl_def_arg)
       MY_ATTRIBUTE((__warn_unused_result__));
 
   /** @brief
@@ -1204,11 +1298,6 @@ public:
     }
   };
 
-  int create_key_def(const TABLE *const table_arg, const uint &i,
-                     const Rdb_tbl_def *const tbl_def_arg,
-                     std::shared_ptr<Rdb_key_def> *const new_key_def) const
-      MY_ATTRIBUTE((__warn_unused_result__));
-
   int convert_record_to_storage_format(const struct update_row_info &row_info,
                                        rocksdb::Slice *const packed_rec)
       MY_ATTRIBUTE((__nonnull__));
@@ -1270,7 +1359,7 @@ public:
                                   bool move_forward)
       MY_ATTRIBUTE((__warn_unused_result__));
 
-  Rdb_tbl_def *get_table_if_exists(const char *const tablename)
+  std::shared_ptr<Rdb_tbl_def> get_table_if_exists(const char *const tablename)
       MY_ATTRIBUTE((__warn_unused_result__));
   void read_thd_vars(THD *const thd) MY_ATTRIBUTE((__nonnull__));
 
@@ -1362,7 +1451,7 @@ public:
       MY_ATTRIBUTE((__warn_unused_result__));
   void position(const uchar *const record) override;
   int info(uint) override;
-  void need_update_table_cache(bool async);
+  void need_update_table_cache(bool need_persist, bool async);
 
   /*
     Just like rnd_init but not the same, rnd_range_init will
@@ -1400,6 +1489,8 @@ public:
 
     /* Free MRR data */
     m_ds_mrr.reset();
+
+    FreeRecordBufferIfNecessary();
 
     DBUG_RETURN(HA_EXIT_SUCCESS);
   }
@@ -1461,11 +1552,9 @@ public:
                              bool commit, const dd::Table *old_table_def,
                              dd::Table *new_table_def) override;
 
-
-  bool index_is_usable(tdsql::Transaction* tx,
-                       const uint index,
+  bool index_is_usable(tdsql::Transaction *tx, const uint index,
                        const TABLE *const table_arg,
-                       const Rdb_tbl_def *const tbl_def_arg);
+                       const std::shared_ptr<Rdb_tbl_def> &tbl_def_arg);
 
   bool has_gap_locks() const noexcept override { return true; }
 
@@ -1496,7 +1585,8 @@ public:
                      rocksdb::PinnableSlice* value_slice,
                      const bool pk_point_select = false);
   int rpc_del_record(tdsql::Transaction* tx,
-                     const rocksdb::Slice &key_slice);
+                     const rocksdb::Slice &key_slice,
+                     bool with_extra_info);
   //int rpc_drop_index(uint32_t index_id);
   //int rpc_del_range(const regions::Members members,
   //                  const rocksdb::Range &range);
@@ -1548,11 +1638,9 @@ public:
 
   int end_bulk_insert() override;
 
-  Rdb_tbl_def* get_tbl_def() { return m_tbl_def; }
+  const std::shared_ptr<Rdb_tbl_def> &get_tbl_def() { return m_tbl_def; }
 
   TABLE *get_table() { return table; }
-
-  void set_tbl_def(Rdb_tbl_def* def) { m_tbl_def = def; }
 
   void set_only_calc_records(bool arg) { m_only_calc_records = arg; }
 
@@ -1562,14 +1650,16 @@ public:
   void set_lock_type(int lock_type) override { m_lock_type = lock_type; }
   bool table_id_equals_pk_id(TABLE *const table_arg);
   std::string partition_tindex_ids_to_string();
-  int update_def_from_share_table(bool *closed, const dd::Table *table_def);
   void delete_tbl_def_cache();
-  int delete_tbl_def(Rdb_tbl_def *tbl);
+  int delete_tbl_def(const std::shared_ptr<Rdb_tbl_def> &tbl);
   /* Create table def and write down to rdb local persistence. */
   int create_tbl_def(const std::string &str, TABLE *const table_arg,
-                     HA_CREATE_INFO *const create_info, const dd::Table *table_def,
-                     const bool &lock = true);
-  int find_and_create_tbl_def(const std::string &str, const dd::Table *table_def);
+                     HA_CREATE_INFO *const create_info,
+                     const dd::Table *table_def, const bool lock = true,
+                     const bool put_in_ddl_manager = true);
+  int find_and_create_tbl_def(const std::string &str,
+                              const dd::Table *table_def, bool *closed);
+  int cmp_tbl_def_and_table();
   int open_init_hidden_pk(TABLE *const table_arg);
   int open_init_auto_incr(TABLE *const table_arg);
   int check_index_dup_key(const Rdb_key_def &kd);
@@ -1591,10 +1681,12 @@ public:
 
 #if defined(EXTRA_CODE_FOR_UNIT_TESTING)
  public:
-  Rdb_tbl_def* get_tbl_def_test() { return m_tbl_def; }
-  void set_tbl_def_test(Rdb_tbl_def* def) { m_tbl_def = def; }
+  int find_and_create_tbl_def_test(const std::string &str,
+                                   const dd::Table *table_def, bool *closed) {
+    return find_and_create_tbl_def(str, table_def, closed);
+  }
+  std::shared_ptr<Rdb_tbl_def> &get_tbl_def_test() { return m_tbl_def; }
   void set_table_test(TABLE* table_arg) { table = table_arg; }
-  int update_def_from_share_table_test(bool *closed) { return update_def_from_share_table(closed,nullptr); }
   bool table_id_equals_pk_id_test(TABLE *const table_arg) { return table_id_equals_pk_id(table_arg); }
   bool is_partition_table_test() { return is_partition_table(); }
   int open_init_auto_incr_generator_test(uint32 index_id, enum ha_base_keytype type) {
@@ -1608,13 +1700,6 @@ public:
     assert(!is_partition_table());
     return m_autoinc_generator.init_on_open_table_test(table_arg->s->autoinc_tindex_id,
       table_arg->found_next_number_field->key_type());
-  }
-  int create_key_def_test(const TABLE *const, const uint &,
-                          const Rdb_tbl_def *const,
-                          std::shared_ptr<Rdb_key_def> *const,
-                          bool, bool) {
-    assert(0);
-    return TDSQL_EXIT_FAILURE;
   }
   rdb_autoinc_generator& autoinc_generator_test() {
     return m_autoinc_generator;
@@ -1718,7 +1803,11 @@ public:
                                     key_range *max_key, bool type_ref_or_null,
                                     ulong *nranges, ha_rows *nrows) override;
 
-  void clone_parallel_scan(ha_rocksdb* from) {
+  int get_distribution_info_by_scan_range(
+      uint keynr, key_range *min_key, key_range *max_key, bool is_ref_or_null,
+      Fill_dist_info_cbk fill_dist_unit) override;
+
+  void clone_parallel_scan(ha_rocksdb *from) {
     m_parallel_scan_handle = from->m_parallel_scan_handle;
     m_parallel_scan_enabled = from->m_parallel_scan_enabled;
   }
@@ -1754,6 +1843,21 @@ public:
   // See HA_EXTRA_PAUSE_PARALLEL_SCAN_INNER and
   // HA_EXTRA_RESUME_PARALLEL_SCAN_INNER.
   bool m_parallel_scan_enabled{false};
+
+ public:
+  // When a (INSERT/REPLACE/LOAD) statement finishes, force == true and it means
+  // flush the batch no matter how big the batch size is.
+  //
+  // During statement execution (in the update_write_row() function), force ==
+  // false and the batch is flushed once the batch size accumulates enough,
+  // otherwise it continues to accumulate.
+  int FlushStmtOptimizeLoadDataIfPossible(tdsql::Transaction *txn,
+                                          bool force) override;
+
+ protected:
+  int HandleStmtOptimizeLoadDataDuplicateEntry(int ret);
+
+  void FreeRecordBufferIfNecessary();
 };
 
 /*
@@ -1762,7 +1866,7 @@ public:
 */
 struct Rdb_inplace_alter_ctx : public my_core::inplace_alter_handler_ctx {
   /* The new table definition */
-  Rdb_tbl_def *const m_new_tdef;
+  std::shared_ptr<Rdb_tbl_def> m_new_tdef;
 
   /* Stores the original key definitions */
   std::shared_ptr<Rdb_key_def> *const m_old_key_descr;
@@ -1792,17 +1896,23 @@ struct Rdb_inplace_alter_ctx : public my_core::inplace_alter_handler_ctx {
   const ulonglong m_max_auto_incr;
 
   Rdb_inplace_alter_ctx(
-      Rdb_tbl_def *new_tdef, std::shared_ptr<Rdb_key_def> *old_key_descr,
+      const std::shared_ptr<Rdb_tbl_def> &new_tdef,
+      std::shared_ptr<Rdb_key_def> *old_key_descr,
       std::shared_ptr<Rdb_key_def> *new_key_descr, uint old_n_keys,
       uint new_n_keys,
       std::unordered_set<std::shared_ptr<Rdb_key_def>> added_indexes,
       std::unordered_set<GL_INDEX_ID> dropped_index_ids, uint n_added_keys,
       uint n_dropped_keys, ulonglong max_auto_incr)
-      : my_core::inplace_alter_handler_ctx(), m_new_tdef(new_tdef),
-        m_old_key_descr(old_key_descr), m_new_key_descr(new_key_descr),
-        m_old_n_keys(old_n_keys), m_new_n_keys(new_n_keys),
-        m_added_indexes(added_indexes), m_dropped_index_ids(dropped_index_ids),
-        m_n_added_keys(n_added_keys), m_n_dropped_keys(n_dropped_keys),
+      : my_core::inplace_alter_handler_ctx(),
+        m_new_tdef(new_tdef),
+        m_old_key_descr(old_key_descr),
+        m_new_key_descr(new_key_descr),
+        m_old_n_keys(old_n_keys),
+        m_new_n_keys(new_n_keys),
+        m_added_indexes(added_indexes),
+        m_dropped_index_ids(dropped_index_ids),
+        m_n_added_keys(n_added_keys),
+        m_n_dropped_keys(n_dropped_keys),
         m_max_auto_incr(max_auto_incr) {}
 
   ~Rdb_inplace_alter_ctx() {}
@@ -1888,5 +1998,7 @@ int get_index_statistics(const Rdb_key_def& kd,
 
 // file name indicating RocksDB data corruption
 std::string rdb_corruption_marker_file_name();
+
+void rocksdb_dict_cache_clean_table(TABLE_SHARE *share);
 
 }  // namespace myrocks

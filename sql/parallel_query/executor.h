@@ -5,14 +5,14 @@
 #include "my_base.h"
 #include "my_dbug.h"
 #include "my_sqlcommand.h"
+#include "sql/handler.h"
+#include "sql/parallel_query/distribution.h"
 #include "sql/parallel_query/row_exchange.h"
 #include "sql/row_iterator.h"
-#include "sql/handler.h"
 #include "sql/xa.h"
 
 class Diagnostics_area;
 class Filesort;
-struct ORDER;
 class user_var_entry;
 class Security_context;
 
@@ -23,8 +23,10 @@ class Worker;
 class Collector {
  public:
   using CollectResult = comm::RowExchange::Result;
-  Collector(uint num_workers, PartialPlan *partial_plan);
+  Collector(dist::Adapter *dist_adapter, dist::NodeArray *exec_nodes,
+            PartialPlan *partial_plan, uint num_workers);
   ~Collector();
+  ulong id() const { return m_id; }
   TABLE *CollectorTable() const { return m_table; }
   bool CreateCollectorTable();
   void PrepareExecution(THD *thd);
@@ -51,8 +53,9 @@ class Collector {
   bool LaunchWorkers(THD *thd);
   void TerminateWorkers();
   void CollectStatusFromWorkers(THD *thd);
-  bool InitParallelScan();
   Diagnostics_area *combine_workers_stmt_da(THD *thd, ha_rows *found_rows);
+  dist::Adapter *m_dist_adapter;
+  dist::NodeArray *m_exec_nodes;
 #if !defined(NDEBUG)
   CSStackClone dbug_cs_stack_clone;
 #endif
@@ -66,6 +69,7 @@ class Collector {
 
   comm::Event m_worker_state_event;
   bool is_ended{false};
+  ulong m_id{reinterpret_cast<ulong>(this)};
 };
 
 struct PartialExecutorContext {
@@ -124,6 +128,7 @@ class PartialExecutor {
 };
 
 std::string ExplainTableParallelScan(JOIN *join, TABLE *table);
+std::string ExplainPartialPlan(PartialPlan *partial_plan, bool *display_tree);
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
 }  // namespace pq
 

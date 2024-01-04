@@ -3,6 +3,7 @@
 #include "sql/debug_sync.h"  // DEBUG_SYNC
 #include "sql/mysqld.h"
 #include "sql/parallel_query/executor.h"
+#include "sql/parallel_query/planner.h"
 #include "sql/parallel_query/row_channel.h"
 #include "sql/sql_lex.h"
 
@@ -111,8 +112,6 @@ class LocalWorker : public Worker {
 };
 
 ulong worker_handling = default_worker_schedule_type;
-
-Worker::~Worker() { destroy(m_receiver_channel); }
 
 bool LocalWorker::Init(comm::Event *comm_event) {
 #if defined(ENABLED_DEBUG_SYNC)
@@ -321,8 +320,9 @@ Diagnostics_area *LocalWorker::stmt_da(bool finished_collect,
   return da;
 }
 
-Worker *CreateLocalWorker(uint id, comm::Event *state_event, THD *thd,
+Worker *CreateLocalWorker(uint id, comm::Event *state_event,
                           PartialPlan *plan) {
+  THD *thd = plan->thd();
   return new (thd->mem_root) LocalWorker(id, state_event, thd, plan);
 }
 }  // namespace pq

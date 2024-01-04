@@ -1,8 +1,9 @@
 #ifndef PARALLEL_QUERY_PLANNER_H
 #define PARALLEL_QUERY_PLANNER_H
-#include "my_base.h"
 #include "mem_root_deque.h"
+#include "my_base.h"
 #include "sql/item.h"
+#include "sql/parallel_query/distribution.h"
 
 class QEP_TAB;
 struct AccessPath;
@@ -31,7 +32,7 @@ class ItemRefCloneResolver : public Item_ref_clone_resolver {
 };
 
 struct ParallelScanInfo {
-  TABLE *table;
+  TABLE *table{nullptr};
   ulong suggested_ranges;
   parallel_scan_desc_t scan_desc;
 };
@@ -46,6 +47,7 @@ class PartialPlan {
   void SetQueryBlock(Query_block *query_block) { m_query_block = query_block; }
   Query_expression *QueryExpression() const;
   JOIN *Join() const;
+  THD *thd() const;
   ParallelScanInfo &GetParallelScanInfo() { return m_parallel_scan_info; }
   void SetTableParallelScan(TABLE *table, ulong suggested_ranges,
                             const parallel_scan_desc_t &psdesc);
@@ -55,10 +57,25 @@ class PartialPlan {
   bool IsParallelScanTable(TABLE *table) {
     return m_parallel_scan_info.table == table;
   }
+  bool HasParallelScan() const { return m_parallel_scan_info.table != nullptr; }
+  void SetDistPlan(dist::PartialDistPlan *dist_plan) {
+    m_dist_plan = dist_plan;
+  }
+  dist::PartialDistPlan *DistPlan() const { return m_dist_plan; }
+  std::string ExplainPlan(bool *display_tree) {
+    return m_dist_plan->ExplainPlan(display_tree);
+  }
+
+  /// Init execution, called by CollectorIterator::Init(), currently we do
+  /// parallel scan initialization in it.
+  bool InitExecution(uint num_workers, dist::NodeArray *exec_nodes);
 
  private:
   Query_block *m_query_block;
+  /// Parallel scan info, current only support one table, This should be in
+  /// class dist::PartialDistPlan, but we use it everywhere.
   ParallelScanInfo m_parallel_scan_info;
+  dist::PartialDistPlan *m_dist_plan{nullptr};
 };
 
 class FieldPushdownDesc {
@@ -69,17 +86,42 @@ class FieldPushdownDesc {
   PushdownAction pushdown_action;
 };
 
+class ParallelDegreeHolder {
+ public:
+  ParallelDegreeHolder() = default;
+  ParallelDegreeHolder(const ParallelDegreeHolder &) = delete;
+  ParallelDegreeHolder& operator=(const ParallelDegreeHolder&) = delete;
+
+  ~ParallelDegreeHolder();
+  uint degree() const { return m_degree; }
+  uint acquire(uint degree, bool forbid_reduce);
+  void set(uint degree) {
+    m_degree = degree;
+    m_acquired_from_global = false;
+  }
+
+ private:
+  bool m_acquired_from_global{true};
+  uint m_degree{0};
+};
+
 using FieldsPushdownDesc = mem_root_deque<FieldPushdownDesc>;
 
 class ParallelPlan {
  public:
-  ParallelPlan(JOIN *join, uint parallel_degree);
+  ParallelPlan(JOIN *join);
   ~ParallelPlan();
+  JOIN *SourceJoin() const;
   bool Generate();
   void ResetCollector();
   void EndCollector(THD *thd, ha_rows *found_rows);
   bool GenerateAccessPath(Item_clone_context *clone_context);
-  uint ParallelDegree() const { return m_parallel_degree; }
+  bool AcquireParallelDegree(uint degree, bool forbid_reduce) {
+    return m_parallel_degree.acquire(degree, forbid_reduce) == 0;
+  }
+  void SetParallelDegree(uint degree) { return m_parallel_degree.set(degree); }
+
+  uint ParallelDegree() const { return m_parallel_degree.degree(); }
   void SetTableParallelScan(TABLE *table, ulong suggested_ranges,
                             const parallel_scan_desc_t &psdesc) {
     m_partial_plan.SetTableParallelScan(table, suggested_ranges, psdesc);
@@ -87,12 +129,19 @@ class ParallelPlan {
   bool IsParallelScanTable(TABLE *table) {
     return m_partial_plan.IsParallelScanTable(table);
   }
+  void SetDistAdapter(dist::Adapter *adapter) { m_dist_adapter = adapter; }
+  dist::Adapter *DistAdapter() const { return m_dist_adapter; }
+
+  dist::TableDistArray *SetTableDists(dist::TableDistArray &table_dists) {
+    m_table_dists = std::move(table_dists);
+    return &m_table_dists;
+  }
+  void SetExecNodes(dist::NodeArray *exec_nodes) { m_exec_nodes = exec_nodes; }
 
  private:
   THD *thd() const;
   Query_block *SourceQueryBlock() const;
   Query_block *PartialQueryBlock() const { return m_partial_plan.QueryBlock(); }
-  JOIN *SourceJoin() const;
   JOIN *PartialJoin() const;
 
   bool AddPartialLeafTables();
@@ -109,14 +158,21 @@ class ParallelPlan {
   void DestroyCollector(THD *thd);
 
   JOIN *m_join;
-  mem_root_deque<Item *> m_fields;  // The new item fields create by parallel plan
+
+  mem_root_deque<Item *>
+      m_fields;  // The new item fields create by parallel plan
   Collector *m_collector{nullptr};
   // The query plan template for workers, workers clone plan from this.
   PartialPlan m_partial_plan;
-  uint m_parallel_degree;
+  ParallelDegreeHolder m_parallel_degree;
   // If there is LIMIT OFFSET and it is pushed to workers, collecting found
   // rows from workers when workers end.
   bool m_need_collect_found_rows{false};
+  /// All primary table distribution descriptions
+  /// TODO: this should be in pq::Optimizer later.
+  dist::TableDistArray m_table_dists;
+  dist::NodeArray *m_exec_nodes;
+  dist::Adapter *m_dist_adapter;
 };
 
 bool GenerateParallelPlan(JOIN *join);

@@ -544,8 +544,13 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
           }
         }
       }
+      bool display_partial_tree = true;
+      std::string partial_desc = pq::ExplainPartialPlan(
+          collector->partial_plan(), &display_partial_tree);
+      if (partial_desc.size() > 0) ret += partial_desc;
       description.push_back(move(ret));
-      children.push_back({collector->PartialRootAccessPath()});
+      if (display_partial_tree)
+        children.push_back({collector->PartialRootAccessPath()});
       break;
     }  
     case AccessPath::TABLE_VALUE_CONSTRUCTOR:

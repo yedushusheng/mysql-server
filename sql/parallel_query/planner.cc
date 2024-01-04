@@ -2,10 +2,12 @@
 
 #include "scope_guard.h"
 #include "sql/error_handler.h"
+#include "sql/handler.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
 #include "sql/opt_range.h"
 #include "sql/opt_trace.h"
+#include "sql/parallel_query/distribution.h"
 #include "sql/parallel_query/executor.h"
 #include "sql/parallel_query/rewrite_access_path.h"
 #include "sql/sql_optimizer.h"
@@ -56,36 +58,6 @@ static bool ItemRefuseParallel(const Item *item, const char **cause) {
   return false;
 }
 
-constexpr uint32 parallel_disabled = PT_hint_parallel::parallel_disabled;
-constexpr uint32 degree_unspecified = PT_hint_parallel::degree_unspecified;
-
-static uint32 table_parallel_degree(THD *thd, TABLE_LIST *table,
-                                    bool *specified_by_hint) {
-  uint32 degree = degree_unspecified;
-  auto *lex = thd->lex;
-  *specified_by_hint = true;
-  if (table->opt_hints_table && table->opt_hints_table->parallel_scan) {
-    auto *table_hint = table->opt_hints_table->parallel_scan;
-    degree = table_hint->parallel_degree();
-    if (degree != PT_hint_parallel::degree_unspecified) return degree;
-  }
-
-  if (table->opt_hints_qb && table->opt_hints_qb->get_parallel_hint()) {
-    auto *qb_hint = table->opt_hints_qb->get_parallel_hint();
-    degree = qb_hint->parallel_degree();
-    if (degree != PT_hint_parallel::degree_unspecified) return degree;
-  }
-
-  if (lex->opt_hints_global && lex->opt_hints_global->parallel_hint) {
-    auto *global_hint = lex->opt_hints_global->parallel_hint;
-    degree = global_hint->parallel_degree();
-    if (degree != PT_hint_parallel::degree_unspecified) return degree;
-  }
-
-  *specified_by_hint = false;
-  return thd->variables.max_parallel_degree;
-}
-
 static bool IsAccessRangeSupported(QEP_TAB *qt) {
   assert(qt->type() == JT_RANGE);
 
@@ -110,7 +82,7 @@ static bool IsAccessSupportedForPartition(QEP_TAB *qt) {
   return true;
 }
 
-static const char * TableAccessTypeRefuseParallel(QEP_TAB *qt) {
+static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
   auto typ = qt->type();
 
   if (qt->table()->part_info && !IsAccessSupportedForPartition(qt)) {
@@ -161,46 +133,55 @@ static void get_scan_range_for_ref(MEM_ROOT *mem_root, TABLE_REF *ref,
   *ref->null_ref_key = old_null_ref_key;
 }
 
-static bool GetTableParallelScanInfo(QEP_TAB *tab, ulong parallel_degree,
-                                     parallel_scan_desc_t *scan_desc,
-                                     ulong *ranges) {
+void GetTableAccessInfo(QEP_TAB *tab, uint *keynr, key_range **min_key,
+                        key_range **max_key, bool *is_ref_or_null,
+                        uint16 *key_used) {
   auto *table = tab->table();
   auto *thd = tab->join()->thd;
 
-  scan_desc->is_ref_or_null = false;
-  // Field is_asc set is complicated, set it in access path rewriter.
-  scan_desc->is_asc = true;
-  scan_desc->key_used = UINT16_MAX;
+  *is_ref_or_null = false;
+  *key_used = UINT16_MAX;
 
   switch (tab->type()) {
     case JT_ALL:
-      scan_desc->min_key = scan_desc->max_key = nullptr;
-      scan_desc->keynr = table->s->primary_key;
+      *min_key = *max_key = nullptr;
+      *keynr = table->s->primary_key;
       break;
     case JT_INDEX_SCAN:
-      scan_desc->min_key = scan_desc->max_key = nullptr;
-      scan_desc->keynr = tab->index();
+      *min_key = *max_key = nullptr;
+      *keynr = tab->index();
       break;
+    case JT_REF_OR_NULL:
+      *is_ref_or_null = true;
+      [[fallthrough]];
     case JT_REF:
       [[fallthrough]];
     case JT_EQ_REF:
-      get_scan_range_for_ref(thd->mem_root, &tab->ref(), &scan_desc->keynr,
-                             &scan_desc->min_key, &scan_desc->max_key, false);
-      break;
-    case JT_REF_OR_NULL:
-      get_scan_range_for_ref(thd->mem_root, &tab->ref(), &scan_desc->keynr,
-                             &scan_desc->min_key, &scan_desc->max_key, true);
-      scan_desc->is_ref_or_null = true;
+      get_scan_range_for_ref(thd->mem_root, &tab->ref(), keynr, min_key,
+                             max_key, *is_ref_or_null);
       break;
     case JT_RANGE:
-      scan_desc->keynr = tab->quick()->index;
-      scan_desc->key_used = tab->quick()->scan_range_keyused(
-          thd->mem_root, &scan_desc->min_key, &scan_desc->max_key);
+      *keynr = tab->quick()->index;
+      *key_used =
+          tab->quick()->scan_range_keyused(thd->mem_root, min_key, max_key);
       break;
     default:
       assert(false);
       break;
   }
+}
+
+static bool GetTableParallelScanInfo(QEP_TAB *tab, ulong parallel_degree,
+                                     parallel_scan_desc_t *scan_desc,
+                                     ulong *ranges) {
+  auto *table = tab->table();
+
+  // Field is_asc set is complicated, set it in access path rewriter.
+  scan_desc->is_asc = true;
+
+  GetTableAccessInfo(tab, &scan_desc->keynr, &scan_desc->min_key,
+                     &scan_desc->max_key, &scan_desc->is_ref_or_null,
+                     &scan_desc->key_used);
 
   *ranges = 100 * parallel_degree;
   ha_rows nrows;
@@ -215,20 +196,178 @@ static bool GetTableParallelScanInfo(QEP_TAB *tab, ulong parallel_degree,
   return false;
 }
 
-static uint32 ChooseParallelDegreeByScanRange(THD *thd, uint32 parallel_degree,
-                                             ulong ranges) {
+static uint32 ChooseParallelDegreeByScanRange(
+    uint32 parallel_degree, ulong parallel_scan_ranges_threshold,
+    ulong ranges) {
   // Choosing disabled by system variables
-  if (thd->variables.parallel_scan_ranges_threshold == 0 ||
-      parallel_degree == 1)
+  if (parallel_scan_ranges_threshold == 0 || parallel_degree == 1)
     return parallel_degree;
 
   // parallel disabled by insufficient ranges
-  if (ranges < thd->variables.parallel_scan_ranges_threshold)
-    return parallel_disabled;
+  if (ranges < parallel_scan_ranges_threshold) return parallel_disabled;
 
   if (parallel_degree > ranges) parallel_degree = ranges;
 
   return parallel_degree;
+}
+
+static bool ChooseParallelScanTable(ParallelPlan *parallel_plan,
+                                    uint parallel_table_index,
+                                    uint32 *parallel_degree,
+                                    bool *specified_by_hint,
+                                    const char **cause) {
+  auto *join = parallel_plan->SourceJoin();
+  THD *thd = join->thd;
+  ulong scan_ranges;
+  parallel_scan_desc_t scan_desc;
+
+  // Only support first table do parallel scan.
+  // TODO: we can support other tables for HASH JOIN even there is no parallel
+  // rescan.
+  auto *qt = &join->qep_tab[parallel_table_index];
+
+  // semi-join inner tables could not do parallel scan because we could
+  // not eliminate duplicates between workers. we need a repartition with
+  // unique.
+  if (qt->first_sj_inner() != NO_PLAN_IDX) {
+    *cause = "first_table_is_semijoin_inner_table";
+    return true;
+  }
+
+  // First table can not be inner table of outer join.
+  assert(!qt->is_inner_table_of_outer_join());
+
+  // LOOSE SCAN needs to scan to eliminate duplicates, currently we can not
+  // support prefix in PARALLEL SCAN. It should be blocks by
+  // `first_table_is_semijoin_inner_table`
+  assert(!qt->do_loosescan() && !qt->do_firstmatch());
+
+  double parallel_plan_cost_threshold;
+  ulonglong parallel_scan_records_threshold;
+  ulong parallel_scan_ranges_threshold;
+  auto *dist_adapter = parallel_plan->DistAdapter();
+  dist_adapter->GetThresholdsForParallelScan(thd, &parallel_plan_cost_threshold,
+                                             &parallel_scan_records_threshold,
+                                             &parallel_scan_ranges_threshold);
+
+  *parallel_degree = dist_adapter->GetTableParallelDegree(thd, qt->table_ref,
+                                                          specified_by_hint);
+  if (*parallel_degree == parallel_disabled) {
+    *cause = *specified_by_hint ? "forbidden_by_parallel_hint"
+                               : "max_parallel_degree_not_set";
+    return true;
+  }
+
+  if (!*specified_by_hint) {
+    // These "soft" limits are applied when user doesn't hint to use parallel
+
+    if (join->best_read < parallel_plan_cost_threshold) {
+      *cause = "plan_cost_less_than_threshold";
+      return true;
+    }
+    // This should be in table_parallel_degree() but currently we only support
+    // one table.
+    if (qt->position()->rows_fetched <
+        parallel_scan_records_threshold) {
+      *cause = "table_records_less_than_threshold";
+      return true;
+    }
+  }
+
+  auto *parallel_table = qt->table();
+  if (!(parallel_table->file->ha_table_flags() & HA_CAN_PARALLEL_SCAN)) {
+    *cause = "first_table_does_not_support_parallel_scan";
+    return true;
+  }
+
+  if (parallel_table->correlate_src_table) {
+    *cause = "table_has_correlate_src_table";
+    return true;
+  }
+
+  // Estimate parallel scan ranges, it will be displayed in EXPLAIN
+  if (GetTableParallelScanInfo(qt, *parallel_degree, &scan_desc, &scan_ranges))
+    return true;
+
+  if (!*specified_by_hint &&
+      (*parallel_degree = ChooseParallelDegreeByScanRange(
+           *parallel_degree, parallel_scan_records_threshold,
+           scan_ranges)) == parallel_disabled) {
+    *cause = "insufficient_parallel_scan_ranges";
+    return true;
+  }
+  auto *table = join->qep_tab[parallel_table_index].table();
+  parallel_plan->SetTableParallelScan(table, scan_ranges, scan_desc);
+
+  return false;
+}
+
+static bool ChooseExecNodes(ParallelPlan *parallel_plan,
+                            uint parallel_table_index, uint32 parallel_degree,
+                            bool forbid_degree_reduce, const char **cause) {
+  auto *join = parallel_plan->SourceJoin();
+  THD *thd = join->thd;
+  auto *dist_adapter = parallel_plan->DistAdapter();
+  bool need_pscan = dist_adapter->NeedParallelScan();
+  dist::TableDistArray table_dists(thd->mem_root);
+  table_dists.reserve(join->primary_tables);
+
+  assert((parallel_degree != parallel_disabled &&
+          parallel_degree != degree_unspecified) ||
+         !need_pscan);
+
+  for (uint i = 0; i < join->primary_tables; ++i) {
+    auto qep_tab = &join->qep_tab[i];
+    auto *table = qep_tab->table();
+    uint keynr;
+    key_range *min_key, *max_key;
+    bool is_ref_or_null;
+    uint16 key_used;
+    GetTableAccessInfo(qep_tab, &keynr, &min_key, &max_key, &is_ref_or_null,
+                       &key_used);
+    auto *table_dist_desc = dist_adapter->GetTableDist(
+        thd, table, keynr, min_key, max_key, is_ref_or_null);
+    if (!table_dist_desc || table_dists.push_back(table_dist_desc)) return true;
+  }
+  auto *saved_table_dists = parallel_plan->SetTableDists(table_dists);
+
+  // For sharding, currently we only support single partition push down and we
+  // handle it in IsCompatibleWith()
+  if (!need_pscan && join->primary_tables > 1) {
+    dist::TableDist *prev_desc = nullptr;
+    for (auto *dist_desc : table_dists) {
+      if (!prev_desc) continue;
+      if (!dist_desc->IsCompatibleWith(prev_desc)) {
+        *cause = "could_not_push_to_single_partition";
+        return true;
+      }
+    }
+  }
+
+  // Currently, we just use parallel scan table to determine execution nodes.
+  auto *dist_desc = saved_table_dists->at(parallel_table_index);
+  auto *store_nodes = dist_desc->GetStoreNodes();
+  dist::NodeArray *exec_nodes = store_nodes;
+  // TODO: should we make sure current node is in exec_nodes?
+  if (need_pscan && exec_nodes->size() > parallel_degree) {
+    exec_nodes =
+        new (thd->mem_root) dist::NodeArray(thd->mem_root, *exec_nodes);
+    std::sort(exec_nodes->begin(), exec_nodes->end(),
+              [](auto *a, auto *b) { return a->weight() > b->weight(); });
+    exec_nodes->resize(parallel_degree);
+  }
+
+  parallel_plan->SetExecNodes(exec_nodes);
+  if (need_pscan) {
+    if ((parallel_plan->AcquireParallelDegree(parallel_degree,
+                                              forbid_degree_reduce))) {
+      *cause = "too_many_parallel_workers";
+      return true;
+    }
+  } else
+    parallel_plan->SetParallelDegree(exec_nodes->size());
+
+  return false;
 }
 
 static void ChooseParallelPlan(JOIN *join) {
@@ -267,13 +406,6 @@ static void ChooseParallelPlan(JOIN *join) {
   }
   if (join->query_block->forbid_parallel_by_upper_query_block) {
     cause = "item_referred_by_upper_query_block";
-    return;
-  }
-  // Block plan of derived table that transformed from subquery. It has a
-  // bug ORDER::item that points to ORDER::item_initial incorrectly.
-  auto *derived_table = join->query_expression()->derived_table;
-  if (derived_table && derived_table->m_was_scalar_subquery) {
-    cause = "buggy_derived_plan_from_subquery";
     return;
   }
 
@@ -322,7 +454,9 @@ static void ChooseParallelPlan(JOIN *join) {
     }
   }
 
-  constexpr int parallel_scan_table = 0;
+  auto *dist_adapter = dist::CreateTDStoreAdapter(thd->mem_root);
+  if (!dist_adapter) return;
+
   // Block parallel query based on table properties
   for (uint i = 0; i < join->primary_tables; i++) {
     auto *qt = &join->qep_tab[i];
@@ -340,10 +474,10 @@ static void ChooseParallelPlan(JOIN *join) {
     }
 
     auto *table = qt->table();
-    if (is_system_table(table->s->db.str, table->s->table_name.str)) {
-      cause = "include_system_tables";
-      return;
-    }
+    // Distribution system may refuse some table to parallel, e.g. a local table
+    // in a sharding system and currently 3.0 does not enable parallel query to
+    // system table.
+    if ((cause = dist_adapter->TableRefuseParallel(table))) return;
 
     // Weed out plan execution depends on QEP_TAB, so block it.
     if (qt->get_sj_strategy() == SJ_OPT_DUPS_WEEDOUT) {
@@ -354,79 +488,9 @@ static void ChooseParallelPlan(JOIN *join) {
     if ((cause = TableAccessTypeRefuseParallel(qt))) return;
   }
 
-  bool specified_by_hint;
-  uint32 parallel_degree;
-  // Only support first table do parallel scan.
-  // TODO: we can support other tables for HASH JOIN even there is no parallel
-  // rescan.
-  auto *qt = &join->qep_tab[parallel_scan_table];
-
-  // semi-join inner tables could not do parallel scan because we could
-  // not eliminate duplicates between workers. we need a repartition with
-  // unique.
-  if (qt->first_sj_inner() != NO_PLAN_IDX) {
-    cause = "first_table_is_semijoin_inner_table";
-    return;
-  }
-
-  // First table can not be inner table of outer join.
-  assert(!qt->is_inner_table_of_outer_join());
-
-  // LOOSE SCAN needs to scan to eliminate duplicates, currently we can not
-  // support prefix in PARALLEL SCAN. It should be blocks by
-  // `first_table_is_semijoin_inner_table`
-  assert(!qt->do_loosescan() && !qt->do_firstmatch());
-
-  parallel_degree =
-      table_parallel_degree(thd, qt->table_ref, &specified_by_hint);
-  if (parallel_degree == parallel_disabled) {
-    cause = specified_by_hint ? "forbidden_by_parallel_hint"
-                              : "max_parallel_degree_not_set";
-    return;
-  }
-
-  if (!specified_by_hint) {
-    // These "soft" limits are applied when user doesn't hint to use parallel
-
-    if (join->best_read < thd->variables.parallel_plan_cost_threshold) {
-      cause = "plan_cost_less_than_threshold";
-      return;
-    }
-    // This should be in table_parallel_degree() but currently we only support
-    // one table.
-    if (qt->position()->rows_fetched <
-        thd->variables.parallel_scan_records_threshold) {
-      cause = "table_records_less_than_threshold";
-      return;
-    }
-  }
-
-  auto *table = qt->table();
-  if (!(table->file->ha_table_flags() & HA_CAN_PARALLEL_SCAN)) {
-    cause = "first_table_does_not_support_parallel_scan";
-    return;
-  }
-
-  if (table->correlate_src_table) {
-    cause = "table_has_correlate_src_table";
-    return;
-  }
-
-  // Estimate parallel scan ranges, it will be displayed in EXPLAIN
-  ulong scan_ranges;
-  parallel_scan_desc_t scan_desc;
-  if (GetTableParallelScanInfo(qt, parallel_degree, &scan_desc, &scan_ranges))
-    return;
-
-  if (!specified_by_hint &&
-      (parallel_degree = ChooseParallelDegreeByScanRange(
-           thd, parallel_degree, scan_ranges)) == parallel_disabled) {
-    cause = "insufficient_parallel_scan_ranges";
-    return;
-  }
+  // Block parallel query based on item expressions
 
   const char *item_refuse_cause;
-  // Block parallel query based on item expressions
   for (Item *item : join->query_block->fields) {
     if (!ItemRefuseParallel(item, &item_refuse_cause)) continue;
     cause = item_refuse_cause ? item_refuse_cause
@@ -434,7 +498,7 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  for (uint i = 0; i < join->tables; i++) {
+  for (uint i = 0; i < join->tables; ++i) {
     auto *qep_tab = &join->qep_tab[i];
     if (!qep_tab->table()) break;
 
@@ -444,7 +508,7 @@ static void ChooseParallelPlan(JOIN *join) {
           item_refuse_cause ? item_refuse_cause : "filter_has_unsafe_condition";
       return;
     }
-    Item *item = qt->table()->file->pushed_idx_cond;
+    Item *item = qep_tab->table()->file->pushed_idx_cond;
     if (item && ItemRefuseParallel(item, &item_refuse_cause)) {
       cause = item_refuse_cause ? item_refuse_cause
                                 : "filter_pushed_idx_cond_has_unsafe_condition";
@@ -465,20 +529,21 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  if ((parallel_degree =
-           AcquireParallelWorkers(parallel_degree, specified_by_hint)) == 0)
-  {
-    cause = "too_many_parallel_workers";
-    return;
-  }
+  if (!(join->parallel_plan = new (thd->mem_root) ParallelPlan(join))) return;
+  auto *parallel_plan = join->parallel_plan;
+  parallel_plan->SetDistAdapter(dist_adapter);
 
-  if (!(join->parallel_plan =
-            new (thd->mem_root) ParallelPlan(join, parallel_degree))) {
-    ReleaseParallelWorkers(parallel_degree);
+  constexpr int parallel_scan_table_index = 0;
+  uint32 parallel_degree = degree_unspecified;
+  bool specified_by_hint = false;
+  if (dist_adapter->NeedParallelScan() &&
+      ChooseParallelScanTable(parallel_plan, parallel_scan_table_index,
+                              &parallel_degree, &specified_by_hint, &cause))
     return;
-  }
 
-  join->parallel_plan->SetTableParallelScan(table, scan_ranges, scan_desc);
+  if (ChooseExecNodes(parallel_plan, parallel_scan_table_index, parallel_degree,
+                      specified_by_hint, &cause))
+    return;
 
   trace_choosing.add("chosen", true);
   trace_set_guard.commit();
@@ -539,18 +604,29 @@ Query_expression *PartialPlan::QueryExpression() const {
 
 JOIN *PartialPlan::Join() const { return m_query_block->join; }
 
+THD *PartialPlan::thd() const { return m_query_block->join->thd; }
+
 void PartialPlan::SetTableParallelScan(TABLE *table, ulong suggested_ranges,
                                        const parallel_scan_desc_t &psdesc) {
   m_parallel_scan_info = {table, suggested_ranges, psdesc};
 }
 
-ParallelPlan::ParallelPlan(JOIN *join, uint32 parallel_degree)
-    : m_join(join),
-      m_fields(join->thd->mem_root),
-      m_parallel_degree(parallel_degree) {}
+uint ParallelDegreeHolder::acquire(uint degree, bool forbid_reduce) {
+  m_degree = AcquireParallelWorkers(degree, forbid_reduce);
+  return m_degree;
+}
+
+ParallelDegreeHolder::~ParallelDegreeHolder() {
+  if (m_degree == 0 || !m_acquired_from_global) return;
+
+  ReleaseParallelWorkers(m_degree);
+}
+
+ParallelPlan::ParallelPlan(JOIN *join)
+    : m_join(join), m_fields(join->thd->mem_root) {}
 
 ParallelPlan::~ParallelPlan() {
-  ReleaseParallelWorkers(m_parallel_degree);
+  for (auto *table_dist : m_table_dists) destroy(table_dist);
   DestroyCollector(thd());
 }
 
@@ -934,6 +1010,10 @@ bool ParallelPlan::GeneratePartialPlan(
 
   if (CreateCollector(thd)) return true;
 
+  if (!m_dist_adapter->MakePartialDistPlan(&m_partial_plan, m_exec_nodes))
+    return true;
+  assert(m_exec_nodes->size() > 0 || m_dist_adapter->NeedParallelScan());
+
   return false;
 }
 
@@ -970,9 +1050,9 @@ bool ParallelPlan::Generate() {
 }
 
 bool ParallelPlan::CreateCollector(THD *thd) {
-  assert(m_parallel_degree <= max_parallel_degree_limit);
-  if (!(m_collector = new (thd->mem_root)
-            Collector(m_parallel_degree, &m_partial_plan)) ||
+  assert(ParallelDegree() <= max_parallel_degree_limit);
+  if (!(m_collector = new (thd->mem_root) Collector(
+            m_dist_adapter, m_exec_nodes, &m_partial_plan, ParallelDegree())) ||
       m_collector->CreateCollectorTable()) {
     destroy(m_collector);
     m_collector = nullptr;
