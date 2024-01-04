@@ -163,7 +163,10 @@ class ORDER_with_src {
  public:
   ORDER *order;  ///< ORDER expression that we are wrapping with this class
   Explain_sort_clause src;  ///< origin of order list
-
+  /// order is cleaned if the group_list step is arranged. this is used for save
+  /// original order (That is actually used ORDER). This only be used by
+  /// parallel query to clone query plan.
+  ORDER *used_order{nullptr};
  private:
   int flags;  ///< bitmap of Explain_sort_property
 
@@ -183,10 +186,16 @@ class ORDER_with_src {
     return other;
   }
 
-  void clean() {
+  void clean(bool save_to_used = false) {
+    if (save_to_used && order) used_order = order;
     order = nullptr;
     src = ESC_none;
     flags = ESP_none;
+  }
+
+  ORDER *actual_used() {
+    if (order) return order;
+    return used_order;
   }
 
   int get_flags() const {
@@ -536,10 +545,6 @@ class JOIN {
   */
   ORDER_with_src order, group_list;
   //NOTE:order/group子句 MySQL5.6:ORDER* order/ORDER* group_list
-
-  // group_list could be clear if the group_list step is arranged. this is used
-  // for save original group_list or order.
-  ORDER_with_src merge_sort;
 
   // Used so that AggregateIterator knows which items to signal when the rollup
   // level changes. Obviously only used in the presence of rollup.

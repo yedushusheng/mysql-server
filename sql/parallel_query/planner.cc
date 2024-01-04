@@ -1551,15 +1551,18 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
   zero_result_cause = from->zero_result_cause;
   select_count = from->select_count;
 
-  assert(!from->plan_is_const() && !from->where_cond);
   where_cond = nullptr;
 
-  assert(from->order.empty());
-
-  group_list =
-      from->group_list.clone({thd->mem_root, &query_block->base_ref_items,
-                              from->fields->size(), nullptr});
-
+  // See below, calc_group_buffer() depends on group_list. temporary table
+  // creating also need this in access path rewriter. In partial plan of a query
+  // block with parallel plan, we have already set group_list.order correctly in
+  // partial plan template in AccessPathParallelizer. But in a pushed down
+  // subquery, actually used ORDER in group_list may be in used_order.
+  auto *group_from = from->group_list.actual_used();
+  if (group_from)
+    group_list.order = clone_order_list(
+        group_from, {thd->mem_root, &query_block->base_ref_items,
+                     from->fields->size(), nullptr});
   grouped = from->grouped;
   need_tmp_before_win = from->need_tmp_before_win;
   implicit_grouping = from->implicit_grouping;
@@ -1586,6 +1589,11 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
   tmp_table_param.sum_func_count = from->tmp_table_param.sum_func_count;
 
   assert(query_block->olap == UNSPECIFIED_OLAP_TYPE);
+
+  calc_group_buffer(this, group_list.order);
+  send_group_parts = tmp_table_param.group_parts;
+
+  // send_group_parts is used inside alloc_func_list()
   if (alloc_func_list()) return true;
 
   set_optimized();
@@ -1599,10 +1607,6 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
   sort_cost = from->sort_cost;
   windowing_cost = from->windowing_cost;
 
-  assert(zero_result_cause == nullptr && tables_list);
-
-  calc_group_buffer(this, group_list.order);
-  send_group_parts = tmp_table_param.group_parts;
   if (make_sum_func_list(*fields, true)) return true;
 
   assert(from->root_access_path());

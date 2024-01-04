@@ -341,20 +341,17 @@ void AccessPathParallelizer::set_collector_path_pos(AccessPath **path) {
 void AccessPathParallelizer::rewrite_index_access_path(TABLE *table,
                                                        bool use_order,
                                                        bool reverse) {
-  auto *join = m_join_in;
-  if (use_order && join->m_ordered_index_usage != JOIN::ORDERED_INDEX_VOID) {
-    merge_sort = join->m_ordered_index_usage == JOIN::ORDERED_INDEX_ORDER_BY
-                     ? join->order.order
-                     : join->group_list.order;
-    /// Optimizer reset order and group_list of JOIN if it choose the
-    /// execution plan. We save it to merge_sort before optimizer reset it.
-    /// See also JOIN::make_tmp_tables_info().
-    if (!merge_sort && !join->merge_sort.empty())
-      merge_sort = join->merge_sort.order;
-  }
-
   if (reverse && m_parallel_plan->IsParallelScanTable(table))
     m_parallel_plan->SetParallelScanReverse();
+  auto *join = m_join_in;
+  if (!use_order || join->m_ordered_index_usage == JOIN::ORDERED_INDEX_VOID)
+    return;
+
+  // Optimizer reset order and group_list of JOIN if it decides index is used
+  // for order or group, we saved it in used_order in class ORDER_with_src.
+  merge_sort = join->m_ordered_index_usage == JOIN::ORDERED_INDEX_ORDER_BY
+                   ? join->order.actual_used()
+                   : join->group_list.actual_used();
 }
 
 bool AccessPathParallelizer::rewrite_index_scan(AccessPath *in, AccessPath *out
@@ -623,7 +620,7 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
     // Clone access path itself for workers
     if (super::rewrite_materialize(in, out, under_join)) return true;
     if (src->table->group) {
-      assert(m_join_out->group_list.empty());
+      assert(m_join_in->group_list.actual_used());
       // Uses JOIN::group_list to save TABLE::group of this access path to avoid
       // overwrite original group of temporary table.
       m_join_out->group_list = ORDER_with_src(
@@ -723,9 +720,7 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
 bool AccessPathParallelizer::rewrite_temptable_aggregate(AccessPath *in,
                                                          AccessPath *&out) {
   auto &tagg = in->temptable_aggregate();
-
-  assert(m_join_out->group_list.empty());
-
+  assert(m_join_in->group_list.actual_used());
   if (m_parallel_plan->NonpushedAggregate())
     out = nullptr;
   else
@@ -840,14 +835,12 @@ bool AccessPathParallelizer::rewrite_sort(AccessPath *in, AccessPath *out) {
 }
 
 bool AccessPathParallelizer::rewrite_aggregate(AccessPath *in, AccessPath *&out) {
-  ORDER_with_src group_list = m_join_in->merge_sort.empty()
-                                  ? m_join_in->group_list
-                                  : m_join_in->merge_sort;
-  // Recreate group fields original join since underlying table changed
-  if (!m_join_in->merge_sort.empty()) {
-    assert(m_join_in->group_list.empty());
-    m_join_in->group_list = m_join_in->merge_sort;
-  }
+  auto *group = m_join_in->group_list.actual_used();
+
+  // Recreate group fields original join since underlying table changed, The
+  // group_list is used in make_group_fields().
+  if (m_join_in->group_list.used_order)
+    m_join_in->group_list.order = m_join_in->group_list.used_order;
   m_join_in->group_fields_cache.clear();
   m_join_in->group_fields.destroy_elements();
   if (make_group_fields(m_join_in, m_join_in)) return true;
@@ -855,9 +848,9 @@ bool AccessPathParallelizer::rewrite_aggregate(AccessPath *in, AccessPath *&out)
   if (m_parallel_plan->NonpushedAggregate())
     out = nullptr;
   else
-    m_join_out->group_list =
-        group_list.clone({mem_root(), &m_join_out->query_block->base_ref_items,
-                          m_join_out->fields->size(), nullptr});
+    m_join_out->group_list.order = clone_order_list(
+        group, {mem_root(), &m_join_out->query_block->base_ref_items,
+                m_join_out->fields->size(), nullptr});
   if (!collector_path_pos()) set_collector_path_pos(&in->aggregate().child);
   return false;
 }
@@ -1126,7 +1119,9 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
   if (super::rewrite_materialize(in, out, under_join)) return true;
   auto *dest_param = out->materialize().param;
   auto &param_query_block = dest_param->query_blocks[0];
-  THD *thd = m_join_out->thd;
+  auto *join = m_join_out;
+  auto *join_from = m_join_in;
+  THD *thd = join->thd;
   TABLE *table;
   Temp_table_param *temp_table_param;
 
@@ -1134,42 +1129,35 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
     // This is the semijoin materialization table
     if (!(temp_table_param = new (mem_root()) Temp_table_param)) return true;
     if (!(table = recreate_semijoin_materialized_table(
-              mem_root(), m_join_in->partial_plan, m_item_clone_context,
-              dest_param->table, temp_table_param, m_join_out->query_block)))
+              mem_root(), join_from->partial_plan, m_item_clone_context,
+              dest_param->table, temp_table_param, join->query_block)))
       return true;
 
     dest_param->table = table;
     param_query_block.temp_table_param = temp_table_param;
   } else {
-    Query_block *query_block_out = m_join_out->query_block;
-    Query_block *query_block_in = m_join_in->query_block;
-    if (m_join_out->alloc_ref_item_slice(thd, dest_param->ref_slice))
+    if (join->alloc_ref_item_slice(thd, dest_param->ref_slice))
       return true;
-    ORDER *group =
-        m_join_in->group_list.empty()
-            ? nullptr
-            : clone_order_list(m_join_in->group_list.order,
-                               {thd->mem_root, &query_block_out->base_ref_items,
-                                query_block_out->fields.size(),
-                                &query_block_in->base_ref_items[0]});
 
-    if (recreate_materialized_table(
-            thd, m_join_out, group, dest_param->table->s->is_distinct, false,
-            dest_param->ref_slice, dest_param->limit_rows, &dest_param->table,
-            &param_query_block.temp_table_param))
+    // group_list must be cloned in JOIN::clone_from()
+    auto *group = join->group_list.order;
+    bool is_distinct = dest_param->table->s->is_distinct;
+    if (recreate_materialized_table(thd, join, group, is_distinct, false,
+                                    dest_param->ref_slice,
+                                    dest_param->limit_rows, &dest_param->table,
+                                    &param_query_block.temp_table_param))
       return true;
     table = dest_param->table;
     temp_table_param = param_query_block.temp_table_param;
 
     // See setup_tmptable_write_func()
-    if (supply_items_to_copy(temp_table_param, m_join_out,
-                             dest_param->ref_slice))
+    if (supply_items_to_copy(temp_table_param, join, dest_param->ref_slice))
       return true;
   }
 
   // We made a new table, so make sure it gets properly cleaned up
   // at the end of execution.
-  m_join_out->temp_tables.push_back(
+  join->temp_tables.push_back(
       JOIN::TemporaryTableToCleanup{table, temp_table_param});
   set_sorting_info({table, dest_param->ref_slice});
   out->materialize().table_path = accesspath_dup(out->materialize().table_path);
@@ -1219,21 +1207,19 @@ bool PartialAccessPathRewriter::rewrite_remove_duplicates_on_index(
 bool PartialAccessPathRewriter::rewrite_temptable_aggregate(AccessPath *,
                                                             AccessPath *&out) {
   auto &tagg = out->temptable_aggregate();
-  THD *thd = m_join_out->thd;
-  auto *query_block_out = m_join_out->query_block;
-  auto *query_block_in = m_join_in->query_block;
-  ORDER *group = clone_order_list(
-      m_join_in->group_list.order,
-      {thd->mem_root, &query_block_out->base_ref_items,
-       query_block_out->fields.size(), &query_block_in->base_ref_items[0]});
+  JOIN *join = m_join_out;
+  THD *thd = join->thd;
 
-  if (recreate_materialized_table(thd, m_join_out, group, false, false,
+  // group_list must be cloned in JOIN::clone_from()
+  auto *group = join->group_list.order;
+  assert(group);
+  if (recreate_materialized_table(thd, join, group, false, false,
                                   tagg.ref_slice, HA_POS_ERROR, &tagg.table,
                                   &tagg.temp_table_param))
     return true;
   // We made a new table, so make sure it gets properly cleaned up
   // at the end of execution.
-  m_join_out->temp_tables.push_back(
+  join->temp_tables.push_back(
       JOIN::TemporaryTableToCleanup{tagg.table, tagg.temp_table_param});
 
   tagg.table_path = accesspath_dup(tagg.table_path);
@@ -1251,18 +1237,20 @@ bool PartialAccessPathRewriter::rewrite_sort(AccessPath *in, AccessPath *out) {
   Filesort *filesort = sort_in.filesort;
   // XXX It's not safe, because leader may changed, we should clone it to
   // template first when parallelizing plan.
+  JOIN *join = m_join_out;
   ORDER *new_order = clone_order_list(
-      filesort->src_order, {mem_root(), &m_join_out->query_block->base_ref_items,
-                            m_join_out->fields->size(),
-                            &m_join_in->query_block->base_ref_items[0]});
-  Switch_ref_item_slice slice_switch(m_join_out, m_sorting_info.ref_item_slice);
-  if (!(sort_out.filesort = new (mem_root()) Filesort(
-            m_join_out->thd, {m_sorting_info.table}, filesort->keep_buffers,
-            new_order, filesort->limit, filesort->m_force_stable_sort,
-            filesort->m_remove_duplicates, filesort->m_force_sort_positions,
-            false)))
+      filesort->src_order,
+      {mem_root(), &join->query_block->base_ref_items, join->fields->size(),
+       &m_join_in->query_block->base_ref_items[0]});
+  auto ref_slice = m_sorting_info.ref_item_slice;
+  Switch_ref_item_slice slice_switch(join, ref_slice);
+  if (!(sort_out.filesort = new (mem_root())
+            Filesort(join->thd, {m_sorting_info.table}, filesort->keep_buffers,
+                     new_order, filesort->limit, filesort->m_force_stable_sort,
+                     filesort->m_remove_duplicates,
+                     filesort->m_force_sort_positions, false)))
     return true;
-  m_join_out->filesorts_to_cleanup.push_back(sort_out.filesort);
+  join->filesorts_to_cleanup.push_back(sort_out.filesort);
   return false;
 }
 

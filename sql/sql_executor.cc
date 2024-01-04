@@ -271,8 +271,7 @@ bool JOIN::create_intermediate_table(
         !(tab->quick() && tab->quick()->is_agg_loose_index_scan());
     if (prepare_sum_aggregators(sum_funcs, need_distinct)) goto err;
     if (setup_sum_funcs(thd, sum_funcs)) goto err;
-    merge_sort = group_list;
-    group_list.clean();
+    group_list.clean(true);
   } else {
     if (make_sum_func_list(*fields, false)) goto err;
     const bool need_distinct =
@@ -295,7 +294,7 @@ bool JOIN::create_intermediate_table(
                                /*force_stable_sort=*/false,
                                /*sort_before_group=*/false))
         goto err;
-      order.clean();
+      order.clean(true);
     }
   }
   return false;
@@ -378,8 +377,7 @@ void JOIN::optimize_distinct() {
     /* Should already have been optimized away */
     DBUG_ASSERT(m_ordered_index_usage == ORDERED_INDEX_ORDER_BY);
     if (m_ordered_index_usage == ORDERED_INDEX_ORDER_BY) {
-      merge_sort = order;
-      order.clean();
+      order.clean(true);
     }
   }
 }

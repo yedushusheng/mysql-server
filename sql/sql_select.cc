@@ -4581,7 +4581,7 @@ bool JOIN::make_tmp_tables_info() {
           }
         }
       }
-      group_list.clean();
+      group_list.clean(true);
     }
     /*
       If we have different sort & group then we must sort the data by group
