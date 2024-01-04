@@ -230,7 +230,7 @@ bool Item::init_from(const Item *item, Item_clone_context *context) {
   */
   item_name.set(item->item_name.ptr(), item->item_name.length());
   orig_name.set(item->orig_name.ptr(), item->orig_name.length());
-  if (str_value.copy(item->str_value)) return true;
+  if (str_value.clone_from(item->str_value)) return true;
 
 #ifndef NDEBUG
   /*
