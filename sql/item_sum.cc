@@ -6256,7 +6256,12 @@ bool Item_sum_json_array::add() {
                               &m_conversion_buffer, &value_wrapper))
       return error_json();
 
-    Json_dom_ptr value_dom(value_wrapper.to_dom(thd));
+    Json_dom_ptr value_dom;
+    Json_array_ptr value_arr;
+    if (m_sum_stage == COMBINE_STAGE)
+      value_arr.reset(down_cast<Json_array *>(value_wrapper.to_dom(thd)));
+    else
+      value_dom.reset(value_wrapper.to_dom(thd));
     value_wrapper.set_alias();  // release the DOM
 
     /*
@@ -6264,8 +6269,10 @@ bool Item_sum_json_array::add() {
       deserializing the result_field in reset/update_field.
     */
     const auto arr = down_cast<Json_array *>(m_wrapper->to_dom(thd));
-    if (arr->append_alias(std::move(value_dom)))
-      return error_json(); /* purecov: inspected */
+    bool res = m_sum_stage == COMBINE_STAGE
+                   ? arr->consume(std::move(value_arr))
+                   : arr->append_alias(std::move(value_dom));
+    if (res) return error_json(); /* purecov: inspected */
 
     null_value = false;
   } catch (...) {
@@ -6373,8 +6380,14 @@ bool Item_sum_json_object::add() {
       deserializing the result_field in reset/update_field.
     */
     Json_object *object = down_cast<Json_object *>(m_wrapper->to_dom(thd));
-    if (object->add_alias(key, value_wrapper.to_dom(thd)))
-      return error_json(); /* purecov: inspected */
+    bool res;
+    if (m_sum_stage == COMBINE_STAGE) {
+      Json_object_ptr value_ptr(
+          down_cast<Json_object *>(value_wrapper.to_dom(thd)));
+      res = object->consume(std::move(value_ptr));
+    } else
+      res = object->add_alias(key, value_wrapper.to_dom(thd));
+    if (res) return error_json(); /* purecov: inspected */
     /*
       If rows in the window are not ordered based on "key", add this key
       to the key map.

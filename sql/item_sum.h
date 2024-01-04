@@ -2080,10 +2080,6 @@ class Item_udf_sum : public Item_sum {
 
     return check_sum_func(thd, ref);
   }
-  Item_parallel_safe parallel_safe() const override {
-    // Don't known how to clone it yet
-    return Item_parallel_safe::Unsafe;
-  }
   enum Sumfunctype sum_func() const override { return UDF_SUM_FUNC; }
 
   void clear() override;
