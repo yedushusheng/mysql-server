@@ -6255,13 +6255,13 @@ bool Item_sum_json_array::add() {
 
     Json_dom_ptr value_dom;
     Json_array_ptr value_arr;
+    bool is_json_type_null = false;
     if (m_sum_stage == COMBINE_STAGE) {
       auto *dom = value_wrapper.to_dom(thd);
-      if (dom->json_type() == enum_json_type::J_NULL) {
-        null_value = true;
-        return false;
-      }
-      value_arr.reset(down_cast<Json_array *>(dom));
+      if (dom->json_type() == enum_json_type::J_NULL)
+        is_json_type_null = true;
+      else
+        value_arr.reset(down_cast<Json_array *>(dom));
     } else
       value_dom.reset(value_wrapper.to_dom(thd));
     value_wrapper.set_alias();  // release the DOM
@@ -6271,12 +6271,13 @@ bool Item_sum_json_array::add() {
       deserializing the result_field in reset/update_field.
     */
     const auto arr = down_cast<Json_array *>(m_wrapper->to_dom(thd));
-    bool res = m_sum_stage == COMBINE_STAGE
-                   ? arr->consume(std::move(value_arr))
-                   : arr->append_alias(std::move(value_dom));
+    bool res =
+        m_sum_stage == COMBINE_STAGE
+            ? (is_json_type_null ? false : arr->consume(std::move(value_arr)))
+            : arr->append_alias(std::move(value_dom));
     if (res) return error_json(); /* purecov: inspected */
 
-    null_value = false;
+    null_value = is_json_type_null;
   } catch (...) {
     /* purecov: begin inspected */
     handle_std_exception(func_name());
@@ -6314,10 +6315,10 @@ Item *Item_sum_json_array::new_item(Item_clone_context *context) const {
 }
 
 bool Item_sum_json_object::add() {
-  DBUG_ASSERT(fixed == 1);
-  DBUG_ASSERT(arg_count == 2);
+  assert(fixed == 1);
+  assert(arg_count == 2);
 
-  const THD *thd = base_select->parent_lex->thd;
+  const THD *thd = base_query_block->parent_lex->thd;
   /*
      Checking if an error happened inside one of the functions that have no
      way of returning an error status. (reset_field(), update_field() or
@@ -6331,15 +6332,13 @@ bool Item_sum_json_object::add() {
     const char *safep;   // contents of key_item, possibly converted
     size_t safe_length;  // length of safep
 
-    if (get_json_string(key_item, &m_tmp_key_value, &m_conversion_buffer,
-                        &safep, &safe_length)) {
-      my_error(ER_JSON_DOCUMENT_NULL_KEY, MYF(0));
+    if (m_sum_stage != COMBINE_STAGE &&
+        get_json_object_member_name(thd, key_item, &m_tmp_key_value,
+                                    &m_conversion_buffer, &safep, &safe_length))
       return error_json();
-    }
-
-    std::string key(safep, safe_length);
-
-    if (m_is_window_function) {
+    std::string key;
+    if (m_sum_stage != COMBINE_STAGE) key.assign(safep, safe_length);
+    if (m_sum_stage != COMBINE_STAGE && m_is_window_function) {
       /*
         When a row is leaving a frame, we have two options:
         1. If rows are ordered according to the "key", then remove
@@ -6383,10 +6382,15 @@ bool Item_sum_json_object::add() {
     */
     Json_object *object = down_cast<Json_object *>(m_wrapper->to_dom(thd));
     bool res;
+    bool is_json_type_null = false;
     if (m_sum_stage == COMBINE_STAGE) {
-      Json_object_ptr value_ptr(
-          down_cast<Json_object *>(value_wrapper.to_dom(thd)));
-      res = object->consume(std::move(value_ptr));
+      auto *dom = value_wrapper.to_dom(thd);
+      if (dom->json_type() == enum_json_type::J_NULL)
+        is_json_type_null = true;
+      else {
+        Json_object_ptr value_ptr(down_cast<Json_object *>(dom));
+        res = object->consume(std::move(value_ptr));
+      }
     } else
       res = object->add_alias(key, value_wrapper.to_dom(thd));
     if (res) return error_json(); /* purecov: inspected */
@@ -6404,7 +6408,7 @@ bool Item_sum_json_object::add() {
         m_key_map.emplace(std::make_pair(key, count));
     }
 
-    null_value = false;
+    null_value = is_json_type_null;
     // object will take ownership of the value
     value_wrapper.set_alias();
   } catch (...) {
