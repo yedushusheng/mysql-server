@@ -527,7 +527,9 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
       Filesort *merge_sort = collector->MergeSort();
 
       if (merge_sort) {
-        ret += " with merge sort: ";
+        ret += " with merge sort";
+        if (merge_sort->m_remove_duplicates) ret += " with duplicate removal";
+        ret += ": ";
 
         bool first = true;
         for (unsigned i = 0; i < merge_sort->sort_order_length();

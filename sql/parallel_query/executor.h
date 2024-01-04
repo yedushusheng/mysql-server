@@ -42,7 +42,7 @@ class Collector {
   PartialPlan *partial_plan() const { return m_partial_plan; }
   JOIN *PartialJoin() const;
   uint NumWorkers() const { return m_workers.size(); }
-  bool CreateMergeSort(JOIN *join, ORDER *merge_order);
+  bool CreateMergeSort(JOIN *join, ORDER *merge_order, bool remove_duplicates);
   Filesort *MergeSort() const { return m_merge_sort; }
   template <class Func>
   void ForEachWorker(Func &&func) {

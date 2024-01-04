@@ -1100,8 +1100,10 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   if (source_join->root_access_path() != parallelized_path)
     source_join->set_root_access_path(parallelized_path);
 
-  if (rewriter.MergeSort() &&
-      m_collector->CreateMergeSort(source_join, rewriter.MergeSort()))
+  bool merge_sort_remove_duplicates;
+  auto *merge_sort = rewriter.MergeSort(&merge_sort_remove_duplicates);
+  if (merge_sort && m_collector->CreateMergeSort(source_join, merge_sort,
+                                                 merge_sort_remove_duplicates))
     return true;
 
   if (rewriter.has_pushed_limit_offset()) m_need_collect_found_rows = true;

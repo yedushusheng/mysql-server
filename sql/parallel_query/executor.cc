@@ -33,6 +33,9 @@ Collector::~Collector() {
     close_tmp_table(m_table);
     free_tmp_table(m_table);
   }
+
+  // Used by duplicates removal
+  if (m_merge_sort) my_free(m_merge_sort->m_sort_param.m_last_key_seen);
   // tmp_buffer in Sort_param needs to destroy because it may contain alloced
   // memory.
   destroy(m_merge_sort);
@@ -72,15 +75,15 @@ void Collector::PrepareExecution(THD *thd) {
 
 void Collector::Destroy(THD *thd) { thd->mdl_context.deinit_lock_group(); }
 
-bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order) {
+bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order,
+                                bool remove_duplicates) {
   THD *thd = join->thd;
   // Merge sort always reads collector table.
   assert(join->current_ref_item_slice == REF_SLICE_SAVED_BASE);
-  if (!(m_merge_sort = new (thd->mem_root)
-            Filesort(thd, {m_table}, /*keep_buffers=*/false, merge_order,
-                     HA_POS_ERROR, /*force_stable_sort=*/false,
-                     /*remove_duplicates=*/false,
-                     /*force_sort_positions=*/true, /*unwrap_rollup=*/false)))
+  if (!(m_merge_sort = new (thd->mem_root) Filesort(
+            thd, {m_table}, /*keep_buffers=*/false, merge_order, HA_POS_ERROR,
+            /*force_stable_sort=*/false, remove_duplicates,
+            /*force_sort_positions=*/true, /*unwrap_rollup=*/false)))
     return true;
 
   return false;

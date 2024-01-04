@@ -109,7 +109,10 @@ class AccessPathParallelizer : public AccessPathRewriter {
   /// plan has been pushed.
   AccessPath *parallelize_access_path(Collector *collector, AccessPath *in,
                                       AccessPath *&partial_path);
-  ORDER *MergeSort() const { return merge_sort; }
+  ORDER *MergeSort(bool *remove_duplicates) const {
+    *remove_duplicates = merge_sort_remove_duplicates;
+    return merge_sort;
+  }
   void set_fake_timing_iterator(RowIterator *iterator) {
     m_fake_timing_iterator = iterator;
   }
@@ -146,6 +149,7 @@ class AccessPathParallelizer : public AccessPathRewriter {
   TABLE *m_collector_table{nullptr};
   AccessPath **m_collector_path_pos{nullptr};
   ORDER *merge_sort{nullptr};
+  bool merge_sort_remove_duplicates{false};
   RowIterator *m_fake_timing_iterator{nullptr};
   bool m_pushed_limit_offset{false};
 };
