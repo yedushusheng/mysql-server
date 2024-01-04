@@ -178,6 +178,10 @@ class ParallelPlan {
     return &m_table_dists;
   }
   void SetExecNodes(dist::NodeArray *exec_nodes) { m_exec_nodes = exec_nodes; }
+  bool CreateCollector(THD *thd);
+
+  Collector *GetCollector() { return m_collector; }
+  PartialPlan *GetPartialPlan() { return &m_partial_plan; }
 
  private:
   THD *thd() const;
@@ -194,7 +198,6 @@ class ParallelPlan {
                            FieldsPushdownDesc *fields_pushdown_desc);
   // Clone ORDER for group list and order by
   bool ClonePartialOrders();
-  bool CreateCollector(THD *thd);
   void DestroyCollector(THD *thd);
 
   JOIN *m_join;
@@ -221,5 +224,7 @@ class ParallelPlan {
 bool GenerateParallelPlan(JOIN *join);
 bool add_tables_to_query_block(THD *thd, Query_block *query_block,
                                TABLE_LIST *tables);
+bool ResolveItemRefByInlineClone(Item_ref *item_ref, const Item_ref *from,
+                                 Item_clone_context *context);
 }  // namespace pq
 #endif

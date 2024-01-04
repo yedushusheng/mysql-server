@@ -713,7 +713,7 @@ static bool item_is_const_or_in_merged_deriveds(const Item *item,
 }
 #endif
 
-static bool ResolveItemRefByInlineClone(Item_ref *item_ref,
+bool ResolveItemRefByInlineClone(Item_ref *item_ref,
                                         const Item_ref *from,
                                         Item_clone_context *context) {
   Item **ref_item;
@@ -902,14 +902,13 @@ class PartialItemGenContext : public Item_clone_context {
                            const Item_sum_hybrid_field *from_item) override {
     item_hybrid->set_field(from_item->get_field());
   }
+
   bool resolve_view_ref(Item_view_ref *item,
                         const Item_view_ref *from) override {
-
-    // The ref point to another query lex, so it's safe
-    item->set_ref_pointer(from->ref_pointer());
-    if (from->get_first_inner_table())
-      item->set_first_inner_table(from->get_first_inner_table());
-
+    // Here we should use deep clone here because we needs handle subqueries
+    // pre-evaluation or pushdown if its ref_item includes any of them.
+    if (ResolveItemRefByInlineClone(item, from, this)) return true;
+    item->set_first_inner_table(from->get_first_inner_table());
     return false;
   }
 

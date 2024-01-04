@@ -97,8 +97,10 @@ bool Collector::Init(THD *thd) {
   if (m_partial_plan->InitExecution(m_workers.size())) return true;
 
   // Execute pre-evaluate subselects before workers launching
-  for (auto &cached_subs : *m_preevaluate_subqueries) {
-    if (cached_subs.cache_subselect(thd)) return true;
+  if (m_preevaluate_subqueries) {
+    for (auto &cached_subs : *m_preevaluate_subqueries) {
+      if (cached_subs.cache_subselect(thd)) return true;
+    }
   }
 
   // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
@@ -570,6 +572,8 @@ class Query_result_to_collector : public Query_result_interceptor {
     m_row_exchange_writer->WriteEOF();
     return false;
   }
+
+  TABLE *table() const { return m_table; }
 };
 
 class PartialItemCloneContext : public Item_clone_context {
@@ -602,11 +606,7 @@ class PartialItemCloneContext : public Item_clone_context {
 
   bool resolve_view_ref(Item_view_ref *item,
                         const Item_view_ref *from) override {
-    Item **ref_item;
-    if (!( ref_item = (Item **) new (mem_root()) Item **) ||
-        !(*ref_item = from->ref_item()->clone(this)))
-      return true;
-    item->set_ref_pointer(ref_item);
+    if (ResolveItemRefByInlineClone(item, from, this)) return true;
     if (from->get_first_inner_table()) {
       auto *table = find_field_table(from->get_first_inner_table());
       item->set_first_inner_table(table);
@@ -852,6 +852,17 @@ void PartialExecutor::InitExecThd(PartialExecutorContext *ctx,
 
   // Thank add_to_status(), Leader will count workers created
   thd->status_var.pq_workers_created = 1;
+}
+
+void CreateBroadcastResult(THD *thd, comm::RowExchangeWriter *writer,
+                           Temp_table_param *tmp_table_param) {
+  thd->lex->result =
+      new (thd->mem_root) Query_result_to_collector(writer, tmp_table_param);
+}
+
+TABLE *GetBroadcastResultTable(THD *thd) {
+  auto *result = (Query_result_to_collector *)thd->lex->result;
+  return result->table();
 }
 
 }  // namespace pq
