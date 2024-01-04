@@ -821,13 +821,15 @@ bool MaterializeIterator::MaterializeQueryBlock(const QueryBlock &query_block,
       }
     }
   }
-
-  if (query_block.subquery_iterator->Init()) {
-    return true;
-  }
+  // Note Put this before subquery_iterator->Init() calling because we
+  // workers could fail in Collector::Init() if there is a merge sort.
   auto end_parallel_plan = create_scope_guard([join] {
     if (join) join->end_parallel_plan(false);
   });
+  if (query_block.subquery_iterator->Init()) {
+    return true;
+  }
+
   PFSBatchMode pfs_batch_mode(query_block.subquery_iterator.get());
   while (*stored_rows < m_limit_rows) {
     int error = query_block.subquery_iterator->Read();
