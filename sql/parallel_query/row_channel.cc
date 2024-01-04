@@ -9,15 +9,15 @@ constexpr uint message_queue_ring_size = 65536;
 
 void Event::Wait(THD *thd, bool auto_reset) {
   mysql_mutex_lock(&m_mutex);
-  thd->ENTER_COND(&m_cond, &m_mutex, nullptr, nullptr);
+  if (thd) thd->ENTER_COND(&m_cond, &m_mutex, nullptr, nullptr);
 
-  while (!m_set && likely(!thd->killed)) mysql_cond_wait(&m_cond, &m_mutex);
+  while (!m_set && (!thd || likely(!thd->killed))) mysql_cond_wait(&m_cond, &m_mutex);
 
   if (auto_reset && likely(m_set)) m_set = false;
 
   mysql_mutex_unlock(&m_mutex);
 
-  thd->EXIT_COND(nullptr);
+  if (thd) thd->EXIT_COND(nullptr);
 }
 
 bool MessageBuffer::reserve(std::size_t len) {
@@ -50,10 +50,13 @@ class MemRowChannel : public RowChannel {
     if (m_message_queue_owned) ::destroy(m_message_queue);
   }
   bool Init(THD *thd, Event *event, bool) override {
-    if ((!m_message_queue && !(m_message_queue = new (thd->mem_root)
-                                   MessageQueue(message_queue_ring_size))) ||
-        m_message_queue->Init(thd->mem_root))
-      return true;
+    if (m_message_queue_owned) {
+      assert(!m_message_queue);
+      if (!(m_message_queue =
+                new (thd->mem_root) MessageQueue(message_queue_ring_size)) ||
+          m_message_queue->Init(thd->mem_root))
+        return true;
+    }
 
     if (!(m_message_queue_handle = new (thd->mem_root)
               MessageQueueHandle(m_message_queue, thd, event)))
@@ -107,5 +110,6 @@ void SetPeerEventForMemChannel(RowChannel *channel, Event *peer_event) {
   assert(peer_event);
   down_cast<MemRowChannel *>(channel)->SetPeerEvent(peer_event);
 }
+
 }  // namespace comm
 }  // namespace pq

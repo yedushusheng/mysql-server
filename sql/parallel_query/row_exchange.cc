@@ -220,8 +220,7 @@ class RowExchangeMergeSortReader : public RowExchangeReader, MergeSortSource {
 
   Result Read(THD *, uchar *buf, std::size_t nbytes) override {
     uchar *data;
-    RowDataInfo *rowdata;
-    auto result = m_mergesort.Read(&data, rowdata);
+    auto result = m_mergesort.Read(&data);
 
     switch (result) {
       case MergeSort::Result::SUCCESS:

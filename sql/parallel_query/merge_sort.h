@@ -41,7 +41,7 @@ class MergeSort {
   /// For first time fetch, populate PQ with one record from each channel.
   bool Populate(THD *thd);
   /// Read one row of sorted data
-  Result Read(uchar **buf, comm::RowDataInfo *&rowdata);
+  Result Read(uchar **buf);
 
  private:
   /**
@@ -90,7 +90,7 @@ class MergeSortElement {
 
     return num_recs == (std::uint64_t)m_allocated_records;
   }
-  uchar *CurrentRecord(comm::RowDataInfo **rowdata) const;
+  uchar *CurrentRecord() const;
 
   /// Pop a record for next read. The top record is ready to read. @return false
   /// if no record left.
