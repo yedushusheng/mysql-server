@@ -773,14 +773,14 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
 
       string ret = "Remove duplicate ";
       if (sj->tabs_end == sj->tabs + 1) {  // Only one table.
-        ret += sj->tabs->qep_tab->table()->alias;
+        ret += sj->tabs->table->alias;
       } else {
         ret += "(";
         for (SJ_TMP_TABLE_TAB *tab = sj->tabs; tab != sj->tabs_end; ++tab) {
           if (tab != sj->tabs) {
             ret += ", ";
           }
-          ret += tab->qep_tab->table()->alias;
+          ret += tab->table->alias;
         }
         ret += ")";
       }

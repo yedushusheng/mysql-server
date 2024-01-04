@@ -46,7 +46,9 @@ class Collector {
   bool CreateMergeSort(JOIN *join, ORDER *merge_order, bool remove_duplicates);
   template <class Func>
   void ForEachWorker(Func &&func) {
-    for (auto *worker : m_workers) func(worker);
+    for (auto *worker : m_workers) {
+      if (worker) func(worker);
+    }
   }
   AccessPath *Explain(std::vector<std::string> &description);
   void SetPreevaluateSubqueries(

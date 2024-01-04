@@ -383,7 +383,7 @@ class FakeTimingIterator : public RowIterator {
     last_row_spent and maximum last_row_sent worker's timing data.
   */
   std::string TimingString(bool) const override {
-    uint64_t num_rows1, num_rows2, num_init_calls1, num_init_calls2;
+    uint64_t num_rows1, num_rows2, num_init_calls1 = 0, num_init_calls2 = 0;
     duration_type time_spent_in_first_row1, time_spent_in_first_row2,
         time_spent_in_other_rows1, time_spent_in_other_rows2;
 
@@ -391,18 +391,24 @@ class FakeTimingIterator : public RowIterator {
       const_cast<FakeTimingIterator *>(this)->m_timing_data =
           GetOutputWorkersTimingData(m_collector);
 
-    assert(m_timing_data_cursor < m_timing_data.first->size() &&
-           m_timing_data_cursor < m_timing_data.second->size());
-    ReadOneIteratorTimingData(m_timing_data.first->c_str(),
-                              m_timing_data_cursor, &num_rows1,
-                              &num_init_calls1, &time_spent_in_first_row1,
-                              &time_spent_in_other_rows1);
+    // Here GetOutputWorkersTimingData() could return {nullptr, nullptr} if
+    // there is no worker in colloctor because EXPLAIN ANALYZE prints a query
+    // plan even the session got killed, see also THD::running_explain_analyze.
+    if (m_timing_data.first) {
+      assert(m_timing_data.second);
+      assert(m_timing_data_cursor < m_timing_data.first->size() &&
+             m_timing_data_cursor < m_timing_data.second->size());
+      ReadOneIteratorTimingData(m_timing_data.first->c_str(),
+                                m_timing_data_cursor, &num_rows1,
+                                &num_init_calls1, &time_spent_in_first_row1,
+                                &time_spent_in_other_rows1);
 
-    const_cast<FakeTimingIterator *>(this)->m_timing_data_cursor +=
-        ReadOneIteratorTimingData(m_timing_data.second->c_str(),
-                                  m_timing_data_cursor, &num_rows2,
-                                  &num_init_calls2, &time_spent_in_first_row2,
-                                  &time_spent_in_other_rows2);
+      const_cast<FakeTimingIterator *>(this)->m_timing_data_cursor +=
+          ReadOneIteratorTimingData(m_timing_data.second->c_str(),
+                                    m_timing_data_cursor, &num_rows2,
+                                    &num_init_calls2, &time_spent_in_first_row2,
+                                    &time_spent_in_other_rows2);
+    }
 
     char buf[1024];
     if (num_init_calls1 == 0 && num_init_calls2 == 0) {
@@ -436,8 +442,8 @@ class FakeTimingIterator : public RowIterator {
           "(actual time=%.3f..%.3f/%.3f..%.3f rows=%lld/%lld loops=%" PRIu64
           "/%" PRIu64 ")",
           num_init_calls1 > 0 ? first_row_ms1 / num_init_calls1 : 0,
-          first_row_ms2 / num_init_calls2,
           num_init_calls1 > 0 ? last_row_ms1 / num_init_calls1 : 0,
+          first_row_ms2 / num_init_calls2,
           last_row_ms2 / num_init_calls2,
           num_init_calls1 > 0
               ? llrintf(static_cast<double>(num_rows1) / num_init_calls1)
