@@ -7113,3 +7113,14 @@ static Sys_var_ulong Sys_parallel_scan_ranges_threshold(
     HINT_UPDATEABLE SESSION_VAR(parallel_scan_ranges_threshold),
     CMD_LINE(REQUIRED_ARG), VALID_RANGE(0, ULONG_MAX), DEFAULT(2),
     BLOCK_SIZE(1));
+
+static const char *parallel_query_switch_names[] = {
+    "join", "default", NullS};
+
+static Sys_var_flagset Sys_parallel_query_switch(
+    "parallel_query_switch",
+    "parallel_query_switch=option=val[,option=val...], where option is one of "
+    "{join} and val is one of "
+    "{on, off, default}",
+    HINT_UPDATEABLE SESSION_VAR(parallel_query_switch), CMD_LINE(REQUIRED_ARG),
+    parallel_query_switch_names, DEFAULT(PARALLEL_QUERY_SWITCH_DEFAULT));

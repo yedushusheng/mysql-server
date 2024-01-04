@@ -427,6 +427,7 @@ struct System_variables {
   double parallel_plan_cost_threshold;
   ulonglong parallel_scan_records_threshold;
   ulong parallel_scan_ranges_threshold;
+  ulonglong parallel_query_switch;
 };
 
 /**

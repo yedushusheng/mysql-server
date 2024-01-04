@@ -294,6 +294,12 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
+  if (!thd->parallel_query_switch_flag(PARALLEL_QUERY_JOIN) &&
+      join->primary_tables != 1) {
+    cause = "not_single_table";
+    return;
+  }
+
   // Don't support window function and rollup yet
   if (!join->m_windows.is_empty() ||
       join->rollup_state != JOIN::RollupState::NONE) {
