@@ -521,7 +521,7 @@ static void ChooseParallelPlan(JOIN *join) {
       return;
     }
 
-    // Materialization semijoin is blocked by this
+    // Un-merged derived table is blocked by this
     if (table_ref && is_temporary_table(table_ref) &&
         qt->materialize_table != QEP_TAB::MATERIALIZE_SEMIJOIN) {
       cause = "include_unsupported_temporary_table";
@@ -557,6 +557,16 @@ static void ChooseParallelPlan(JOIN *join) {
     if ((cause = dist_adapter->TableRefuseParallel(table))) return;
 
     if ((cause = TableAccessTypeRefuseParallel(qt))) return;
+  }
+
+  // Make sure semi-join materialization items parallel safe, we use them to
+  // create materialization temporary tables in partial plan, currently.
+  for (auto &sjm : join->sjm_exec_list) {
+    for (auto *item : sjm.sj_nest->nested_join->sj_inner_exprs) {
+      if (!(ItemRefuseParallel(item, &item_refuse_cause))) continue;
+      cause = item_refuse_cause ? item_refuse_cause : "unsafe_sj_inner_exprs";
+      return;
+    }
   }
 
   if (!(join->parallel_plan = new (thd->mem_root) ParallelPlan(join))) return;
