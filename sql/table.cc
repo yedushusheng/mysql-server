@@ -4986,6 +4986,7 @@ TABLE_LIST *TABLE_LIST::clone(MEM_ROOT *mem_root) {
   tl->index_hints = index_hints;
   tl->partition_names = partition_names;
   tl->mdl_request.set_type(mdl_request.type);
+  tl->m_tableno = m_tableno;
   tl->m_map = m_map;
 
   tl->effective_algorithm = effective_algorithm;

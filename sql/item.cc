@@ -8294,8 +8294,6 @@ bool Item_view_ref::init_from(const Item *from, Item_clone_context *context) {
   auto *from_ref = down_cast<const Item_view_ref *>(from);
   assert(from_ref->ref);
 
-  // XXX don't support multi-table yet.
-  assert(!from_ref->first_inner_table);
   if (context->resolve_view_ref(this, from_ref)) return true;
   assert(ref);
 

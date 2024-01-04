@@ -553,6 +553,11 @@ class PartialItemCloneContext : public Item_clone_context {
     if (!(item->ref = (Item **)new (mem_root()) Item *) ||
         !(*item->ref = (*from->ref)->clone(this)))
       return true;
+    if (from->get_first_inner_table()) {
+      auto *table = m_query_block->find_identical_table_with(
+          from->get_first_inner_table());
+      item->set_first_inner_table(table);
+    }
     return false;
   }
 
