@@ -463,14 +463,14 @@ static void rewrite_temptable_scan_path(AccessPath *table_path, TABLE *table,
       table_ptr = &table_path->follow_tail().table;
       break;
     case AccessPath::EQ_REF:
-      table_ptr = &table_path->eq_ref().table;
       table_path->eq_ref().ref = table_path->eq_ref().ref->clone(
-          *table_ptr, INNER_TABLE_BIT, clone_context);
+          table, INNER_TABLE_BIT, clone_context);
+      table_ptr = &table_path->eq_ref().table;
       break;
     case AccessPath::CONST_TABLE:
-      table_ptr = &table_path->const_table().table;
       table_path->const_table().ref = table_path->const_table().ref->clone(
-          *table_ptr, INNER_TABLE_BIT, clone_context);
+          table, INNER_TABLE_BIT, clone_context);
+      table_ptr = &table_path->const_table().table;
       break;
     default:
       assert(false);
@@ -1169,7 +1169,6 @@ bool PartialAccessPathRewriter::rewrite_weedout(AccessPath *in,
                                                 AccessPath *out) {
   auto *orig_sjtbl = in->weedout().weedout_table;
   auto &weedout = out->weedout();
-  assert(orig_sjtbl->tmp_table != nullptr);
   auto *sjtbl = new (mem_root()) SJ_TMP_TABLE(*orig_sjtbl);
   if (!sjtbl) return true;
   sjtbl->tabs = mem_root()->ArrayAlloc<SJ_TMP_TABLE_TAB>(orig_sjtbl->tabs_end -

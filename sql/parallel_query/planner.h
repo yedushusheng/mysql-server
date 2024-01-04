@@ -84,10 +84,11 @@ class PartialPlan {
   bool CloneSJMatInnerExprsForTable(ulong table_id,
                                     mem_root_deque<Item *> *sjm_fields,
                                     Item_clone_context *clone_context);
+  List<Semijoin_mat_info> *SJMatInfoList() { return &m_sjm_info_list; }
 
  private:
   Query_block *m_query_block;
-  List<Semijoin_mat_info> sjm_info_list{};
+  List<Semijoin_mat_info> m_sjm_info_list{};
   /// Parallel scan info, current only support one table, This should be in
   /// class dist::PartialDistPlan, but we use it everywhere.
   ParallelScanInfo m_parallel_scan_info;

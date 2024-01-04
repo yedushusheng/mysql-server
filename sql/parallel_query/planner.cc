@@ -666,7 +666,7 @@ bool PartialPlan::CollectSJMatInfoList(JOIN *source_join,
           sjm_info->sj_inner_exprs.push_back(new_item))
         return true;
     }
-    sjm_info_list.push_back(sjm_info);
+    m_sjm_info_list.push_back(sjm_info);
   }
 
   return false;
@@ -676,7 +676,7 @@ bool PartialPlan::CloneSJMatInnerExprsForTable(
     ulong table_id, mem_root_deque<Item *> *sjm_fields,
     Item_clone_context *clone_context) {
   Semijoin_mat_info *sj_mat_info = nullptr;
-  for (auto &sjmi : sjm_info_list) {
+  for (auto &sjmi : m_sjm_info_list) {
     if (sjmi.table_id == table_id) {
       sj_mat_info = &sjmi;
       break;
