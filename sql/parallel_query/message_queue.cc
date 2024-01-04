@@ -1,7 +1,15 @@
 #include "message_queue.h"
+#include "my_bit.h"
 #include "sql/sql_class.h"
 
 namespace pq {
+// Don't greater that UINT32_MAX because we use my_round_up_to_next_power()
+// to determine allocation size, its parameter is uint32.
+// This is the maximum length of LONGBLOB and LONGTEXT
+constexpr std::size_t MaxAllocSize = UINT32_MAX;
+// For record size is 1k should be a common case.
+constexpr std::size_t InitialBufferSize = 1024;
+
 void MessageQueueEvent::Wait(THD *thd, bool auto_reset) {
   mysql_mutex_lock(&m_mutex);
   thd->ENTER_COND(&m_cond, &m_mutex, nullptr, nullptr);
@@ -232,6 +240,12 @@ MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
   std::size_t bytes_written;
   MemMessageQueue *queue = down_cast<MemMessageQueue *>(m_queue);
 
+  /*
+    Prevent writing messages overwhelming the receiver. Should this return a
+    meaningful error message?
+  */
+  if (nbytes > MaxAllocSize) return Result::OOM;
+
   while (!m_length_word_complete) {
     assert(m_partial_bytes < sizeof(std::size_t));
 
@@ -239,8 +253,7 @@ MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
         &m_endpoint_info, sizeof(std::size_t) - m_partial_bytes,
         ((char *)&nbytes) + m_partial_bytes, nowait, &bytes_written);
 
-    if (res != MessageQueue::Result::SUCCESS &&
-        res != MessageQueue::Result::WOULD_BLOCK) {
+    if (res != Result::SUCCESS && res != Result::WOULD_BLOCK) {
       /* Reset state in case caller tries to send another message. */
       m_partial_bytes = 0;
       m_length_word_complete = false;
@@ -255,7 +268,7 @@ MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
       m_length_word_complete = true;
     }
 
-    if (res != MessageQueue::Result::SUCCESS) return res;
+    if (res != Result::SUCCESS) return res;
   }
 
   /* Write the actual data bytes into the buffer. */
@@ -265,8 +278,7 @@ MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
                            static_cast<const char *>(data) + m_partial_bytes,
                            nowait, &bytes_written);
 
-    if (res != MessageQueue::Result::SUCCESS &&
-        res != MessageQueue::Result::WOULD_BLOCK) {
+    if (res != Result::SUCCESS && res != Result::WOULD_BLOCK) {
       /* Reset state in case caller tries to send another message. */
       m_partial_bytes = 0;
       m_length_word_complete = false;
@@ -275,7 +287,7 @@ MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
 
     m_partial_bytes += bytes_written;
 
-    if (res != MessageQueue::Result::SUCCESS) return res;
+    if (res != Result::SUCCESS) return res;
 
   } while (m_partial_bytes < nbytes);
 
@@ -290,7 +302,7 @@ MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
   m_length_word_complete = false;
 
   /* If queue has been detached, let caller know. */
-  if (queue->IsDetached()) return MessageQueue::Result::DETACHED;
+  if (queue->IsDetached()) return Result::DETACHED;
 
   /*
     If we've produced an amount of data greater than 1/4th of the ring size,
@@ -304,14 +316,32 @@ MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
     m_pending_bytes = 0;
   }
 
-  return MessageQueue::Result::SUCCESS;
+  return Result::SUCCESS;
 }
+
+bool MessageReassembleBuffer::reserve(std::size_t len) {
+  if (buflen >= len) return false;
+
+  assert(len < MaxAllocSize);
+
+  char *newbuf;
+  if (!(newbuf = (char *)my_realloc(PSI_NOT_INSTRUMENTED, buf, len, MYF(0))))
+    return true;
+
+  buf = newbuf;
+  buflen = len;
+
+  return false;
+}
+
+MessageReassembleBuffer::~MessageReassembleBuffer() { my_free(buf); }
 
 /**
   Receive a message from a shared message queue.
 */
-MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
-                                                    void **datap, bool nowait) {
+MessageQueue::Result MemMessageQueueHandle::Receive(
+    std::size_t *nbytesp, void **datap, bool nowait,
+    MessageReassembleBuffer *reassemble_buf) {
   MessageQueue::Result res;
   void *rawdata;
   std::size_t nbytes;
@@ -334,7 +364,7 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
     res = queue->ReceiveBytes(&m_endpoint_info,
                               sizeof(std::size_t) - m_partial_bytes, nowait,
                               &rb, &rawdata, &m_pending_bytes);
-    if (res != MessageQueue::Result::SUCCESS) return res;
+    if (res != Result::SUCCESS) return res;
 
     if (m_partial_bytes == 0 && rb >= sizeof(std::size_t)) {
       std::size_t needed;
@@ -348,7 +378,7 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
         *nbytesp = nbytes;
         *datap = (char *)rawdata + ALIGN_SIZE(sizeof(std::size_t));
 
-        return MessageQueue::Result::SUCCESS;
+        return Result::SUCCESS;
       }
 
       /*
@@ -362,36 +392,38 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
     } else {
       std::size_t lengthbytes;
 
-      /* Message word is split; need buffer to reassemble. */
-      if (!m_buffer) {
-        THD *thd = m_endpoint_info.thd();
-        if (!(m_buffer = (char *)thd->mem_root->Alloc(initial_buffer_size)))
-          return MessageQueue::Result::OOM;
+      if (unlikely(reassemble_buf->reserve(InitialBufferSize)))
+        return Result::OOM;
 
-        m_buflen = initial_buffer_size;
-      }
-
-      assert(m_buflen >= sizeof(std::size_t));
+      assert(reassemble_buf->buflen >= sizeof(std::size_t));
 
       /* Copy partial length word; remember to consume it. */
       if (m_partial_bytes + rb > sizeof(std::size_t))
         lengthbytes = sizeof(std::size_t) - m_partial_bytes;
       else
         lengthbytes = rb;
-      memcpy(&m_buffer[m_partial_bytes], rawdata, lengthbytes);
+      memcpy(&reassemble_buf->buf[m_partial_bytes], rawdata, lengthbytes);
       m_partial_bytes += lengthbytes;
       m_pending_bytes += ALIGN_SIZE(lengthbytes);
       rb -= lengthbytes;
 
       if (m_partial_bytes >= sizeof(std::size_t)) {
         assert(m_partial_bytes == sizeof(std::size_t));
-        m_expected_bytes = *(std::size_t *)m_buffer;
+        m_expected_bytes = *(std::size_t *)reassemble_buf->buf;
         m_length_word_complete = true;
         m_partial_bytes = 0;
       }
     }
   }
   nbytes = m_expected_bytes;
+
+  /*
+   Should be disallowed on the sending side already, but better check and
+   error out on the receiver side as well rather than trying to read a
+   prohibitively large message. Should this return a meaningful error
+   message?
+  */
+  if (nbytes > MaxAllocSize) return Result::OOM;
 
   /* m_partial_bytes could be non-zero if nowait is true */
   if (m_partial_bytes == 0) {
@@ -401,7 +433,7 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
     */
     res = queue->ReceiveBytes(&m_endpoint_info, nbytes, nowait, &rb, &rawdata,
                               &m_pending_bytes);
-    if (res != MessageQueue::Result::SUCCESS) return res;
+    if (res != Result::SUCCESS) return res;
 
     if (rb >= nbytes) {
       m_length_word_complete = false;
@@ -409,7 +441,7 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
       *nbytesp = nbytes;
       *datap = rawdata;
 
-      return MessageQueue::Result::SUCCESS;
+      return Result::SUCCESS;
     }
 
     /*
@@ -417,21 +449,12 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
       return it to the client in one chunk. First, make sure we have a large
       enough buffer available.
     */
-    if (m_buflen < nbytes) {
-      std::size_t newbuflen =
-          std::max(m_buflen, (std::size_t)initial_buffer_size);
 
-      while (newbuflen < nbytes) newbuflen *= 2;
-
-      if (m_buffer) {
-        m_buffer = nullptr;  // No need free for memory on mem_root.
-        m_buflen = 0;
-      }
-
-      THD *thd = m_endpoint_info.thd();
-      if (!(m_buffer = (char *)thd->mem_root->Alloc(newbuflen)))
-        return MessageQueue::Result::OOM;
-      m_buflen = newbuflen;
+    if (reassemble_buf->buflen < nbytes) {
+      std::size_t newbuflen = my_round_up_to_next_power(nbytes);
+      assert(newbuflen >= nbytes);  // Avoid overflow.
+      newbuflen = std::min(newbuflen, MaxAllocSize);
+      if (unlikely(reassemble_buf->reserve(newbuflen))) return Result::OOM;
     }
   }
 
@@ -441,7 +464,7 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
 
     /* Copy as much as we can. */
     assert(m_partial_bytes + rb <= nbytes);
-    memcpy(&m_buffer[m_partial_bytes], rawdata, rb);
+    memcpy(&reassemble_buf->buf[m_partial_bytes], rawdata, rb);
     m_partial_bytes += rb;
 
     /*
@@ -459,15 +482,15 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
     still_needed = nbytes - m_partial_bytes;
     res = queue->ReceiveBytes(&m_endpoint_info, still_needed, nowait, &rb,
                               &rawdata, &m_pending_bytes);
-    if (res != MessageQueue::Result::SUCCESS) return res;
+    if (res != Result::SUCCESS) return res;
     if (rb > still_needed) rb = still_needed;
   }
 
   /* Return the complete message, and reset for next message. */
   *nbytesp = nbytes;
-  *datap = m_buffer;
+  *datap = reassemble_buf->buf;
   m_length_word_complete = false;
   m_partial_bytes = 0;
-  return MessageQueue::Result::SUCCESS;
+  return Result::SUCCESS;
 }
 }  // namespace pq

@@ -2,14 +2,20 @@
 #define PARALLEL_QUERY_EXECUTOR_H
 #include <sys/types.h>
 #include <functional>
-#include "sql/parallel_query/row_exchange.h"
+#include "my_base.h"
+#include "my_dbug.h"
+#include "mysql/psi/mysql_cond.h"
+#include "mysql/psi/mysql_mutex.h"
 #include "sql/row_iterator.h"
 
 class Diagnostics_area;
 class AccessPath;
+class Filesort;
 struct ORDER;
 
 namespace pq {
+class RowExchange;
+class RowExchangeReader;
 class PartialPlan;
 class Worker;
 
@@ -25,7 +31,7 @@ class Collector {
   /// to PrepareExecution()
   bool Init(THD *thd);
   void Reset();
-  int Read(THD *thd, uchar *buf, ulong reclength);
+  int Read(THD *thd);
   void End(THD *thd, ha_rows *found_rows);
   void Destroy(THD *thd);
   AccessPath *PartialRootAccessPath() const;
@@ -40,7 +46,6 @@ class Collector {
   }
 
  private:
-  bool CreateRowExchange(MEM_ROOT *mem_root);
   bool LaunchWorkers(bool &has_failed_worker);
   void TerminateWorkers();
   bool HandleWorkerExited(uint windex);
@@ -76,7 +81,6 @@ class CollectorIterator final : public TableRowIterator {
 
  private:
   pq::Collector *m_collector;
-  uchar *const m_record;
   ha_rows *const m_examined_rows;
 };
 

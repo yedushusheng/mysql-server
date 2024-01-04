@@ -4,6 +4,7 @@
 #include "sql/debug_sync.h"  // DEBUG_SYNC
 #include "sql/filesort.h"
 #include "sql/parallel_query/planner.h"
+#include "sql/parallel_query/row_exchange.h"
 #include "sql/parallel_query/worker.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
@@ -81,24 +82,6 @@ bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order) {
   return false;
 }
 
-bool Collector::CreateRowExchange(MEM_ROOT *mem_root) {
-  if (!(m_row_exchange = new (mem_root) RowExchange(m_workers.size())))
-    return true;
-
-  auto worker_exit_handler = [this](uint worker) {
-    return HandleWorkerExited(worker);
-  };
-  m_row_exchange_reader =
-      m_merge_sort ? new (mem_root) RowExchangeMergeSortReader(
-                         m_row_exchange, m_merge_sort, worker_exit_handler)
-                   : new (mem_root)
-                         RowExchangeReader(m_row_exchange, worker_exit_handler);
-
-  if (!m_row_exchange_reader) return true;
-
-  return false;
-}
-
 bool Collector::InitParallelScan() {
   auto &psinfo = m_partial_plan->TablesParallelScan();
   auto *table = psinfo.table;
@@ -115,7 +98,13 @@ bool Collector::InitParallelScan() {
 }
 
 bool Collector::Init(THD *thd) {
-  if (CreateRowExchange(thd->mem_root)) return true;
+  if (!(m_row_exchange = new (thd->mem_root) RowExchange(m_workers.size())))
+    return true;
+
+  if (!(m_row_exchange_reader = CreateRowExchangeReader(
+            thd->mem_root, m_row_exchange, m_table, m_merge_sort,
+            [this](uint worker) { return HandleWorkerExited(worker); })))
+    return true;
 
   // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
   // you should use m_id - 1
@@ -225,12 +214,10 @@ bool Collector::HandleWorkerExited(uint windex) {
   return worker->is_error();
 }
 
-int Collector::Read(THD *thd, uchar *buf, ulong reclength) {
-  uchar *dataptr;
-  auto res = m_row_exchange_reader->Read(thd, &dataptr);
-  switch (res) {
+int Collector::Read(THD *thd) {
+  switch (m_row_exchange_reader->Read(thd, m_table->record[0],
+                                      m_table->s->reclength)) {
     case RowExchange::Result::SUCCESS:
-      memcpy(buf, dataptr, reclength);
       ++thd->status_var.pq_rows_exchanged;
       return 0;
     case RowExchange::Result::OOM:
@@ -502,7 +489,6 @@ CollectorIterator::CollectorIterator(THD *thd, pq::Collector *collector,
                                      ha_rows *examined_rows)
     : TableRowIterator(thd, collector->CollectorTable()),
       m_collector(collector),
-      m_record(table()->record[0]),
       m_examined_rows(examined_rows) {}
 
 CollectorIterator::~CollectorIterator() {}
@@ -514,8 +500,8 @@ bool CollectorIterator::Init() {
 
 int CollectorIterator::Read() {
   int error;
-  /* Read data from workers */
-  if ((error = m_collector->Read(thd(), m_record, table()->s->reclength))) {
+  /* Read data from workers and save it to record[0] of collector table */
+  if ((error = m_collector->Read(thd()))) {
     // Worker exit with error, it has been processed in Collector::Read()
     if (error < 0) return 1;
     return HandleError(error);
