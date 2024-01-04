@@ -6381,7 +6381,7 @@ bool Item_sum_json_object::add() {
       deserializing the result_field in reset/update_field.
     */
     Json_object *object = down_cast<Json_object *>(m_wrapper->to_dom(thd));
-    bool res;
+    bool res = false;
     bool is_json_type_null = false;
     if (m_sum_stage == COMBINE_STAGE) {
       auto *dom = value_wrapper.to_dom(thd);
