@@ -2,111 +2,57 @@
 #define MESSAGE_QUEUE_H
 #include <atomic>
 #include <cstdint>
-#include "my_base.h"
-#include "mysql/psi/mysql_cond.h"
-#include "mysql/psi/mysql_mutex.h"
+#include "sql/parallel_query/comm_types.h"
 
 class MEM_ROOT;
 class THD;
 
 namespace pq {
-class MessageQueueEvent {
- public:
-  MessageQueueEvent() {
-    mysql_mutex_init(PSI_INSTRUMENT_ME, &m_mutex, MY_MUTEX_INIT_FAST);
-    mysql_cond_init(PSI_INSTRUMENT_ME, &m_cond);
-  }
-  MessageQueueEvent(const MessageQueueEvent &) = delete;
-  ~MessageQueueEvent() {
-    mysql_mutex_destroy(&m_mutex);
-    mysql_cond_destroy(&m_cond);
-  }
-
-  inline void Set() {
-    mysql_mutex_lock(&m_mutex);
-    if (!m_set) {
-      m_set = true;
-      mysql_cond_signal(&m_cond);
-    }
-    mysql_mutex_unlock(&m_mutex);
-  }
-  inline void Reset() {
-    mysql_mutex_lock(&m_mutex);
-    if (m_set) m_set = false;
-    mysql_mutex_unlock(&m_mutex);
-  }
-
-  void Wait(THD *thd, bool auto_reset = true);
-
- private:
-  bool m_set{false};
-  mysql_mutex_t m_mutex;
-  mysql_cond_t m_cond;
-};
-
-/**
-  For messages that are larger or happen to wrap, we reassemble the message
-  locally by copying the chunks into a local buffer. buf is the buffer,
-  and buflen is the number of bytes allocated for it.
-*/
-struct MessageReassembleBuffer {
-  char *buf{nullptr};
-  std::size_t buflen{0};
-
-  bool reserve(std::size_t len);
-  ~MessageReassembleBuffer();
-};
+namespace comm {
+using MessageQueueEvent = Event;
+using MessageReassembleBuffer = MessageBuffer;
 
 class MessageQueueEndpointInfo {
  public:
-  MessageQueueEndpointInfo(THD *thd, MessageQueueEvent *self_event,
-                           MessageQueueEvent *peer_event)
-      : m_thd(thd), m_self_event(self_event), m_peer_event(peer_event) {}
+  MessageQueueEndpointInfo(THD *thd, MessageQueueEvent *self_event)
+      : m_thd(thd), m_self_event(self_event) {}
 
-  inline void NotifyPeer() { m_peer_event->Set(); }
+  inline void NotifyPeer() {
+    assert(m_peer_event);
+    m_peer_event->Set();
+  }
   inline void Wait() { m_self_event->Wait(m_thd); }
   inline bool IsKilled() const;
   inline THD *thd() const { return m_thd; }
+  inline void SetPeerEvent(MessageQueueEvent *peer_event) {
+    assert(m_self_event && peer_event != m_self_event);
+    m_peer_event = peer_event;
+  }
 
  private:
   THD *m_thd;
   MessageQueueEvent *m_self_event;
-  MessageQueueEvent *m_peer_event;
+  MessageQueueEvent *m_peer_event{nullptr};
 };
 
 class MessageQueue {
  public:
-  enum class Result { SUCCESS, DETACHED, WOULD_BLOCK, OOM, KILLED };
+  using Result = RowTxResult;
   friend class MessageQueueHandle;
-  MessageQueue() = default;
+  MessageQueue(std::size_t queue_size);
   MessageQueue(const MessageQueue &) = delete;
-  virtual ~MessageQueue() {}
+  ~MessageQueue() {}
 
-  virtual bool Init(MEM_ROOT *mem_root) = 0;
+  bool Init(MEM_ROOT *mem_root);
 
   void Detach(MessageQueueEndpointInfo *endpoint_info) {
     m_detached.store(true, std::memory_order_relaxed);
-    HandleDetach();
+    atomic_thread_fence(std::memory_order_seq_cst);
     endpoint_info->NotifyPeer();
   }
 
  protected:
-  std::atomic<bool> m_detached{false};
-  virtual void HandleDetach() {}
   bool IsDetached() const { return m_detached.load(std::memory_order_relaxed); }
-};
-
-class MemMessageQueue : public MessageQueue {
- public:
-  friend class MemMessageQueueHandle;
-  MemMessageQueue(std::size_t queue_size);
-  virtual ~MemMessageQueue() {}
-  bool Init(MEM_ROOT *mem_root) override;
-
- protected:
-  void HandleDetach() override {
-    atomic_thread_fence(std::memory_order_seq_cst);
-  }
   void IncreaseBytesWritten(std::size_t n);
   void IncreaseBytesRead(MessageQueueEndpointInfo *endpoint_info,
                          std::size_t n);
@@ -116,36 +62,39 @@ class MemMessageQueue : public MessageQueue {
                       std::size_t bytes_needed, bool nowait,
                       std::size_t *nbytesp, void **datap,
                       std::size_t *consume_pending);
-
   std::size_t Size() { return m_ring_size; }
 
+  std::atomic<bool> m_detached{false};
   std::atomic<std::uint64_t> m_bytes_written;
   std::atomic<std::uint64_t> m_bytes_read;
   char *m_buffer{nullptr};
   std::size_t m_ring_size;
+
 };
 
 class MessageQueueHandle {
  public:
   using Result = MessageQueue::Result;
-  MessageQueueHandle(MessageQueue *smq, THD *thd, MessageQueueEvent *self_event,
-                     MessageQueueEvent *peer_event)
-      : m_queue(smq), m_endpoint_info(thd, self_event, peer_event) {}
+  MessageQueueHandle(MessageQueue *smq, THD *thd, MessageQueueEvent *self_event)
+      : m_queue(smq), m_endpoint_info(thd, self_event) {}
   MessageQueueHandle(const MessageQueueHandle &) = delete;
-  virtual ~MessageQueueHandle() {}
-  virtual Result Send(std::size_t nbytes, const void *data, bool nowait) = 0;
-  virtual Result Receive(std::size_t *nbytesp, void **datap, bool nowait,
-                         MessageReassembleBuffer *reassemble_buf) = 0;
+
+  Result Send(std::size_t nbytes, const void *data, bool nowait);
+  Result Receive(std::size_t *nbytesp, void **datap, bool nowait,
+                 MessageReassembleBuffer *reassemble_buf);
   /**
     Notify counterparty that we're detaching from shared message queue.
   */
   void Detach() {
-    if (m_closed) return;
+    assert(!m_closed);
     m_queue->Detach(&m_endpoint_info);
     SetClosed();
   }
   inline bool IsClosed() { return m_closed; }
   inline void SetClosed() { m_closed = true; }
+  void SetPeerEvent(MessageQueueEvent *peer_event) {
+    m_endpoint_info.SetPeerEvent(peer_event);
+  }
 
  protected:
   MessageQueue *m_queue;
@@ -155,15 +104,6 @@ class MessageQueueHandle {
     any more.
   */
   bool m_closed{false};
-};
-
-class MemMessageQueueHandle : public MessageQueueHandle {
-  using MessageQueueHandle::MessageQueueHandle;
-
- public:
-  Result Send(std::size_t nbytes, const void *data, bool nowait) override;
-  Result Receive(std::size_t *nbytesp, void **datap, bool nowait,
-                 MessageReassembleBuffer *reassemble_buf) override;
 
  private:
   /**
@@ -175,5 +115,6 @@ class MemMessageQueueHandle : public MessageQueueHandle {
   std::size_t m_expected_bytes{0};
   bool m_length_word_complete{false};
 };
+}  // namespace comm
 }  // namespace pq
 #endif

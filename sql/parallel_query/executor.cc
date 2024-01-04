@@ -4,7 +4,6 @@
 #include "sql/debug_sync.h"  // DEBUG_SYNC
 #include "sql/filesort.h"
 #include "sql/parallel_query/planner.h"
-#include "sql/parallel_query/row_exchange.h"
 #include "sql/parallel_query/worker.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
@@ -98,27 +97,25 @@ bool Collector::InitParallelScan() {
 }
 
 bool Collector::Init(THD *thd) {
-  if (!(m_row_exchange = new (thd->mem_root) RowExchange(m_workers.size())))
-    return true;
-
-  if (!(m_row_exchange_reader = CreateRowExchangeReader(
-            thd->mem_root, m_row_exchange, m_table, m_merge_sort,
-            [this](uint worker) { return HandleWorkerExited(worker); })))
-    return true;
-
   // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
   // you should use m_id - 1
   uint wid = 1;
   for (auto *&worker : m_workers) {
     worker = new (thd->mem_root) Worker(
         thd, wid++, partial_plan(), &m_worker_state_lock, &m_worker_state_cond);
-    if (!worker || worker->Init(m_row_exchange_reader->Event())) return true;
+    if (!worker || worker->Init(m_receiver_exchange.event())) return true;
   }
 
-  if (m_row_exchange->Init(thd->mem_root, [this](uint index) {
-        return m_workers[index]->message_queue();
-      }))
+  if (m_receiver_exchange.Init(
+          thd->mem_root, m_workers.size(),
+          [this](uint widx) { return m_workers[widx]->receiver_channel(); }))
     return true;
+
+  if (!(m_row_exchange_reader = comm::CreateRowExchangeReader(
+            thd->mem_root, &m_receiver_exchange, m_table, m_merge_sort,
+            [this](uint worker) { return HandleWorkerExited(worker); })))
+    return true;
+
 
   // Do initialize parallel scan for tables before workers are started
   if (InitParallelScan()) return true;
@@ -139,9 +136,7 @@ bool Collector::Init(THD *thd) {
   }
   // Initialize row exchange reader after workers are started. The reader with
   // merge sort do a block read in Init().
-  bool res = m_row_exchange_reader->Init(
-      thd->mem_root, has_failed_worker ? &closed_queues : nullptr, thd,
-      [this](uint index) { return m_workers[index]->message_queue_event(); });
+  bool res = m_row_exchange_reader->Init(thd);
 
   if (has_failed_worker) bitmap_free(&closed_queues);
   return res;
@@ -150,11 +145,10 @@ bool Collector::Init(THD *thd) {
 void Collector::Reset() {
   // Reset could be called multiple times without Collector::Init() calling, see
   // subselect_hash_sj_engine::exec()
-  if (!m_row_exchange) return;
+  if (!m_row_exchange_reader) return;
   destroy(m_row_exchange_reader);
   m_row_exchange_reader = nullptr;
-  destroy(m_row_exchange);
-  m_row_exchange = nullptr;
+  m_receiver_exchange.Reset();
 
   for (auto *&worker : m_workers) destroy(worker);
 }
@@ -217,16 +211,16 @@ bool Collector::HandleWorkerExited(uint windex) {
 int Collector::Read(THD *thd) {
   switch (m_row_exchange_reader->Read(thd, m_table->record[0],
                                       m_table->s->reclength)) {
-    case RowExchange::Result::SUCCESS:
+  case comm::RowExchange::Result::SUCCESS:
       ++thd->status_var.pq_rows_exchanged;
       return 0;
-    case RowExchange::Result::OOM:
+  case comm::RowExchange::Result::OOM:
       return HA_ERR_OUT_OF_MEM;
-    case RowExchange::Result::KILLED:
+  case comm::RowExchange::Result::KILLED:
       return HA_ERR_QUERY_INTERRUPTED;
-    case RowExchange::Result::END:
+  case comm::RowExchange::Result::END:
       return HA_ERR_END_OF_FILE;
-    case RowExchange::Result::ERROR:
+  case comm::RowExchange::Result::ERROR:
 #ifndef NDEBUG
     {
       bool found = false;

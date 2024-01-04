@@ -5,7 +5,6 @@
 
 namespace pq {
 class PartialPlan;
-
 /**
   Class has a instance of THD, needs call destroy if allocated in MEM_ROOT
 */
@@ -19,9 +18,12 @@ class Worker {
   enum class ScheduleType {bthread, SysThread};
   Worker(THD *thd, uint worker_id, PartialPlan *plan, mysql_mutex_t *state_lock,
          mysql_cond_t *state_cond);
+  ~Worker();
   THD *thd() { return &m_thd; }
   THD *leader_thd() const { return m_leader_thd; }
-  bool Init(MessageQueueEvent *peer_event);
+  /// The receiver row channel created inside of worker, @param comm_event
+  /// is for receiver waiting.
+  bool Init(comm::Event *comm_event);
   int Start();
   bool IsStartFailed() const;
   bool IsRunning(bool need_state_lock);
@@ -31,8 +33,7 @@ class Worker {
   void ExecuteQuery();
   void EndQuery();
   bool is_error() { return m_thd.is_error(); }
-  MessageQueue *message_queue() { return m_message_queue; }
-  MessageQueueEvent *message_queue_event() { return m_row_exchange_writer.Event(); }
+  comm::RowChannel *receiver_channel() const {return m_receiver_channel; }
   Diagnostics_area *stmt_da(ha_rows *found_rows, ha_rows *examined_rows);
   std::string *QueryPlanTimingData() {
     if (m_query_plan_timing_data->size() != 0)
@@ -53,6 +54,9 @@ class Worker {
 
  private:
   void InitExecThdFromLeader();
+  /// Cleanup resources in this class allocated in m_thd. Those must be released
+  /// before its mem_root clears.
+  void CleanupThdResources();
   /// Let row exchange reader side return, We need call this if there is a
   /// failure before lex->result is set.
   void NotifyAbort();
@@ -68,9 +72,10 @@ class Worker {
   std::unique_ptr<std::string> m_query_plan_timing_data;
 
   /// Communication facilities with leader
-  RowExchange m_row_exchange{1};
-  MessageQueue *m_message_queue;
-  RowExchangeWriter m_row_exchange_writer;
+  comm::RowChannel *m_receiver_channel{nullptr};
+  comm::RowChannel *m_sender_channel{nullptr};
+  comm::RowExchange m_sender_exchange;
+  comm::RowExchangeWriter m_row_exchange_writer;
   State m_state{State::None};
   mysql_mutex_t *m_state_lock;
   mysql_cond_t *m_state_cond;
