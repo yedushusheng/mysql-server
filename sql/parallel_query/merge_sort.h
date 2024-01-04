@@ -2,10 +2,13 @@
 #define PARALLEL_QUERY_MERGE_SORT_H
 
 #include "priority_queue.h"
-#include "sql/cmp_varlen_keys.h"
-#include "sql/sort_param.h"
+#include "sql/malloc_allocator.h"
 
+class Filesort;
+class Sort_param;
 class THD;
+class TABLE;
+
 namespace pq {
 namespace comm {
 struct RowDataInfo;
@@ -13,12 +16,11 @@ struct RowDataInfo;
 class MergeSortSource;
 class MergeSortElement;
 
-struct Mem_compare_queue_key {
-  Mem_compare_queue_key(size_t compare_length, Sort_param *sort_param)
+struct MergeSortElementGreater {
+  MergeSortElementGreater(size_t compare_length, Sort_param *sort_param)
       : m_compare_length(compare_length), m_param(sort_param) {}
 
-  bool operator()(const MergeSortElement *e1,
-                  const MergeSortElement *e2) const;
+  bool operator()(const MergeSortElement *e1, const MergeSortElement *e2) const;
 
   size_t m_compare_length;
   Sort_param *m_param;
@@ -32,7 +34,7 @@ class MergeSort {
   using PriorityQueue = Priority_queue<
       MergeSortElement *,
       std::vector<MergeSortElement *, Malloc_allocator<MergeSortElement *>>,
-      Mem_compare_queue_key>;
+      MergeSortElementGreater>;
 
   enum class Result { SUCCESS, NODATA, END, ERROR };
   MergeSort(MergeSortSource *source) : m_source(source) {}
@@ -60,15 +62,19 @@ class MergeSort {
   /// true if it valid and current sort key duplicated with last saved key.
   Result ReadOneRow(uchar **buf, bool *duplicated_with_last);
 
+  void FreeLastKeySeen();
+  bool SaveLastKeySeen(MergeSortElement *element);
+
   MergeSortSource *m_source;
   TABLE *m_table;
-  Sort_param m_sort_param;
+  Sort_param *m_sort_param{nullptr};
   MergeSortElement *m_elements;
   uint m_num_elements{0};
   PriorityQueue *m_priority_queue{nullptr};
 
-  // Used by duplicates removal, sort key data is saved in
-  // Sort_param::m_last_key_seen
+  // Used by duplicates removal, same with Sort_param::m_last_key_seen, but
+  // allocated by my_malloc instead of MEM_ROOT.
+  uchar *m_last_key_seen{nullptr};
   size_t m_last_key_seen_length{0};
   MergeSortElement *m_last_key_seen_element{nullptr};
 
@@ -106,16 +112,6 @@ class MergeSortElement {
   }
   uchar *CurrentRecord() const;
   uchar *CurrentKey() const { return m_key; }
-  bool CopyKey(uchar **key, uint copylen, size_t *buflen) {
-    if (copylen > *buflen) {
-      if (!(*key = (uchar *)my_realloc(PSI_NOT_INSTRUMENTED, *key, copylen,
-                                       MYF(MY_WME))))
-        return true;
-      *buflen = copylen;
-    }
-    memcpy(*key, m_key, copylen);
-    return false;
-  }
 
   /// Pop a record for next read. The top record is ready to read. @return false
   /// if no record left.
@@ -134,7 +130,7 @@ class MergeSortElement {
 
   uchar *m_key{nullptr};  // pointer to sort key
   size_t m_key_length;    // The length of key ever stored in this element
-  friend struct Mem_compare_queue_key;
+  friend struct MergeSortElementGreater;
 
   // The record buffer related properties
   /// Records buffer

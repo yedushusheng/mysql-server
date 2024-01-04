@@ -34,10 +34,8 @@ Collector::~Collector() {
     free_tmp_table(m_table);
   }
 
-  // Used by duplicates removal
-  if (m_merge_sort) my_free(m_merge_sort->m_sort_param.m_last_key_seen);
-  // tmp_buffer in Sort_param needs to destroy because it may contain alloced
-  // memory.
+  // tmp_buffer in Sort_param needs to destroy because it may contain
+  // alloced memory.
   destroy(m_merge_sort);
 
   Reset();
