@@ -9,7 +9,6 @@ struct AccessPath;
 
 namespace pq {
 class Collector;
-class AccessPathChangesStore;
 
 constexpr uint default_max_parallel_degree = 0;
 constexpr uint default_max_parallel_workers = 10000;
@@ -53,36 +52,6 @@ class PartialPlan {
  private:
   Query_block *m_query_block;
   ParallelScanInfo m_parallel_scan_info;
-};
-
-class SourcePlanChangedStore {
- public:
-  SourcePlanChangedStore(JOIN *join) : m_join(join) {}
-  ~SourcePlanChangedStore();
-
-  bool save_base_ref_items();
-  bool save_sum_funcs();
-  bool save_fields_and_ref_items();
-  AccessPathChangesStore *create_access_path_changes();
-
-  /**
-    Just need restore query block if parallel query finish otherwise JOIN needs
-    to be restored.
-  */
-  void reset_restore_for_join();
-
- private:
-  MEM_ROOT *mem_root();
-
-  Item **m_base_ref_items{nullptr};
-  Item_sum **m_sum_funcs{nullptr};
-  size_t m_sum_funcs_length;
-  mem_root_deque<Item *> *m_fields{nullptr};
-  Ref_item_array *m_ref_items{nullptr};
-  mem_root_deque<Item *> *m_tmp_fields{nullptr};
-  AccessPathChangesStore *m_access_path_changes{nullptr};
-
-  JOIN *m_join;
 };
 
 class FieldPushdownDesc {
@@ -135,7 +104,6 @@ class ParallelPlan {
   Collector *m_collector{nullptr};
   // The query plan template for workers, workers clone plan from this.
   PartialPlan m_partial_plan;
-  SourcePlanChangedStore m_source_plan_changed;
   uint m_parallel_degree;
   // If there is LIMIT OFFSET and it is pushed to workers, collecting found
   // rows from workers when workers end.

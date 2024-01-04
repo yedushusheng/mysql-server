@@ -12,50 +12,6 @@ class QUICK_SELECT_I;
 namespace pq {
 class PartialPlan;
 
-struct AccessPathChanges {
-  AccessPath *access_path;
-  union {
-    // materialize, temptable_aggregate and stream;
-    struct {
-      TABLE *table;
-      Temp_table_param *temp_table_param;
-    } recreated_temp_table;
-    struct {
-      TABLE *table;
-    } table_path;
-    struct {
-      JOIN *join;
-    } source;
-  } u;
-  void restore();
-};
-
-class AccessPathChangesStore {
- public:
-  AccessPathChangesStore(JOIN *join)
-      : m_join(join) {}
-  ~AccessPathChangesStore() { restore_changes(); }
-  void register_changes(AccessPathChanges &&changes) {
-    m_changes.push_back(changes);
-  }
-  void set_root_path(AccessPath *path) { m_access_path = path; }
-  void register_collector_path(AccessPath **path) {
-    m_collector_path_pos = path;
-    m_access_path = *path;
-  }
-  void clear() {
-    m_changes.clear();
-    m_access_path = nullptr;
-  }
-
- private:
-  void restore_changes();
-  std::vector<AccessPathChanges> m_changes;
-  AccessPath **m_collector_path_pos{nullptr};
-  AccessPath *m_access_path{nullptr};
-  JOIN *m_join;
-};
-
 /**
    A access path rewriter to decompose access path tree into parallel plan: a
    plan evaluated on leader and the partial plan which is evaluated on workers.
@@ -125,8 +81,7 @@ class AccessPathRewriter {
 class AccessPathParallelizer : public AccessPathRewriter {
  public:
   AccessPathParallelizer(Item_clone_context *item_clone_context, JOIN *join_in,
-                         PartialPlan *partial_plan,
-                         AccessPathChangesStore *path_changes_store);
+                         PartialPlan *partial_plan);
   AccessPath *parallelize_access_path(AccessPath *in);
   ORDER *MergeSort() const { return merge_sort; }
   void set_collector_access_path(AccessPath *path) {
@@ -170,7 +125,6 @@ class AccessPathParallelizer : public AccessPathRewriter {
   ORDER *merge_sort{nullptr};
   RowIterator *m_fake_timing_iterator{nullptr};
   bool m_pushed_limit_offset{false};
-  AccessPathChangesStore *m_path_changes_store;
 };
 
 class PartialAccessPathRewriter : public AccessPathRewriter {

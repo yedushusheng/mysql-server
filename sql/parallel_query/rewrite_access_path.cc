@@ -10,40 +10,6 @@
 #include "sql/sql_tmp_table.h"
 
 namespace pq {
-
-static AccessPathChanges NewAccessPathChanges(AccessPath *path, TABLE *table,
-                                       Temp_table_param *temp_table_param) {
-  AccessPathChanges changes;
-  changes.access_path = path;
-  auto *recreated_temp_table = &changes.u.recreated_temp_table;
-  *recreated_temp_table = {table, temp_table_param};
-  return changes;
-}
-
-static AccessPathChanges NewAccessPathChanges(AccessPath *path, TABLE *table) {
-  AccessPathChanges changes;
-  changes.access_path = path;
-  changes.u.table_path.table = table;
-  return changes;
-}
-
-static AccessPathChanges NewAccessPathChanges(AccessPath *path, JOIN *join) {
-  AccessPathChanges changes;
-  changes.access_path = path;
-  changes.u.source.join = join;
-  return changes;
-}
-
-void AccessPathChangesStore::restore_changes() {
-  for (auto &change : m_changes) change.restore();
-
-  if (!m_access_path) return;
-  if (m_collector_path_pos)
-    *m_collector_path_pos = m_access_path;
-  else
-    m_join->set_root_access_path(m_access_path);
-}
-
 bool AccessPathRewriter::rewrite_materialize(AccessPath *in, AccessPath *out) {
   out->materialize().table_path = pointer_cast<AccessPath *>(memdup_root(
       mem_root(), in->materialize().table_path, sizeof(AccessPath)));
@@ -232,16 +198,14 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *path) {
 }
 AccessPathParallelizer::AccessPathParallelizer(
     Item_clone_context *item_clone_context, JOIN *join_in,
-    PartialPlan *partial_plan, AccessPathChangesStore *path_changes_store)
+    PartialPlan *partial_plan)
     : AccessPathRewriter(item_clone_context, join_in, partial_plan->Join()),
-      m_partial_plan(partial_plan),
-      m_path_changes_store(path_changes_store) {}
+      m_partial_plan(partial_plan) {}
 
 AccessPath *AccessPathParallelizer::parallelize_access_path(AccessPath *in) {
   if (do_rewrite(in)) return nullptr;
   // All plan is pushed down, so just replace whole plan with collector path
   if (!collector_path_pos()) return collector_access_path();
-  m_path_changes_store->register_collector_path(m_collector_path_pos);
   *m_collector_path_pos = collector_access_path();
   return in;
 }
@@ -322,7 +286,7 @@ bool AccessPathParallelizer::rewrite_index_range_scan(AccessPath *in,
   return false;
 }
 
-static TABLE *rewrite_temptable_scan_path(AccessPath *table_path,
+static void rewrite_temptable_scan_path(AccessPath *table_path,
                                                TABLE *table) {
   TABLE **table_ptr = nullptr;;
   assert(table_path->type == AccessPath::TABLE_SCAN ||
@@ -341,11 +305,9 @@ static TABLE *rewrite_temptable_scan_path(AccessPath *table_path,
     default:
       assert(false);
   }
-  assert(table_ptr);
-  auto *old_table = *table_ptr;
-  *table_ptr = table;
 
-  return old_table;
+  assert(table_ptr);
+  *table_ptr = table;
 }
 
 #ifndef NDEBUG
@@ -478,8 +440,6 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
         ESC_GROUP_BY);
   }
 
-  m_path_changes_store->register_changes(
-      NewAccessPathChanges(in, src->table, query_block.temp_table_param));
   TABLE *orig_table [[maybe_unused]] = src->table;
   if (recreate_materialized_table(
           m_join_in->thd, m_join_in, src->table->group,
@@ -519,10 +479,7 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
     post_rewrite_out_path(out->materialize().table_path);
   }
 
-  TABLE *old_table =
-      rewrite_temptable_scan_path(in->materialize().table_path, table);
-  m_path_changes_store->register_changes(
-      NewAccessPathChanges(in->materialize().table_path, old_table));
+  rewrite_temptable_scan_path(in->materialize().table_path, table);
 
   set_sorting_info({table, src->ref_slice});
 
@@ -544,8 +501,6 @@ bool AccessPathParallelizer::rewrite_temptable_aggregate(
            m_join_out->fields->size(), nullptr}),
       ESC_GROUP_BY);
 
-  m_path_changes_store->register_changes(
-      NewAccessPathChanges(in, tagg.table, tagg.temp_table_param));
   TABLE *orig_table [[maybe_unused]] = tagg.table;
   if (recreate_materialized_table(m_join_in->thd, m_join_in, tagg.table->group,
                                   false, false, tagg.ref_slice, HA_POS_ERROR,
@@ -565,9 +520,8 @@ bool AccessPathParallelizer::rewrite_temptable_aggregate(
         accesspath_dup(tagg.table_path, mem_root());
     post_rewrite_out_path(out->temptable_aggregate().table_path);
   }
-  TABLE *old_table = rewrite_temptable_scan_path(tagg.table_path, table);
-  m_path_changes_store->register_changes(
-      NewAccessPathChanges(tagg.table_path, old_table));
+
+  rewrite_temptable_scan_path(tagg.table_path, table);
 
   set_sorting_info({table, tagg.ref_slice});
   set_collector_path_pos(&tagg.subquery_path);
@@ -608,9 +562,6 @@ bool AccessPathRewriter::do_stream_rewrite(JOIN *join, AccessPath *path) {
 
 bool AccessPathParallelizer::rewrite_stream(AccessPath *in, AccessPath *out) {
   if (out) return false;
-  auto &stream = in->stream();
-  m_path_changes_store->register_changes(
-      NewAccessPathChanges(in, stream.table, stream.temp_table_param));
   return do_stream_rewrite(m_join_in, in);
 }
 
@@ -658,7 +609,6 @@ bool AccessPathParallelizer::rewrite_aggregate(AccessPath *in, AccessPath *) {
   // Recreate group fields original join since underlying table changed
   if (!m_join_in->group_list_planned.empty()) {
     assert(m_join_in->group_list.empty());
-    m_path_changes_store->register_changes(NewAccessPathChanges(in, m_join_in));
     m_join_in->group_list = m_join_in->group_list_planned;
   }
   m_join_in->group_fields_cache.clear();
@@ -680,7 +630,6 @@ bool AccessPathParallelizer::rewrite_limit_offset(AccessPath *in,
     in->limit_offset().offset_moved_in_engine = false;
     // Offset could not be pushed down to worker.
     out->limit_offset().offset_moved_in_engine = false;
-    m_path_changes_store->register_changes(NewAccessPathChanges(in, m_join_in));
   }
   // Don't push down offset to worker
   if (out->limit_offset().offset != 0) out->limit_offset().offset = 0;
@@ -688,46 +637,6 @@ bool AccessPathParallelizer::rewrite_limit_offset(AccessPath *in,
   set_collector_path_pos(&in->limit_offset().child);
   m_pushed_limit_offset = true;
   return false;
-}
-
-void AccessPathChanges::restore() {
-  switch (access_path->type) {
-    case AccessPath::MATERIALIZE: {
-      auto *src = access_path->materialize().param;
-      auto &query_block = src->query_blocks[0];
-      src->table = u.recreated_temp_table.table;
-      query_block.temp_table_param = u.recreated_temp_table.temp_table_param;
-      break;
-    }
-    case AccessPath::TEMPTABLE_AGGREGATE: {
-      auto &tagg = access_path->temptable_aggregate();
-      tagg.table = u.recreated_temp_table.table;
-      tagg.temp_table_param = u.recreated_temp_table.temp_table_param;
-      break;
-    }
-    case AccessPath::STREAM: {
-      auto &stream = access_path->stream();
-      stream.table = u.recreated_temp_table.table;
-      stream.temp_table_param = u.recreated_temp_table.temp_table_param;
-      break;
-    }
-    case AccessPath::AGGREGATE:
-      u.source.join->group_list.clean();
-      break;
-    case AccessPath::LIMIT_OFFSET:
-      access_path->limit_offset().offset_moved_in_engine = true;
-      break;
-    case AccessPath::TABLE_SCAN:
-      [[fallthrough]];
-    case AccessPath::INDEX_RANGE_SCAN:
-      [[fallthrough]];
-    case AccessPath::FOLLOW_TAIL:
-      rewrite_temptable_scan_path(access_path, u.table_path.table);
-      break;
-    default:
-      assert(false);
-      break;
-  }
 }
 
 TABLE *PartialAccessPathRewriter::find_leaf_table(TABLE *) const {
