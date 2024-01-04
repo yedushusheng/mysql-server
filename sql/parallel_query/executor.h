@@ -110,9 +110,6 @@ class PartialExecutor {
 
   void EndQuery();
   bool AttachTablesParallelScan();
-  /// Let row exchange reader side return, We need call this if there is a
-  /// failure before lex->result is set.
-  void NotifyAbort();
 
   THD *m_thd;  // Current worker's THD
   PartialPlan *m_query_plan;
