@@ -15,13 +15,24 @@ constexpr uint message_queue_ring_size = 65536;
   Class has a instance of THD, needs call destroy if allocated in MEM_ROOT
 */
 class LocalWorker : public Worker {
+  /// state "Cleaning" is for ER_QUERY_INTERRUPTED reported by workers, some
+  /// mtr test case uses this e.g. "bug30769515_QUERY_INTERRUPTED" in
+  /// QUICK_GROUP_MIN_MAX_SELECT::get_next(). When a worker is in Cleaning
+  /// state, Terminate() skips to send termination request to it.
+  enum class State { None, Starting, Started, Cleaning, Finished, StartFailed };
+
  public:
   LocalWorker(uint id, comm::Event *state_event, THD *thd, PartialPlan *plan)
       : Worker(id, state_event),
         m_leader_thd(thd),
         m_thd(true, m_leader_thd),
-        m_executor(&m_thd, plan, [this]() { SetState(State::Cleaning); }) {}
-  ~LocalWorker() { destroy(m_sender_channel); }
+        m_executor(&m_thd, plan, [this]() { SetState(State::Cleaning); }) {
+    mysql_mutex_init(PSI_INSTRUMENT_ME, &m_state_mutex, MY_MUTEX_INIT_FAST);
+  }
+  ~LocalWorker() {
+    destroy(m_sender_channel);
+    mysql_mutex_destroy(&m_state_mutex);
+  }
 
   /// The receiver row channel created inside of worker, @param comm_event
   /// is for receiver waiting.
@@ -41,16 +52,46 @@ class LocalWorker : public Worker {
 
   void ThreadMainEntry();
 
- protected:
-  State state() const override;
-  /// Set worker state to @param state and broadcast "state cond" if
-  /// State::Finished.
-  void SetState(State state) override;
+  bool IsRunning() override {
+    State curstate = state();
+
+    bool is_running =
+        (curstate == State::Started || curstate == State::Cleaning ||
+         curstate == State::Starting);
+
+    return is_running;
+  }
+
+  // Assertion only currently
+  bool IsStartFailed() override { return state() == State::StartFailed; }
 
  private:
   static bool IsScheduleSysThread() {
     return static_cast<WorkerScheduleType>(worker_handling) ==
            WorkerScheduleType::SysThread;
+  }
+
+  State state() {
+    mysql_mutex_lock(&m_state_mutex);
+    auto curstate = m_state;
+    mysql_mutex_unlock(&m_state_mutex);
+    return curstate;
+  }
+
+  void SetState(State state) {
+    mysql_mutex_lock(&m_state_mutex);
+    m_state = state;
+    mysql_mutex_unlock(&m_state_mutex);
+  }
+
+  /// Call this at the end of worker thread, Let leader continue by state event
+  /// set, Note we must hold state mutex to prevent leader to destroy state
+  /// event.
+  void SetFinished() {
+    mysql_mutex_lock(&m_state_mutex);
+    m_state = State::Finished;
+    m_state_event->Set();
+    mysql_mutex_unlock(&m_state_mutex);
   }
 
   THD *m_leader_thd;
@@ -62,17 +103,16 @@ class LocalWorker : public Worker {
 
   PartialExecutor m_executor;
 
-  std::atomic<State> m_state{State::None};
+  // Worker thread state, should be protected by m_state_mutex.
+  State m_state{State::None};
+  mysql_mutex_t m_state_mutex;
+
   bool m_terminate_requested{false};
 };
 
 ulong worker_handling = default_worker_schedule_type;
 
 Worker::~Worker() { destroy(m_receiver_channel); }
-
-void Worker::SetState(State state) {
-  if (state == State::Finished) m_state_event->Set();
-}
 
 bool LocalWorker::Init(comm::Event *comm_event) {
 #if defined(ENABLED_DEBUG_SYNC)
@@ -174,16 +214,6 @@ bool LocalWorker::Start() {
   return false;
 }
 
-Worker::State LocalWorker::state() const {
-  auto cur_state = m_state.load();
-  return cur_state;
-}
-
-void LocalWorker::SetState(State state) {
-  m_state = state;
-  Worker::SetState(state);
-}
-
 void LocalWorker::CollectStatusVars(THD *target_thd) {
   add_to_status(&target_thd->status_var, &m_thd.status_var);
 }
@@ -193,8 +223,10 @@ void LocalWorker::Terminate() {
 
   if (m_terminate_requested || thd->killed) return;
 
-  bool need_send_kill = IsRunning() && m_state != State::Cleaning;
-  if (!need_send_kill) return;
+  State curstate = state();
+  // Don't send kill for State::Cleaning otherwise killed state sent by
+  // worker itself would be ignored by leader.
+  if (curstate != State::Starting && curstate != State::Started) return;
 
   mysql_mutex_lock(&thd->LOCK_thd_data);
   thd->awake(THD::KILL_QUERY);
@@ -258,7 +290,7 @@ void LocalWorker::ThreadMainEntry() {
 
   my_thread_end();
 
-  SetState(State::Finished);
+  SetFinished();
 
   if (IsScheduleSysThread()) my_thread_exit(nullptr);
 }
@@ -266,7 +298,7 @@ void LocalWorker::ThreadMainEntry() {
 Diagnostics_area *LocalWorker::stmt_da(bool finished_collect,
                                        ha_rows *found_rows,
                                        ha_rows *examined_rows) {
-  THD* thd = &m_thd;
+  THD *thd = &m_thd;
   if (!finished_collect) return thd->get_stmt_da();
 
   assert(!IsRunning());
@@ -274,7 +306,7 @@ Diagnostics_area *LocalWorker::stmt_da(bool finished_collect,
   *found_rows = thd->previous_found_rows;
   *examined_rows = thd->get_examined_row_count();
 
-  if (m_state != State::Finished) return nullptr;
+  if (state() != State::Finished) return nullptr;
 
   Diagnostics_area *da = thd->get_stmt_da();
 

@@ -173,11 +173,12 @@ void Collector::TerminateWorkers() {
   // Wait all workers to exit, NOTE, Don't check killed here otherwise
   // some workers would lost control.
   while (true) {
-    uint left_workers = m_workers.size();
+    auto left_workers = m_workers.size();
     for (auto *worker : m_workers) {
       if (!worker || !worker->IsRunning()) --left_workers;
     }
     if (left_workers == 0) break;
+
     m_worker_state_event.Wait(nullptr);
   }
 }
