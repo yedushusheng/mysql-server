@@ -201,8 +201,9 @@ void RowSegmentCodec::GetSegment(uint segno, const uchar *recbuf,
 }
 
 MessageQueue::Result ReadOneRow(MessageQueueHandle *handle, uchar *dest,
-                                std::size_t nbytes, bool nowait,
-                                bool buffer_all, RowDataInfo *rowdata,
+                                std::size_t nbytes [[maybe_unused]],
+                                bool nowait, bool buffer_all,
+                                RowDataInfo *rowdata,
                                 RowSegmentCodec *segcodec) {
   auto segments = rowdata->num_segments();
   auto *curseg = rowdata->segment(0);
