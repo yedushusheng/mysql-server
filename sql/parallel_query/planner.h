@@ -65,9 +65,7 @@ class PartialPlan {
   ParallelScanInfo &GetParallelScanInfo() { return m_parallel_scan_info; }
   void SetTableParallelScan(TABLE *table, ulong suggested_ranges,
                             const parallel_scan_desc_t &psdesc);
-  void SetParallelScanReverse() {
-    m_parallel_scan_info.scan_desc.is_asc = false;
-  }
+  void SetParallelScanReverse();
   bool IsParallelScanTable(TABLE *table) {
     return m_parallel_scan_info.table == table;
   }

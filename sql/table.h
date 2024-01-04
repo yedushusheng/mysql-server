@@ -1858,7 +1858,7 @@ struct TABLE {
   ptrdiff_t default_values_offset() const {
     return (ptrdiff_t)(s->default_values - record[0]);
   }
-
+  bool is_parallel_scan() { return parallel_scan_handle != nullptr; }
   /// @returns true if a storage engine handler object is assigned to table
   bool has_storage_handler() const { return file != nullptr; }
 

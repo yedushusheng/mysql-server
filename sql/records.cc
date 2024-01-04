@@ -91,7 +91,10 @@ bool IndexScanIterator<Reverse>::Init() {
 
     if (set_record_buffer(table(), m_expected_rows)) {
       return true;
-    }
+    } else if (table()->is_parallel_scan() &&
+             table()->file->restart_parallel_scan(
+                 table()->parallel_scan_handle))
+    return true;
   }
   m_first = true;
   return false;
@@ -303,6 +306,9 @@ bool IndexRangeScanIterator::Init() {
       return true; /* purecov: inspected */
     }
   }
+  if (!first_init && table()->is_parallel_scan() &&
+      table()->file->restart_parallel_scan(table()->parallel_scan_handle))
+    return true;
 
   m_seen_eof = false;
   return false;
@@ -363,6 +369,9 @@ bool TableScanIterator::Init() {
   if (first_init && set_record_buffer(table(), m_expected_rows)) {
     return true; /* purecov: inspected */
   }
+  if (!first_init && table()->is_parallel_scan() &&
+      table()->file->restart_parallel_scan(table()->parallel_scan_handle))
+    return true;
 
   return false;
 }
@@ -442,6 +451,7 @@ bool FollowTailIterator::Init() {
     m_end_of_current_iteration = 0;
   } else {
     // Just continue where we left off last time.
+    asert(!table()->is_parallel_scan());
   }
 
   return false;

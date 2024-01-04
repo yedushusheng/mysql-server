@@ -3706,6 +3706,7 @@ bool PushedJoinRefIterator::Init() {
       return true;
     }
   }
+  assert(!table()->is_parallel_scan());
 
   m_first_record_since_init = true;
   return false;
@@ -3755,7 +3756,13 @@ int PushedJoinRefIterator::Read() {
 template <bool Reverse>
 bool RefIterator<Reverse>::Init() {
   m_first_record_since_init = true;
-  if (table()->file->inited) return false;
+  if (table()->file->inited) {
+    if (table()->is_parallel_scan() &&
+        table()->file->restart_parallel_scan(table()->parallel_scan_handle))
+      return true;
+
+    return false;
+  }
   if (init_index(table(), table()->file, m_ref->key, m_use_order)) {
     return true;
   }
@@ -4058,7 +4065,12 @@ RefOrNullIterator::RefOrNullIterator(THD *thd, TABLE *table, TABLE_REF *ref,
 bool RefOrNullIterator::Init() {
   m_reading_first_row = true;
   *m_ref->null_ref_key = false;
-  if (table()->file->inited) return false;
+  if (table()->file->inited) {
+    if (table()->is_parallel_scan() &&
+        table()->file->restart_parallel_scan(table()->parallel_scan_handle))
+      return true;
+    return false;
+  }
   if (init_index(table(), table()->file, m_ref->key, m_use_order)) {
     return true;
   }

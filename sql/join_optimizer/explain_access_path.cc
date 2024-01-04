@@ -475,6 +475,7 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
                ItemToString(path->mrr().cache_idx_cond);
       }
       str += table->file->explain_extra();
+      str += pq::ExplainTableParallelScan(join, table);
       description.push_back(move(str));
       AddChildrenFromPushedCondition(table, &children);
       break;

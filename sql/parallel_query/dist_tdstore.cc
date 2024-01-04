@@ -1,3 +1,4 @@
+#include "sql/handler.h"
 #include "sql/parallel_query/distribution.h"
 
 #include "sql/parallel_query/local_worker.h"
@@ -140,14 +141,9 @@ class TDStorePartialDistPlan : public PartialDistPlan {
     auto &psinfo = partial_plan->GetParallelScanInfo();
 
     THD *thd = partial_plan->thd();
-    bool can_serialize =
-        tdsql::TestSerializePlan(thd, partial_plan->QueryBlock());
 
-    // see MyRocksParallelScan::Init,
-    // do not support split region when is_ref_or_null
-    // TODO:support is_ref_or_null
-    if (!can_serialize || psinfo.scan_desc.is_ref_or_null) {
-      // just use local worker
+    if (tdsql::SerializePlan(thd, partial_plan, &plan_data_)) {
+      // use local worker if no need to serialize or serialize fail
       psinfo.scan_desc.scan_range_assign_fn = nullptr;
 
       // we use m_exec_nodes to start worker,so just left one local exec node
@@ -209,7 +205,7 @@ class TDStorePartialDistPlan : public PartialDistPlan {
       scan_job->set_upper_bound(
           range_info->key_range->end_key().to_string(false /*hex*/));
 #ifndef NDEBUG
-      scan_job->set_is_null(false);
+      scan_job->set_is_null(range_info->is_null);
 #endif
       return true;
     };
@@ -224,22 +220,18 @@ class TDStorePartialDistPlan : public PartialDistPlan {
       BrpcGroupDesc *group_desc = node->GetBrpcGroupDesc();
       group_desc->worker_num_ = num_workers;
 
-      // no remote job  --> no need to serialize
+      // no remote job  --> no need to setup BrpcGroupDesc
       if (!group_desc->has_remote_jobs_) {
-        LogDebug("only one local exec,no need to serialize");
+        LogDebug("only one local exec,no need to setup BrpcGroupDesc");
         return false;
       }
     } else
       // m_exec_nodes may have exec_node without jobs
       SplitWorker(num_workers);
 
-    LogDebug("exist remote jobs,serialize plan");
+    LogDebug("exist remote jobs,setup BrpcGroupDesc");
 
     THD *thd = partial_plan->thd();
-    if (tdsql::SerializePlan(thd, partial_plan->QueryBlock(), &plan_data_)) {
-      LogError("SerializePlan fail");
-      return true;
-    }
 
     auto &psinfo = partial_plan->GetParallelScanInfo();
     auto &scan_desc = psinfo.scan_desc;
@@ -264,9 +256,9 @@ class TDStorePartialDistPlan : public PartialDistPlan {
       group_desc->plan_id_ = reinterpret_cast<ulong>(partial_plan);
 
       group_desc->scan_info_.set_keynr(scan_desc.keynr);
-      group_desc->scan_info_.set_is_ref_or_null(scan_desc.is_ref_or_null);
       group_desc->scan_info_.set_key_used(scan_desc.key_used);
-      group_desc->scan_info_.set_is_asc(scan_desc.is_asc);
+      group_desc->scan_info_.set_flags((uint32)scan_desc.flags);
+      group_desc->scan_info_.set_degree(scan_desc.degree);
       group_desc->scan_info_.set_tableno(psinfo.table->pos_in_table_list->tableno());
 
       LogDebug("m_exec_nodes:%u,address:%s,jobs:%lu,remote jobs:%d,worker:%u",
@@ -319,7 +311,7 @@ class TDStorePartialDistPlan : public PartialDistPlan {
     int res;
 
     ulong suggested_ranges_backup = psinfo.suggested_ranges;
-
+    psinfo.scan_desc.degree = num_workers;
     if ((res = table->file->init_parallel_scan(&table->parallel_scan_handle,
                                                &psinfo.suggested_ranges,
                                                &psinfo.scan_desc)) != 0) {
@@ -353,7 +345,7 @@ class TDStoreAdapter : public Adapter {
  public:
   TableDist *GetTableDist(THD *thd, TABLE *table, uint keynr,
                           key_range *min_key, key_range *max_key,
-                          bool is_ref_or_null) override {
+                          parallel_scan_flags flags) override {
     auto *table_desc = new (thd->mem_root) TDStoreTableDist;
     if (table_desc->Init(thd->mem_root)) return nullptr;
 
@@ -362,7 +354,7 @@ class TDStoreAdapter : public Adapter {
 
     bool error = false;
     int res = table->file->get_distribution_info_by_scan_range(
-        keynr, min_key, max_key, is_ref_or_null,
+        keynr, min_key, max_key, flags,
         [table_desc, thd, &error](handler::Dist_unit_info dui) {
           auto *tnsi = static_cast<tdsql::table_node_storage_info *>(dui);
           if (table_desc->PushStoreNode(thd->mem_root, tnsi->node_id,
@@ -396,42 +388,46 @@ class TDStoreAdapter : public Adapter {
         thd->variables.parallel_scan_ranges_threshold;
   }
 
-  uint32 GetTableParallelDegree(THD *thd, TABLE_LIST *table,
-                                bool *specified_by_hint) override {
+  uint32 TableParallelHint(THD *thd, TABLE_LIST *table,
+                           bool *table_by_hint) override {
     static_assert(parallel_disabled == PT_hint_parallel::parallel_disabled,
                   "parallel_disable must be same");
     static_assert(degree_unspecified == PT_hint_parallel::degree_unspecified,
                   "degree_unspecified must be same");
 
-    uint32 degree = degree_unspecified;
     auto *lex = thd->lex;
 
-    *specified_by_hint = true;
+    auto degree = degree_unspecified;
     if (table->opt_hints_table && table->opt_hints_table->parallel_scan) {
       auto *table_hint = table->opt_hints_table->parallel_scan;
-      degree = table_hint->parallel_degree();
-      if (degree != PT_hint_parallel::degree_unspecified) return degree;
+      *table_by_hint = true;
+      if ((degree = table_hint->parallel_degree()) != degree_unspecified)
+        return degree;
     }
 
     if (table->opt_hints_qb && table->opt_hints_qb->get_parallel_hint()) {
       auto *qb_hint = table->opt_hints_qb->get_parallel_hint();
-      degree = qb_hint->parallel_degree();
-      if (degree != PT_hint_parallel::degree_unspecified) return degree;
+      if ((degree = qb_hint->parallel_degree()) != degree_unspecified)
+        return degree;
     }
 
     if (lex->opt_hints_global && lex->opt_hints_global->parallel_hint) {
       auto *global_hint = lex->opt_hints_global->parallel_hint;
-      degree = global_hint->parallel_degree();
-      if (degree != PT_hint_parallel::degree_unspecified) return degree;
+      if ((degree = global_hint->parallel_degree()) != degree_unspecified)
+        return degree;
     }
 
-    *specified_by_hint = false;
+    return degree;
+  }
+
+  uint32 DefaultParallelDegree(THD *thd) override {
     return thd->variables.max_parallel_degree;
   }
 
   const char *TableRefuseParallel(TABLE *table) override {
-    if (is_system_table(table->s->db.str, table->s->table_name.str))
+    if (unlikely(table->s->is_system_table())) {
       return "include_system_tables";
+    }
     return nullptr;
   }
 

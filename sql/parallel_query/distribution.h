@@ -3,12 +3,11 @@
 
 #include <string>
 #include "my_alloc.h"
+#include "sql/handler.h"
 #include "sql/mem_root_array.h"
 
 class THD;
 class Item;
-class TABLE;
-class TABLE_LIST;
 struct key_range;
 
 namespace pq {
@@ -79,7 +78,7 @@ class Adapter {
   /// Provide a table distribution descriptor for a table
   virtual TableDist *GetTableDist(THD *thd, TABLE *table, uint keynr,
                                   key_range *min_key, key_range *max_key,
-                                  bool is_ref_or_null) = 0;
+                                  parallel_scan_flags psflags) = 0;
   /// need parallel scan to do a distribution, for TDSQL 3.0
   virtual bool NeedParallelScan() const = 0;
   /// Get thresholds of variables that are used by plan choosing and the
@@ -91,11 +90,16 @@ class Adapter {
       ulonglong *parallel_scan_records_threshold [[maybe_unused]],
       ulong *parallel_scan_ranges_threshold [[maybe_unused]]) {}
 
-  virtual uint32 GetTableParallelDegree(THD *thd [[maybe_unused]],
-                                TABLE_LIST *table [[maybe_unused]],
-                                bool *specified_by_hint [[maybe_unused]]) {
+  virtual uint32 TableParallelHint(THD *thd [[maybe_unused]],
+                                   TABLE_LIST *table [[maybe_unused]],
+                                   bool *table_by_hint [[maybe_unused]]) {
     return degree_unspecified;
   }
+
+  virtual uint32 DefaultParallelDegree(THD *thd [[maybe_unused]]) {
+    return degree_unspecified;
+  }
+
   virtual const char *TableRefuseParallel(TABLE *table [[maybe_unused]]) {
     return nullptr;
   }

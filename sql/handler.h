@@ -3611,17 +3611,40 @@ typedef void *parallel_scan_range_info;
 using parallel_scan_range_assign_cbk =
     std::function<bool(parallel_scan_range_info)>;
 
+enum class parallel_scan_flags : uint8 {
+  none = 0x00,
+  ref_or_null = 0x01,
+  desc = 0x02,
+  preassign_ranges = 0x04
+};
+
+inline parallel_scan_flags operator|(parallel_scan_flags lhs,
+                                     parallel_scan_flags rhs) {
+  return parallel_scan_flags(int(lhs) | int(rhs));
+}
+
+inline parallel_scan_flags operator|=(parallel_scan_flags &lhs,
+                                      parallel_scan_flags rhs) {
+  return lhs = parallel_scan_flags(int(lhs) | int(rhs));
+}
+
+inline bool operator&(parallel_scan_flags lhs, parallel_scan_flags rhs) {
+  return (int(lhs) & int(rhs)) != 0;
+}
+
 struct parallel_scan_desc_t {
   uint keynr;           // Key number for parallel scan
-  bool is_ref_or_null;  // True if REF_OR_NULL
   key_range *min_key;   // Min key of range scan or ref key for ref scan
   key_range *max_key;   // Max key of range scan, same with min_key for ref
                         // scan, null ref key for REF_OR_NULL type
   uint16_t key_used;    // Part of keys used by parallel scan
-  bool is_asc;          // Ascending or descending order
+  parallel_scan_flags flags;  // miscellaneous flags for parallel scan
+  uint degree;         // parallel degree, used by pre-assign mode currently.
   // Call this function to assign range if scan_range_assign_fn is not nullptr
   // otherwise use round robin, Used in init_parallel_scan() only.
   parallel_scan_range_assign_cbk scan_range_assign_fn;
+
+  void* job_desc{nullptr}; // if not nullptr,then use this info instead min_key&max_key
 };
 
 /**
@@ -5625,9 +5648,10 @@ class handler {
       uint keynr MY_ATTRIBUTE((unused)),
       key_range *min_key MY_ATTRIBUTE((unused)),
       key_range *max_key MY_ATTRIBUTE((unused)),
-      bool type_ref_or_null MY_ATTRIBUTE((unused)),
-      ulong *nranges MY_ATTRIBUTE((unused)),
-      ha_rows *nrows MY_ATTRIBUTE((unused))) {
+      uint16_t key_used MY_ATTRIBUTE((unused)),
+      parallel_scan_flags flags MY_ATTRIBUTE((unused)),
+      ha_rows nrows MY_ATTRIBUTE((unused)),
+      ulong *nranges MY_ATTRIBUTE((unused))) {
     return HA_ERR_UNSUPPORTED;
   }
 
@@ -5636,7 +5660,8 @@ class handler {
 
   virtual int get_distribution_info_by_scan_range(
       uint keynr [[maybe_unused]], key_range *min_key [[maybe_unused]],
-      key_range *max_key [[maybe_unused]], bool is_ref_or_null [[maybe_unused]],
+      key_range *max_key [[maybe_unused]],
+      parallel_scan_flags flags [[maybe_unused]],
       Fill_dist_info_cbk fill_dist_unit [[maybe_unused]]) {
     return HA_ERR_UNSUPPORTED;
   }

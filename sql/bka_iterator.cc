@@ -409,6 +409,10 @@ uint MultiRangeRowIterator::MrrNextCallback(KEY_MULTI_RANGE *range) {
     ++m_current_pos;
   }
 
+  if (!first_table_scan && table()->is_parallel_scan())
+    table()->file->restart_parallel_scan(table()->parallel_scan_handle);
+  if (first_table_scan) first_table_scan = false;
+
   // Set up a range consisting of a single key, so the only difference
   // between start and end is the flags. They signify that the range starts
   // at the row in question, and ends right after it (exclusive).

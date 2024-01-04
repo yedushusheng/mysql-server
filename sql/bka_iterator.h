@@ -447,6 +447,7 @@ class MultiRangeRowIterator final : public TableRowIterator {
   /// The join type of the BKA join we are part of. Same as m_join_type in the
   /// corresponding BKAIterator.
   const JoinType m_join_type;
+  bool first_table_scan{true};
 };
 
 #endif  // SQL_BKA_ITERATOR_H_

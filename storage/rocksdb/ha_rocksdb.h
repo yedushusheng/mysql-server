@@ -56,12 +56,12 @@
 #include "sql/tdsql/tdstore.h" //for table scan
 #include "sql/tdsql/mc.h"
 #include "sql/tdsql/trans.h"
-#include "sql/tdsql/slice.h"
+#include "storage/tdstore/include/rocksdb/slice.h"
 #include "sql/tdsql/ddl/ddl_job.h" //IndexInfoCollector
 #include "sql/tdsql/optimizer/aux_iterator.h" // RawRecKvCacheIterator
 #include "storage/rocksdb/tdsql/parallel_query.h"
 #include "mysql/components/services/log_builtins.h"
-#include "sql/tdsql/serialize/serialize_interface.h"
+#include "push_down.h"
 
 using namespace tdsql;
 
@@ -86,6 +86,15 @@ extern uint64_t tdstore_auto_stat_min_interval_microsecond ;
 */
 
 namespace myrocks {
+
+// A range of keys
+struct Range {
+  rocksdb::Slice start;
+  rocksdb::Slice limit;
+
+  Range() { }
+  Range(const rocksdb::Slice& s, const rocksdb::Slice& l) : start(s), limit(l) { }
+};
 
 
 /*
@@ -308,6 +317,7 @@ constexpr uint MAX_INDEX_COL_LEN_SMALL = 767;
 #define HA_ERR_ROCKSDB_INVALID_TABLE (HA_ERR_ROCKSDB_FIRST + 7)
 #define HA_ERR_ROCKSDB_PROPERTIES (HA_ERR_ROCKSDB_FIRST + 8)
 #define HA_ERR_ROCKSDB_MERGE_FILE_ERR (HA_ERR_ROCKSDB_FIRST + 9)
+#define HA_ERR_INSUFFICIEND_INFO_TO_PARSE (HA_ERR_ROCKSDB_FIRST + 10)
 /*
   Each error code below maps to a RocksDB status code found in:
   rocksdb/include/rocksdb/status.h
@@ -353,6 +363,21 @@ struct Rdb_table_handler : public boost::noncopyable{
       m_real_db_name = vec[vec.size()-2];
       m_real_table_name = vec[vec.size()-1];
     }
+    const static std::string PartPrefix = "#P#";
+    const static std::string SubPartPrefix = "#SP#";
+    size_t part_index = m_real_table_name.find(PartPrefix);
+    if (part_index != std::string::npos) {
+      m_partition_base_table_name = m_real_table_name.substr(0, part_index);
+      size_t sub_prt_index = m_real_table_name.find(SubPartPrefix, part_index + PartPrefix.size());
+      if (sub_prt_index != std::string::npos) { //is sub partition
+        m_partition_name = m_real_table_name.substr(sub_prt_index + SubPartPrefix.size());
+      } else {
+        m_partition_name = m_real_table_name.substr(part_index + PartPrefix.size());
+      }
+    }
+
+    is_system_table_ = tdsql::IsSystemTable(m_real_db_name.c_str(), m_real_table_name.c_str());
+    is_mysql_table_stat_table_ = IsSystemTableStats(m_real_db_name.c_str(), m_real_table_name.c_str());
   }
 
   ~Rdb_table_handler(){
@@ -361,7 +386,9 @@ struct Rdb_table_handler : public boost::noncopyable{
 
   const std::string m_table_name;//./db/table_name
   std::string m_real_db_name;
-  std::string m_real_table_name;
+  std::string m_real_table_name;//table_name, test1#P#p0,test1#P#p2#SP#p2sp1
+  std::string m_partition_base_table_name;
+  std::string m_partition_name;//p0, p0sp0;
 
   std::atomic_int m_ref_count {1};
 
@@ -381,6 +408,9 @@ struct Rdb_table_handler : public boost::noncopyable{
   uint64_t time_rand_fixed_ {0}; //all sqlengine may be use diff time_rand_fixed_
   double update_rate_fixed_ {0};
 
+  bool is_system_table_ {false};
+  bool is_mysql_table_stat_table_ {false};
+
 
   inline void AddUpdateCount(uint64_t n) {
     update_count_ += n;
@@ -393,29 +423,17 @@ struct Rdb_table_handler : public boost::noncopyable{
     ResetUpdateCount();
   }
   inline double GetUpdateRate() const {
+    if (unlikely(IsSystemTable())) {
+      return tdstore_auto_stat_when_update_rate * 100 + update_rate_fixed_;
+    }
     return tdstore_auto_stat_when_update_rate + update_rate_fixed_;
   }
 
-  //check the m_mtcache_last_update whether expired
-  bool cache_is_expired_no_lock(uint64_t cachetime, uint64_t cur_time = my_micro_time());
-  inline bool CheckNeedReComputeAnalyzeWhenUpdate(uint64_t cur_time = my_micro_time()) {
-    //if table row count is too small,update count / m_mtcache_count should > tdstore_auto_stat_when_update_rate easy,so we check update count
-    if (update_count_ <= tdstore_auto_stat_min_update_num) {
-      return false;
-    }
-    volatile uint64_t count = m_mtcache_count; //m_mtcache_count may be updated by other thread
-    if (!count) { //if update_count_ is large,but m_mtcache_count is 0, we should compute table statistics
-      return true;
-    }
-    if (cur_time >=
-        m_last_update_time_for_check_ + tdstore_auto_stat_min_interval_microsecond) { //control update interval(exceed tdstore_auto_stat_min_interval_microsecond microsecond)
-      return (1.0 * update_count_ / count) >= GetUpdateRate(); //update rate >= 10%
-    }
-    return false;
-  }
+  bool NeedRecompute(uint64_t cachetime);
+
   bool ControlTimeRate(uint64_t cur_time ) {
     //now ,we use atomic update_time_
-    if (cur_time >= m_last_update_time_.load() + tdstore_auto_stat_min_interval_microsecond) {
+    if (cur_time >= m_last_update_time_.load() + MinIntervalMicrosecond()) {
       return false;
     } else {
       return true;
@@ -447,8 +465,25 @@ struct Rdb_table_handler : public boost::noncopyable{
   void update(uint64_t mtcache_count, uint64_t mtcache_size, uint64_t time);
   void update_table_stats(const dd::Table_stat *stat);
 
-  inline bool IsMySqlTableStatsTable() {
-    return IsSystemTableStats(m_real_db_name.c_str(), m_real_table_name.c_str());
+  inline bool IsSystemTable() const{
+    return is_system_table_;
+  }
+  inline bool IsMySqlTableStatsTable() const{
+    return is_mysql_table_stat_table_;
+  }
+
+  //system table reduce rate
+  inline uint64_t MinUpdateCount() {
+    if (unlikely(IsSystemTable())) {
+      return tdstore_auto_stat_min_update_num * 100;
+    }
+    return tdstore_auto_stat_min_update_num;
+  }
+  inline uint64_t MinIntervalMicrosecond() const {
+    if (unlikely(IsSystemTable())) {
+      return tdstore_auto_stat_min_interval_microsecond * 100;
+    }
+    return tdstore_auto_stat_min_interval_microsecond;
   }
 
   std::string ToString();
@@ -482,7 +517,7 @@ enum operation_type : int {
 enum query_type : int {
   QUERIES_POINT = 0,
   QUERIES_RANGE,
-  QUERIES_COUNT_OPTIM,
+  QUERIES_REQUEST_SELECT_COUNT,
   QUERIES_MAX
 };
 
@@ -525,7 +560,7 @@ struct st_export_stats {
 
   ulonglong covered_secondary_key_lookups;
 
-  ulonglong queries_count_optim;
+  ulonglong queries_request_select_count;
 };
 
 /* Struct used for exporting RocksDB memory status */
@@ -924,7 +959,7 @@ public:
   void free_key_buffers();
 
   // the buffer size should be at least 2*Rdb_key_def::INDEX_NUMBER_SIZE
-  rocksdb::Range get_range(const int &i, uchar buf[]) const;
+  Range get_range(const int &i, uchar buf[]) const;
 
   /*
     A counter of how many row checksums were checked for this table. Note that
@@ -1199,8 +1234,8 @@ public:
   int index_last(uchar *const buf) override
       MY_ATTRIBUTE((__warn_unused_result__));
   int index_fillback_sk() override;
-  int index_fillback_sk_by_range(const tdsql::Slice &start,
-                                 const tdsql::Slice &end,
+  int index_fillback_sk_by_range(const rocksdb::Slice &start,
+                                 const rocksdb::Slice &end,
                                  uint64 iterator_id) override;
   int thomas_write_fillback(bool has_unique,
                             const tdsql::ddl::IndexInfoCollector &indexes_to_be_added,
@@ -1209,7 +1244,7 @@ public:
   bool can_push_down(uint keyno, class Item *const idx_cond);
   void fill_field_info(uint keyno, push_down::PushConditionRequest* request) ;
 
-  void SetCondPush(Item *table_cond,Item *icp_cond,int keyno);
+  void SetCondPush(Item *table_cond, Item *icp_cond, int keyno, PushDownPolicy policy);
   int BuildPushDownPb(uint keyno);
   void SetProjectionPush();
   int GetPushIndexNo(const QEP_TAB *qep_tab);
@@ -1375,7 +1410,7 @@ public:
       MY_ATTRIBUTE((__warn_unused_result__));
 
  public:
-  bool GetPKFromSK(myrocks::rocksdb::Slice *key, int index, tdsql::Slice *pk);
+  bool GetPKFromSK(rocksdb::Slice *key, int index, rocksdb::Slice *pk);
 
   bool projection_is_pushed() override { return m_projection; }
 
@@ -1394,7 +1429,7 @@ public:
     return new_handler;
   }
 
-  void SingleSelectPush(const QEP_TAB *qep_tab, int index);
+  void SingleSelectPush(const QEP_TAB *qep_tab, int index, PushDownPolicy policy);
 
   void IndexMergePush(int index);
 
@@ -1451,7 +1486,7 @@ public:
       MY_ATTRIBUTE((__warn_unused_result__));
   void position(const uchar *const record) override;
   int info(uint) override;
-  void need_update_table_cache(bool need_persist, bool async);
+  void need_update_table_cache(bool need_persist, bool need_broadcast, bool async);
 
   /*
     Just like rnd_init but not the same, rnd_range_init will
@@ -1492,6 +1527,8 @@ public:
 
     FreeRecordBufferIfNecessary();
 
+    m_parallel_scan_enabled = false;
+
     DBUG_RETURN(HA_EXIT_SUCCESS);
   }
 
@@ -1517,10 +1554,6 @@ public:
       MY_ATTRIBUTE((__warn_unused_result__));
 
   bool get_error_message(const int error, String *const buf) override;
-
-  static int rdb_error_to_mysql(const rocksdb::Status &s,
-                                const char *msg = nullptr)
-      MY_ATTRIBUTE((__warn_unused_result__));
 
   void get_auto_increment(ulonglong offset, ulonglong increment,
                           ulonglong nb_desired_values,
@@ -1579,7 +1612,8 @@ public:
   int rpc_put_record(tdsql::Transaction* tx,
                      const rocksdb::Slice &key_slice,
                      const rocksdb::Slice &value_slice,
-                     tdstore::PutRecordType &&type);
+                     tdstore::PutRecordType &&type,
+                     bool is_dummy = false);
   int rpc_get_record(tdsql::Transaction* tx,
                      const rocksdb::Slice &key_slice,
                      rocksdb::PinnableSlice* value_slice,
@@ -1589,7 +1623,7 @@ public:
                      bool with_extra_info);
   //int rpc_drop_index(uint32_t index_id);
   //int rpc_del_range(const regions::Members members,
-  //                  const rocksdb::Range &range);
+  //                  const Range &range);
   //send start txn requests to multiple tdstores involved in this transaction
   //get a new tdsql::Iterator
   int init_tdsql_iterator(tdsql::Transaction* &tx,
@@ -1644,7 +1678,9 @@ public:
 
   void set_only_calc_records(bool arg) { m_only_calc_records = arg; }
 
-  bool serialize(tdsql::Archive &ar);
+  bool serialize(tdsql::Archive &ar) override;
+
+  bool CoversJob(uint keynr, const push_down::ScanJob &job);
 
  private:
   void set_lock_type(int lock_type) override { m_lock_type = lock_type; }
@@ -1731,7 +1767,11 @@ public:
   int request_row_count(THD *thd, uint index, uint64_t *rows,
                         const std::string &start, const std::string &end);
 
-  bool use_stmt_optimize_load_data(tdsql::Transaction *tx);
+  bool use_optimize_load_data(tdsql::Transaction *tx);
+
+  bool use_optimize_load_data_by_bulk_load(tdsql::Transaction *tx);
+
+  bool use_optimize_load_data_by_batch_put(tdsql::Transaction *tx);
 
  private:
   /** The multi range read session object */
@@ -1800,12 +1840,13 @@ public:
   int restart_parallel_scan(parallel_scan_handle_t scan_handle) override;
 
   int estimate_parallel_scan_ranges(uint keynr, key_range *min_key,
-                                    key_range *max_key, bool type_ref_or_null,
-                                    ulong *nranges, ha_rows *nrows) override;
+                                    key_range *max_key, uint16_t key_used,
+                                    parallel_scan_flags flags, ha_rows nrows,
+                                    ulong *nranges) override;
 
   int get_distribution_info_by_scan_range(
-      uint keynr, key_range *min_key, key_range *max_key, bool is_ref_or_null,
-      Fill_dist_info_cbk fill_dist_unit) override;
+      uint keynr, key_range *min_key, key_range *max_key,
+      parallel_scan_flags flags, Fill_dist_info_cbk fill_dist_unit) override;
 
   void clone_parallel_scan(ha_rocksdb *from) {
     m_parallel_scan_handle = from->m_parallel_scan_handle;
@@ -1858,6 +1899,33 @@ public:
   int HandleStmtOptimizeLoadDataDuplicateEntry(int ret);
 
   void FreeRecordBufferIfNecessary();
+
+  inline bool has_histogram(const uint field_idx) const {
+    return (nullptr == table->s->find_histogram(field_idx)) ? false : true;
+  };
+
+  // Calculate Record Per Key value
+  // Since the histogram only records a single column of data, rec_per_key is
+  // calculated based on the assumption of uniformity.
+  // As an example if we have an index with two attributes A,B and C
+  // rec_per_key[0] = (1 / NDV(colA)) * total_rows
+  // rec_per_key[1] = (1 / NDV(colA) * NDV(colB)) * total_rows
+  // rec_per_key[2] = (1 / NDV(colA) * NDV(colB) * NDV(colC)) * total_rows
+  //
+  // @param[in] field_idx       The index field id.
+  // @param[in] total_prev_ndv  The product of the NDVs of the individual
+  // columns of the composite index
+  // @param[out] ndv            The NDV of this index
+  // @param[out] rec_per_key    The record per key value
+  // @return ret                Got success when histogram statistics for given
+  // index is collected
+  int estimate_rec_per_key_from_histogram(const uint field_idx,
+                                          const uint total_prev_ndv, uint &ndv,
+                                          uint &rec_per_key);
+
+  bool CheckSnapshotAndIndexCreateTS(
+      tdsql::Transaction *tx, const uint index, const TABLE *const table_arg,
+      const std::shared_ptr<Rdb_tbl_def> &tbl_def_arg);
 };
 
 /*

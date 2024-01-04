@@ -39,12 +39,14 @@
 #include "my_sys.h"
 #include "mysql/thread_pool_priv.h"
 #include "mysys_err.h"
+#include "sql/dd/cache/dictionary_client.h"
 #include "sql/dd/dd_onlineddl.h"
 #include "sql/dd/impl/bootstrap/bootstrap_ctx.h" // DD_bootstrap_ctx
 #include "sql/dd/info_schema/table_stats.h"
 #include "sql/debug_sync.h"
 #include "sql/error_handler.h"
 #include "sql/field.h"
+#include "sql/histograms/histogram.h"
 #include "sql/item.h"       // Item
 #include "sql/item_cmpfunc.h" // Item_func_like etc.
 #include "sql/item_func.h"  // Item_func
@@ -60,8 +62,9 @@
 #include "sql/sql_thd_internal_api.h"
 #include "sql/sql_update.h"  //compare_records
 #include "sql/table.h"
-#include "sql/tdsql/parallel/parallel_defs.h"
 #include "sql/tdsql/ddl/correlate_option.h"
+#include "sql/tdsql/global_vars.h"
+#include "sql/tdsql/parallel/parallel_defs.h"
 #include "include/scope_guard.h"
 
 // Both MySQL and RocksDB define the same constant. To avoid compilation errors
@@ -100,6 +103,7 @@
 #include "sql/tdsql/rpc_cntl/rpc_tds_cntl.h"
 #include "sql/tdsql/rpc_connections.h"
 #include "sql/tdsql/table_type.h"  // IsSystemTable
+#include "sql/tdsql/timestamp.h"
 #include "sql/tdsql/trans.h"
 #include "storage/rocksdb/tdsql/parallel_query.h"
 #include "storage/rocksdb/tdsql/storage_format.h"
@@ -109,10 +113,13 @@
 #include "sql/strfunc.h"
 #include "sql/tztime.h"
 
-uint tdsql_max_projection_pct;
+char* tdsql_histogram_auto_analyze_start_utc_time;
+char* tdsql_histogram_auto_analyze_end_utc_time;
 uint tdsql_save_update_time_interval;
 uint tdsql_handler_record_buffer_size;
+uint tdsql_stats_lease_time;
 extern bool tdsql_optimize_pk_point_select;
+extern int32_t tdsql_trans_type;
 
 namespace native_part {
 extern void part_name(char *out_buf, const char *path,
@@ -138,9 +145,6 @@ using namespace tdsql;
 
 #define rdb_handler_memory_key PSI_NOT_INSTRUMENTED
 
-#define CONVERT_TO_TDSQL_SLICE(rocksdb_slice) (tdsql::Slice(rocksdb_slice.data(),rocksdb_slice.size()))
-#define CONVERT_TO_ROCKSDB_SLICE(tdsql_slice) (rocksdb::Slice(tdsql_slice.data(),tdsql_slice.size()))
-
 void Rdb_table_handler::update(uint64_t mtcache_count, uint64_t mtcache_size, uint64_t time) {
   std::lock_guard<tdsql::Mutex> guard(mutex_);
   m_mtcache_count = mtcache_count;
@@ -157,22 +161,43 @@ void Rdb_table_handler::update_table_stats(const dd::Table_stat *stat) {
   update(stat->table_rows(), stat->data_length(), my_micro_time());
 }
 
-bool Rdb_table_handler::cache_is_expired_no_lock(uint64_t cachetime, uint64_t cur_time) {
+bool Rdb_table_handler::NeedRecompute(uint64_t cachetime) {
   if (unlikely(!cachetime)) {
     return true;
   }
+  uint64_t cur_time = my_micro_time();
 
-  if (cur_time > m_last_update_time_for_check_ + cachetime + time_rand_fixed_) {
+  bool need_control_rate = ControlTimeRate(cur_time);
+
+  if (cur_time > m_last_update_time_for_check_ + cachetime + time_rand_fixed_) { //time interval is large
+    if (!need_control_rate) {
+      return true;
+    }
+  }
+
+  //if table row count is too small,update count / m_mtcache_count should > tdstore_auto_stat_when_update_rate easy,so we check update count
+  if (update_count_ <= MinUpdateCount()) {
+    return false;
+  }
+  volatile uint64_t count = m_mtcache_count; //m_mtcache_count may be updated by other thread
+  if (!count) { //if update_count_ is large,but m_mtcache_count is 0, we should compute table statistics(skip need_control_rate)
     return true;
   }
-  return false;
+
+  if (need_control_rate) {
+    return false;
+  }
+
+  return (1.0 * update_count_ / count) >= GetUpdateRate(); //update rate >= 10%
+
 }
 
 std::string Rdb_table_handler::ToString() {
   ardb::Buffer buff;
-  buff.Printf( "Rdb_table_handler [table=%s] [%s.%s] [m_ref_count=%d] [update_time=%llu] [update_count_=%lu] [time_rand_fixed_=%lu] [update_rate_=%.4f] [data_rows=%lu] [datasize=%lu]",
+  buff.Printf( "Rdb_table_handler [table=%s] [%s.%s %s %s] [m_ref_count=%d] [update_time=%llu] [update_count_=%lu] [time_rand_fixed_=%lu] [update_rate_=%.4f] [data_rows=%lu] [datasize=%lu]",
               m_table_name.c_str(),
               m_real_db_name.c_str(), m_real_table_name.c_str(),
+              m_partition_base_table_name.c_str(), m_partition_name.c_str(),
               m_ref_count.load(), GetReadableUpdateTime(), update_count_,
               time_rand_fixed_,
               GetUpdateRate(),
@@ -184,8 +209,16 @@ std::string Rdb_table_handler::ToString() {
 
 std::string Rdb_table_handler::ConStructAnalyzeReloadSql() {
   ardb::Buffer buff;
-  buff.Printf("analyze table `%s`.`%s` reload ", m_real_db_name.c_str(),
-              m_real_table_name.c_str());
+  if (m_partition_name.empty()) {
+    buff.Printf("analyze table `%s`.`%s` reload ", m_real_db_name.c_str(),
+                m_real_table_name.c_str());
+  } else {
+    buff.Printf("ALTER TABLE `%s`.`%s` ANALYZE PARTITION %s reload",
+                m_real_db_name.c_str(),
+                m_partition_base_table_name.c_str(),
+                m_partition_name.c_str());
+  }
+
   return buff.AsString();
 }
 
@@ -207,15 +240,19 @@ std::string Rdb_table_handler::ConStructInsertSql() {
 
   std::lock_guard<tdsql::Mutex> guard(mutex_);
 
-  buff.Printf("insert into mysql.table_stats(schema_name, table_name, table_rows, avg_row_length, data_length, max_data_length, index_length, data_free, auto_increment, update_time, cached_time) "
-                  "values('%s', '%s', %lu, %lu, %lu, %lu, %lu, %lu, %lu, %llu, %llu);",
-      m_real_db_name.c_str(), m_real_table_name.c_str(),
-      m_mtcache_count,
-      (uint64_t)(m_mtcache_count == 0 ? 0 : m_mtcache_size/m_mtcache_count),
-      m_mtcache_size,
-      (uint64_t)(0), (uint64_t)(0), (uint64_t)(0), (uint64_t)(0),
-      update_time,
-      update_time);
+  if (!m_mtcache_count && !m_mtcache_size) { //empty statistics
+    buff.Printf("select 1;");
+  } else {
+    buff.Printf("insert into mysql.table_stats(schema_name, table_name, table_rows, avg_row_length, data_length, max_data_length, index_length, data_free, auto_increment, update_time, cached_time) "
+        "values('%s', '%s', %lu, %lu, %lu, %lu, %lu, %lu, %lu, %llu, %llu);",
+        m_real_db_name.c_str(), m_real_table_name.c_str(),
+        m_mtcache_count,
+        (uint64_t)(m_mtcache_count == 0 ? 0 : m_mtcache_size/m_mtcache_count),
+        m_mtcache_size,
+        (uint64_t)(0), (uint64_t)(0), (uint64_t)(0), (uint64_t)(0),
+        update_time,
+        update_time);
+  }
 
   return buff.AsString();
 }
@@ -1068,6 +1105,21 @@ class SaveUpdateTimeThread : public tdsql::BackgroundThread {
 
 SaveUpdateTimeThread *save_update_time_thread;
 
+class HistogramStatisticUpdateThread : public tdsql::BackgroundThread {
+ public:
+  HistogramStatisticUpdateThread()
+      : tdsql::BackgroundThread(SYSTEM_THREAD_DD_INITIALIZE) {}
+
+  virtual const char *ThreadName() const override {
+    return "tdsql_histogram_statistic_update";
+  }
+
+ private:
+  virtual void Run() override;
+};
+
+HistogramStatisticUpdateThread *histo_stat_update_thread;
+
 // use update sql to save update_time
 void myrocks_execute_update_sql([[maybe_unused]]THD *thd, const std::string &db_table,
                                 ulong time_sec) {
@@ -1086,10 +1138,10 @@ void myrocks_execute_update_sql([[maybe_unused]]THD *thd, const std::string &db_
   char sql_buf[1024];
   snprintf(
       sql_buf, sizeof(sql_buf),
-      "update mysql.table_stats set update_time =  %llu, cached_time = %llu "
+      "update mysql.table_stats set update_time =  %llu "
       "where schema_name = '%s' and table_name = '%s' and (update_time < %llu "
       "or update_time is null)",
-      update_time, update_time, db.c_str(), table.c_str(), update_time);
+      update_time, db.c_str(), table.c_str(), update_time);
 
   tdsql::global_sql_runner.SubmitSqlTask("mysql.table_stats", sql_buf);
 }
@@ -1102,7 +1154,8 @@ void myrocks_save_update_time(THD *thd) {
       // do not care race condition
       if (tdef->m_update_time != 0) {
         if (!tdef->m_is_mysql_system_table)
-          update_time[tdef->full_tablename()] = tdef->m_update_time;
+          update_time[tdef->base_dbname() + "." + tdef->base_tablename()] =
+              tdef->m_update_time;
         tdef->m_update_time = 0;
       }
       return HA_EXIT_SUCCESS;
@@ -1120,7 +1173,7 @@ void SaveUpdateTimeThread::Run() {
   tdsql::Bg_thread_cnt_ctx btcc("myrocks_save_update_time thread",
                                 tdsql::BACK_PR);
   PostInit();
-  while (1) {
+  while (is_running()) {
     btcc.Sleep(tdsql_save_update_time_interval * 1000);
     if (btcc.ToExit()) {
       break;
@@ -1130,11 +1183,120 @@ void SaveUpdateTimeThread::Run() {
 
   Destroy();
 
-  // we do not call Stop,so delete here
-  delete thd_;
   LogInfo("quit myrocks_save_update_time");
 }
 
+/**
+
+* @brief Fetches the maintain window based on the current UTC time.
+* This function retrieves the maintain window based on the provided current UTC time.
+* The maintain window is defined by the start and end times in the format "hh:mm".
+* @param current_utc_time The current UTC time.
+* @param[out] window_start_time The start time of the maintain window.
+* @param[out] window_end_time The end time of the maintain window.
+* @return void
+* @note The maintain window format is "hh:mm".
+* @note The current_utc_time parameter should be a valid MYSQL_TIME structure representing the current UTC time.
+* @note The window_start_time and window_end_time parameters will be modified to store the start and end times of the maintain window.
+*/
+
+void fetch_maintain_window(MYSQL_TIME const &current_utc_time,
+                           MYSQL_TIME &window_start_time,
+                           MYSQL_TIME &window_end_time) {
+
+  std::string start_time_str(tdsql_histogram_auto_analyze_start_utc_time);
+  std::string end_time_str(tdsql_histogram_auto_analyze_end_utc_time);
+  //time window format is "hh:mm"
+  int start_h = std::stoi(start_time_str.substr(0, 2));
+  int start_m = std::stoi(start_time_str.substr(3, 2));
+  int end_h = std::stoi(end_time_str.substr(0, 2));
+  int end_m = std::stoi(end_time_str.substr(3, 2));
+  window_start_time = current_utc_time;
+  window_end_time = current_utc_time;
+  window_start_time.hour = start_h;
+  window_start_time.minute = start_m;
+  window_end_time.hour = end_h;
+  window_end_time.minute = end_m;
+
+  return;
+}
+
+/**
+ * @brief Checks if the current time is within the operation window and fetch window start end time.
+ *
+ * @param[out] window_start_time The start UTC time of the operation window
+ * @param[out] window_end_time The end UTC time of the operation window
+ * @return bool Returns true if the current time is within the operation window, false otherwise.
+ *
+ * @retval true The current time is within the operation window.
+ * @retval false The current time is outside the operation window.
+ */
+bool check_maintain_window(ulonglong &window_start_time, ulonglong &window_end_time) {
+
+  time_t now = time(NULL);
+  MYSQL_TIME current_utc_time;
+  MYSQL_TIME start_time;
+  MYSQL_TIME end_time;
+  my_tz_UTC->gmt_sec_to_TIME(&current_utc_time, now);
+
+  fetch_maintain_window(current_utc_time, start_time, end_time);
+  auto current_time = TIME_to_ulonglong_datetime(current_utc_time);
+  window_start_time = TIME_to_ulonglong_datetime(start_time);
+  window_end_time = TIME_to_ulonglong_datetime(end_time);
+  LogDebug("current is %llu, window start is %llu, window end is %llu ",
+         current_time, window_start_time, window_end_time); 
+  if (current_time > TIME_to_ulonglong_datetime(start_time) &&
+       current_time < TIME_to_ulonglong_datetime(end_time)) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+// Check if the sqlengine in the cluster can update histogram
+// Policy: only the sqlengine with min node_id can update
+// We use this policy to avoid duplicated update among sqlengines
+bool can_update() {
+  uint64_t min_node_id = 1;
+  if (get_min_sqlengine_node_id(min_node_id)) {
+    min_node_id = 1;
+    LogInfo("failed to get min node id from MC, use default value 1");
+  }
+  if (GetNodeId() == min_node_id) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+void HistogramStatisticUpdateThread::Run() {
+  tdsql::Bg_thread_cnt_ctx btcc("tdsql_histogram_statistic_update",
+                                tdsql::BACK_PR);
+  PostInit();
+  ulonglong window_start_time;
+  ulonglong window_end_time;
+  while (is_running()) {
+    if (btcc.ToExit()) {
+      break;
+    }
+    if (!check_maintain_window(window_start_time, window_end_time)
+          || !can_update() ) {
+      btcc.Sleep(tdsql_stats_lease_time * 200);
+      continue;
+    }
+
+    if (dd::cache::Dictionary_client::update_column_statistics_entries(thd_,
+                                       window_start_time, window_end_time)) {
+      LogInfo("update column statistics failed, wait and retry");
+      btcc.Sleep(tdsql_stats_lease_time * 200);
+    }
+
+    btcc.Sleep(tdsql_stats_lease_time * 200);
+  }
+
+  Destroy();
+  LogInfo("quit tdsql_histogram_statistic_update");
+}
 /*
   Storage Engine initialization function, invoked when plugin is loaded.
 */
@@ -1185,6 +1347,9 @@ static int rocksdb_init_func(void *const p) {
 
   save_update_time_thread->Start();
 
+  histo_stat_update_thread = new (std::nothrow) HistogramStatisticUpdateThread();
+  histo_stat_update_thread->Start();
+
 #if defined(HAVE_PSI_MEMORY_INTERFACE) || defined(HAVE_TDSQL_MEMORY_INTERFACE)
   init_myrocks_psi_keys();
 #endif /* HAVE_PSI_MEMORY_INTERFACE || HAVE_TDSQL_MEMORY_INTERFACE */
@@ -1220,7 +1385,10 @@ static int rocksdb_done_func(void *const) {
   // clear the initialized flag and unlock
   rdb_get_hton_init_state()->set_initialized(false);
 
+  save_update_time_thread->Stop();
+  histo_stat_update_thread->Stop();
   delete save_update_time_thread;
+  delete histo_stat_update_thread;
 
   DBUG_RETURN(error);
 }
@@ -1418,10 +1586,7 @@ static handler *rocksdb_create_handler(my_core::handlerton *const hton,
 
 // serialize pushdown relate stuff
 bool ha_rocksdb::serialize(tdsql::Archive &ar) {
-  ar.Serialize(pushed_idx_cond_keyno);
-  ar.Serialize(in_range_check_pushed_down);
-  ar.Serialize(pushed_idx_cond);
-  ar.Serialize(pushed_cond);
+  if (handler::serialize(ar)) return true;
 
   ar.Serialize(tdstore_pushed_cond_idx_);
   if (ar.Serialize(tdstore_pushed_cond_)) return true;
@@ -1723,8 +1888,8 @@ int ha_rocksdb::tdsql_convert_record_from_storage_format(
     const std::string &key, const std::string &value, uchar *const buf) {
   int rc = HA_EXIT_SUCCESS;
 
-  const rocksdb::Slice &rkey = CONVERT_TO_ROCKSDB_SLICE(key);
-  const rocksdb::Slice &rvalue = CONVERT_TO_ROCKSDB_SLICE(value);
+  const rocksdb::Slice rkey = key;
+  const rocksdb::Slice rvalue = value;
 
   m_retrieved_record.Reset();
   m_retrieved_record.PinSelf(rvalue);
@@ -1741,7 +1906,7 @@ int ha_rocksdb::tdsql_get_storage_format_pk(tdsql::parallel::StorageFormatKeys* 
   const Rdb_key_def &kd = *m_key_descr_arr[pk_idx];
 
   uchar key_buf[Rdb_key_def::INDEX_NUMBER_SIZE*2];
-  rocksdb::Range range = get_range(kd.get_keyno(), key_buf);
+  myrocks::Range range = get_range(kd.get_keyno(), key_buf);
   tdsql::parallel::StorageFormatKey curr_pk;
 
   curr_pk.key.replace(0, range.start.size(), range.start.ToString());
@@ -2030,10 +2195,11 @@ int ha_rocksdb::open(const char *const name, int, uint,
   //for user table ,next info() will reload statistics
   if (table_handler_is_create) {
     if (IsSystemTable(m_table_handler->m_real_db_name.c_str(), m_table_handler->m_real_table_name.c_str())) {
-      need_update_table_cache(false, false);
+      need_update_table_cache(false, false, false);
     } else {
-      if(!dd::info_schema::reload_table_stats(current_thd, m_table_handler->m_real_db_name.c_str(),
-                                               m_table_handler->m_real_table_name.c_str(), this)) {// if ok, m_table_handler->GetCacheTime() is not 0
+      if(!reload_table_stats(current_thd,
+                              m_table_handler->m_real_db_name.c_str(),
+                              m_table_handler->m_real_table_name.c_str())) {// if ok, m_table_handler->GetCacheTime() is not 0
         LogInfo("first init dd::info_schema::reload_table_stats table[%s.%s] status success",
                 m_table_handler->m_real_db_name.c_str(), m_table_handler->m_real_table_name.c_str());
       } else {
@@ -2470,6 +2636,12 @@ int ha_rocksdb::create(const char *const name, TABLE *const table_arg,
   assert(table_arg != nullptr);
   assert(create_info != nullptr);
 
+  DBUG_EXECUTE_IF("ha_rocksdb_create_failed", {
+    my_error(ER_NOT_SUPPORTED_YET, MYF(0),
+             "ha_rocksdb_create_failed");
+    return HA_WRONG_CREATE_OPTION;
+  });
+
   THD *const thd = my_core::thd_get_current_thd();
 
   if (unlikely(create_info->data_file_name)) {
@@ -2903,7 +3075,7 @@ int ha_rocksdb::read_key_exact(const Rdb_key_def &kd,
     } else if (is_error(rc)) {
       return rc;
     } else {
-      if (kd.value_matches_prefix(CONVERT_TO_ROCKSDB_SLICE(iter->key()), key_slice)) {
+      if (kd.value_matches_prefix(iter->key(), key_slice)) {
         return HA_EXIT_SUCCESS;
       }
     }
@@ -2920,7 +3092,7 @@ int ha_rocksdb::read_row_from_primary_key(uchar *const buf) {
   assert(buf != nullptr);
 
   int rc;
-  const rocksdb::Slice &rkey = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->key());
+  const rocksdb::Slice rkey = m_td_scan_it->key();
   const uint pk_size = rkey.size();
   const char *pk_data = rkey.data();
 
@@ -2928,7 +3100,7 @@ int ha_rocksdb::read_row_from_primary_key(uchar *const buf) {
   m_last_rowkey.copy(pk_data, pk_size, &my_charset_bin);
 
   /* Unpack from the row we've read */
-  const rocksdb::Slice &value = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->value());
+  const rocksdb::Slice value = m_td_scan_it->value();
   m_retrieved_record.Reset();
   m_retrieved_record.PinSelf(value);
   rc = convert_record_from_storage_format(&rkey, &value, buf);
@@ -2947,8 +3119,8 @@ static inline bool enable_pk_preload(TABLE* table) {
 }
 // save pk-part from key(sk) in pk
 // return 1 if fail
-bool ha_rocksdb::GetPKFromSK(myrocks::rocksdb::Slice *key, int index,
-                             tdsql::Slice* pk) {
+bool ha_rocksdb::GetPKFromSK(rocksdb::Slice *key, int index,
+                             rocksdb::Slice* pk) {
   const Rdb_key_def &kd = *m_key_descr_arr[index];
 
   uint pk_size =
@@ -2956,7 +3128,7 @@ bool ha_rocksdb::GetPKFromSK(myrocks::rocksdb::Slice *key, int index,
 
   if (pk_size == RDB_INVALID_KEY_LEN) return 1;
 
-  pk->assign((char*)m_pk_packed_tuple, pk_size);
+  *pk = rocksdb::Slice((const char *)m_pk_packed_tuple, pk_size);
   return 0;
 }
 
@@ -2979,8 +3151,8 @@ int ha_rocksdb::read_row_from_secondary_key(uchar *const buf,
   if (rc) return rc;
 
   /* Get the key columns and primary key value */
-  const rocksdb::Slice &rkey = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->key());
-  const rocksdb::Slice &value = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->value());
+  const rocksdb::Slice rkey = m_td_scan_it->key();
+  const rocksdb::Slice value = m_td_scan_it->value();
 
 #if !defined(NDEBUG)
   bool save_keyread_only = m_keyread_only;
@@ -3006,7 +3178,7 @@ int ha_rocksdb::read_row_from_secondary_key(uchar *const buf,
       global_stats.covered_secondary_key_lookups.inc();
     }
   } else {
-    const rocksdb::Slice &rkey_ = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->key());
+    const rocksdb::Slice rkey_ = m_td_scan_it->key();
     pk_size = kd.get_primary_key_tuple(table, *m_pk_descr, &rkey_,
                                        m_pk_packed_tuple);
     if (pk_size == RDB_INVALID_KEY_LEN) {
@@ -3593,7 +3765,7 @@ int ha_rocksdb::find_icp_matching_index_rec(const bool &,
 
     while (1) {
 
-      const rocksdb::Slice rkey = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->key());
+      const rocksdb::Slice rkey = m_td_scan_it->key();
 
       if (!kd.covers_key(rkey)) {
         return HA_ERR_END_OF_FILE;
@@ -3607,7 +3779,7 @@ int ha_rocksdb::find_icp_matching_index_rec(const bool &,
         }
       }
 
-      const rocksdb::Slice value = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->value());
+      const rocksdb::Slice value = m_td_scan_it->value();
 
       int err = kd.unpack_record(table, buf, &rkey, &value,
                                  0);
@@ -3826,7 +3998,7 @@ void ha_rocksdb::SetProjectionPush() {
 
   m_projection = 0;
 
-  if (!tdsql_max_projection_pct) return;
+  if (!current_thd->variables.tdsql_max_projection_pct) return;
 
   int read_set_num = 0;
 
@@ -3839,7 +4011,8 @@ void ha_rocksdb::SetProjectionPush() {
     }
   }
 
-  if (read_set_num * 100 / table->s->fields <= tdsql_max_projection_pct)
+  if (read_set_num * 100 / table->s->fields <=
+      current_thd->variables.tdsql_max_projection_pct)
     m_projection = 1;
 }
 
@@ -3860,7 +4033,7 @@ void PrintCondition(const char *info, Item *cond) {
 
 // count push
 // limit offset push
-void ha_rocksdb::SingleSelectPush(const QEP_TAB *qep_tab, int index) {
+void ha_rocksdb::SingleSelectPush(const QEP_TAB *qep_tab, int index, PushDownPolicy policy) {
   THD *const thd = table->in_use;
 
   if (!tdsql::IsSelectSingleTable(thd)) {
@@ -3869,13 +4042,13 @@ void ha_rocksdb::SingleSelectPush(const QEP_TAB *qep_tab, int index) {
 
   if (is_pk(index, table, m_tbl_def))
     SetProjectionPush();
-  else
+  else if (policy == PushDownPolicy::AllowAll)
     SetPkPreloadPush(index);
-
-  LogDebug("set projection:%d,pk_preload:%d", m_projection, pk_preload_push_);
 
   // all cond can push to tdstore or no cond for current table
   if (!m_all_pushed) return;
+
+  LogDebug("set projection:%d,pk_preload:%d", m_projection, pk_preload_push_);
 
   // count with cond, count without cond is optimized in
   // optimize_aggregated_query already
@@ -3921,9 +4094,10 @@ void ha_rocksdb::IndexMergePush(int index) {
 
   if (!qep_tab || qep_tab->type() != JT_INDEX_MERGE) return;
 
-  if (!CanPushDown(table, m_tbl_def, index)) return;
+  // Don't push projection on index.
+  if (CanPushDown(table, m_tbl_def, index) != PushDownPolicy::AllowAll) return;
 
-  SetCondPush(pushed_cond, nullptr, index);
+  SetCondPush(pushed_cond, nullptr, index, PushDownPolicy::AllowAll);
 }
 
 // all push relate optimize should come here
@@ -3948,14 +4122,50 @@ int ha_rocksdb::engine_push(AQP::Table_access *table_aqp) {
   const QEP_TAB *qep_tab = table_aqp->get_qep_tab();
   Item *table_cond = table_aqp->get_condition();
 
+  POSITION *pos = qep_tab->position();
+
+  ha_rows total_rows = pos->rows_fetched;
+  if (total_rows < current_thd->variables.tdsql_push_down_thresh_rows) {
+    LogDebug("scan_rows:%llu < tdsql_push_down_thresh_rows:%llu do not push",
+             total_rows, current_thd->variables.tdsql_push_down_thresh_rows);
+    return 0;
+  }
+
   int index = GetPushIndexNo(qep_tab);
-  if (!CanPushDown(table, m_tbl_def, index)) return 0;
+  PushDownPolicy policy = CanPushDown(table, m_tbl_def, index);
+  if (policy == PushDownPolicy::Forbid) return 0;
+  if (policy == PushDownPolicy::AllowAll) {
+    // calculate_condition_filter do not calculate filter_effect for last table
+    // so do it here manually
+    float filter = pos->filter_effect;
+
+    // no need to get filter_pct if records < 0
+    if ((filter == COND_FILTER_ALLPASS) && (qep_tab->records() >= 1.0)) {
+      if (table_cond)
+        filter *= table_cond->get_filtering_effect(
+            thd, table->pos_in_table_list->map(), 0, &table->tmp_set,
+            static_cast<double>(qep_tab->records()));
+      if ((filter > current_thd->variables.tdsql_max_filter_pct / 100.0) && pushed_idx_cond) {
+        filter *= pushed_idx_cond->get_filtering_effect(
+            thd, table->pos_in_table_list->map(), 0, &table->tmp_set,
+            static_cast<double>(qep_tab->records()));
+      }
+    }
+
+    if (filter > current_thd->variables.tdsql_max_filter_pct / 100.0) {
+      LogDebug("filter_pct:%f > tdsql_max_filter_pct:%f do not push", filter,
+              current_thd->variables.tdsql_max_filter_pct / 100.0);
+      policy = PushDownPolicy::ProjectionOnly;
+    }
+    
+    LogDebug("scan_rows:%llu,filter_pct:%f", total_rows, filter);
+  }
 
   // see and split which part of cond can push to tdstore
-  SetCondPush(table_cond, pushed_idx_cond, index);
+  SetCondPush(table_cond, pushed_idx_cond, index, policy);
 
   // for single table select,try more pushdown method
-  SingleSelectPush(qep_tab, index);
+  SingleSelectPush(qep_tab, index, policy);
 
   // only check the condition not pushdown
   if (tdstore_pushed_cond_) {
@@ -4005,7 +4215,7 @@ int ha_rocksdb::index_next_with_direction(uchar *const buf, bool) {
   }
 
   while (true) {
-    rc = GetAndParseNextRecord(buf,active_index);
+    rc = GetAndParseNextRecord(buf, active_index);
     if (rc == HA_ERR_KEY_NOT_FOUND) {
       rc = HA_ERR_END_OF_FILE;
     }
@@ -4079,7 +4289,7 @@ int ha_rocksdb::index_first(uchar *const buf) {
 
   m_sk_match_prefix = nullptr;
   ha_statistic_increment(&System_status_var::ha_read_first_count);
-  int rc = IndexFirstLast(buf,true);
+  int rc = IndexFirstLast(buf, true);
   if (rc == HA_ERR_KEY_NOT_FOUND)
     rc = HA_ERR_END_OF_FILE;
 
@@ -4154,13 +4364,10 @@ bool ha_rocksdb::index_is_usable(
   assert(table_arg->s != nullptr);
   assert(tbl_def_arg != nullptr);
 
-  uint64_t create_ts = 0;
   Schema_Status schema_status;
   if (is_hidden_pk(index, table_arg, tbl_def_arg)) {
-    create_ts = table_arg->s->create_ts;
     schema_status = (Schema_Status)table_arg->s->schema_status;
   } else {
-    create_ts = table_arg->s->key_info[index].create_ts;
     if (is_pk(index, table_arg, tbl_def_arg)) {
       schema_status = (Schema_Status)table_arg->s->schema_status;
     } else {
@@ -4181,7 +4388,7 @@ bool ha_rocksdb::index_is_usable(
   if (!tdsql::ddl::GetDDLJob(table->in_use) &&
       !table->correlate_src_table &&
       IsUnReadable(schema_status)) {
-    LogError("table '%s.%s' -> key: <idx: %d, name: %s> schema_status is %s, can't be used to read",
+    LogError("table '%s.%s' -> key: <idx: %d, name: %s> schema_status is %s, can't be used to read. need restart transaction",
       table_arg->s->db.str, table_arg->s->table_name.str, index, get_key_name(index, table_arg, m_tbl_def),
       tdsql::ddl::print_schema_status(schema_status).c_str());
     char err_msg[60];
@@ -4191,35 +4398,7 @@ bool ha_rocksdb::index_is_usable(
     return false;
   }
 
-  if (tx) {
-    LogDebug("current trans_id: %lu, trans ts: %lu, table %s.%s create_ts is %lu, "
-             "index <idx: %u, name: %s> create_ts is %lu, query: '%s'",
-          tx->trans_id(), tx->begin_ts(), table_arg->s->db.str,
-          table_arg->s->table_name.str, table_arg->s->create_ts, index,
-          get_key_name(index, table_arg, m_tbl_def),
-          create_ts, tx->thd()->query().str);
-
-    DBUG_EXECUTE_IF("table_or_index_create_ts_unusable", {
-      // Don't block system tables.
-      if (!tdsql::IsSystemTable(table_arg->s->db.str, table_arg->s->table_name.str)) {
-        create_ts = (~(ulonglong)0); //ULONGLONG_MAX
-      }
-    });
-
-    if (tx->begin_ts() > 0 && tx->begin_ts() < create_ts) {
-      LogError("current trans_id: %lu, trans ts: %lu, table %s.%s create_ts is %lu, "
-               "index <idx: %u, name: %s> create_ts is %lu, unusable, query: '%s'",
-          tx->trans_id(), tx->begin_ts(), table_arg->s->db.str,
-          table_arg->s->table_name.str, table_arg->s->create_ts, index,
-          get_key_name(index, table_arg, m_tbl_def),
-          create_ts, tx->thd()->query().str);
-      my_error(ER_TABLE_DEF_UNUSABLE, MYF(0), table_arg->s->db.str, table_arg->s->table_name.str,
-               "begin timestamp of current transaction is too old");
-      return false;
-    }
-  }
-
-  return true;
+  return !CheckSnapshotAndIndexCreateTS(tx, index, table_arg, tbl_def_arg);
 }
 
 /* Returns index of primary key */
@@ -4608,9 +4787,9 @@ int ha_rocksdb::check_and_lock_sk(const uint &key_id,
   assert(kd.get_keyno() == key_id);
 
   rc = tdsql::CreateIterator(row_info.tx->thd(), this, 0 /*iterator_id*/,
-                             CONVERT_TO_TDSQL_SLICE(index_prefix),
-                             CONVERT_TO_TDSQL_SLICE(new_slice),
-                             CONVERT_TO_TDSQL_SLICE(end_slice),
+                             index_prefix,
+                             new_slice,
+                             end_slice,
                              &sk_iter, true, key_id,
                              m_key_descr_arr[key_id]->get_index_number(),
                              table->key_info[key_id].schema_version,
@@ -4780,8 +4959,7 @@ int ha_rocksdb::update_pk(const Rdb_key_def &kd,
     return rc;
   }
 
-  if (use_stmt_optimize_load_data(row_info.tx)) {
-
+  if (use_optimize_load_data(row_info.tx)) {
     // TODO: put ValidateSchemaStatusBeforePutRecord in a common path.
     rc = ValidateSchemaStatusBeforePutRecord(row_info.tx, row_info.new_pk_slice,
                                              value_slice);
@@ -4790,8 +4968,7 @@ int ha_rocksdb::update_pk(const Rdb_key_def &kd,
     }
 
     rc = row_info.tx->StmtOptimizeLoadDataCacheRecord(
-        m_part_pos, CONVERT_TO_TDSQL_SLICE(row_info.new_pk_slice),
-        CONVERT_TO_TDSQL_SLICE(value_slice), true /*primary_record*/);
+        m_part_pos, row_info.new_pk_slice, value_slice, true /*primary_record*/);
 
   } else if (rocksdb_enable_bulk_load_api &&
       THDVAR(table->in_use, bulk_load) &&
@@ -4813,15 +4990,16 @@ int ha_rocksdb::update_sk(const TABLE *const table_arg, const Rdb_key_def &kd,
                           const struct update_row_info &row_info,
                           const bool bulk_load_sk) {
 
-  int new_packed_size;
-  int old_packed_size;
   int rc = HA_EXIT_SUCCESS;
 
-  rocksdb::Slice new_key_slice;
-  rocksdb::Slice new_value_slice;
-  rocksdb::Slice old_key_slice;
-
   const uint key_id = kd.get_keyno();
+
+  bool place_dummy_secondary_index = false;
+
+  const bool place_dummy_secondary_index_enabled =
+    current_thd->variables.tdsql_place_dummy_secondary_index &&
+    tdsql_trans_type == 0 && // is pessimistic transaction
+    my_core::thd_tx_isolation(current_thd) > ISO_READ_COMMITTED;
 
   if (IsAbsent((Schema_Status)table->key_info[key_id].schema_status)) {
     LogDebug("table '%s.%s' -> index: %s schema_status is %s, skip delete and put index record",
@@ -4836,10 +5014,14 @@ int ha_rocksdb::update_sk(const TABLE *const table_arg, const Rdb_key_def &kd,
     this table has TTL, the TTL timestamp has not changed.
   */
   if (row_info.old_data != nullptr && !m_update_scope.is_set(key_id)) {
-    return HA_EXIT_SUCCESS;
+    // TODO: only when row_info.old_data.sequence_no is greater than snapshot, do we need dummy update
+    if (!place_dummy_secondary_index_enabled) {
+      return HA_EXIT_SUCCESS;
+    }
+    place_dummy_secondary_index = true;
   }
 
-  new_packed_size =
+  const int new_packed_size =
       kd.pack_record(table_arg, m_pack_buffer, row_info.new_data,
                      m_sk_packed_tuple, &m_sk_tails, 0,
                      row_info.hidden_pk_id, 0, nullptr, nullptr, m_ttl_bytes);
@@ -4847,9 +5029,9 @@ int ha_rocksdb::update_sk(const TABLE *const table_arg, const Rdb_key_def &kd,
   // set write fence
   set_write_fence(&kd);
 
-  if (row_info.old_data != nullptr) {
+  if (row_info.old_data != nullptr && !place_dummy_secondary_index) {
     // The old value
-    old_packed_size = kd.pack_record(
+    const int old_packed_size = kd.pack_record(
         table_arg, m_pack_buffer, row_info.old_data, m_sk_packed_tuple_old,
         &m_sk_tails_old, 0, row_info.hidden_pk_id, 0,
         nullptr, nullptr, m_ttl_bytes);
@@ -4874,28 +5056,33 @@ int ha_rocksdb::update_sk(const TABLE *const table_arg, const Rdb_key_def &kd,
             0 &&
         memcmp(m_sk_tails_old.ptr(), m_sk_tails.ptr(),
                m_sk_tails.get_current_pos()) == 0) {
-      return HA_EXIT_SUCCESS;
+      // TODO: only when row_info.old_data.sequence_no is greater than snapshot, do we need dummy update
+      if (!place_dummy_secondary_index_enabled) {
+        return HA_EXIT_SUCCESS;
+      }
+      place_dummy_secondary_index = true;
     }
 
-    /*
-      Deleting entries from secondary index should skip locking, but
-      be visible to the transaction.
-      (also note that DDL statements do not delete rows, so this is not a DDL
-       statement)
-    */
-    old_key_slice = rocksdb::Slice(
-        reinterpret_cast<const char *>(m_sk_packed_tuple_old), old_packed_size);
-    rc = rpc_del_record(row_info.tx, old_key_slice, false/*with_extra_info*/);
-    if (rc != HA_EXIT_SUCCESS) {
-      return rc;
+    if (!place_dummy_secondary_index) {
+      /*
+        Deleting entries from secondary index should skip locking, but
+        be visible to the transaction.
+        (also note that DDL statements do not delete rows, so this is not a DDL
+        statement)
+      */
+      const rocksdb::Slice old_key_slice(
+          reinterpret_cast<const char *>(m_sk_packed_tuple_old), old_packed_size);
+      rc = rpc_del_record(row_info.tx, old_key_slice, false/*with_extra_info*/);
+      if (rc != HA_EXIT_SUCCESS) {
+        return rc;
+      }
     }
   }
 
-  new_key_slice = rocksdb::Slice(
+  const rocksdb::Slice new_key_slice(
       reinterpret_cast<const char *>(m_sk_packed_tuple), new_packed_size);
-  new_value_slice =
-      rocksdb::Slice(reinterpret_cast<const char *>(m_sk_tails.ptr()),
-                     m_sk_tails.get_current_pos());
+  const rocksdb::Slice new_value_slice(
+      reinterpret_cast<const char *>(m_sk_tails.ptr()), m_sk_tails.get_current_pos());
 
   if (IsDeleteOnly((Schema_Status)table->key_info[key_id].schema_status)) {
     LogDebug("table '%s.%s' -> index: %s schema_status is %s, skip put index record <key: %s, value: %s>",
@@ -4906,7 +5093,12 @@ int ha_rocksdb::update_sk(const TABLE *const table_arg, const Rdb_key_def &kd,
     return HA_EXIT_SUCCESS;
   }
 
-  if (use_stmt_optimize_load_data(row_info.tx)) {
+  if (place_dummy_secondary_index) {
+    return rpc_put_record(row_info.tx, new_key_slice, new_value_slice,
+                        tdstore::PutRecordType::PUT_TYPE_SECONDARY, true /*is_dummy*/);
+  }
+
+  if (use_optimize_load_data(row_info.tx)) {
 
     rc = ValidateSchemaStatusBeforePutRecord(row_info.tx, new_key_slice,
                                              new_value_slice);
@@ -4915,8 +5107,7 @@ int ha_rocksdb::update_sk(const TABLE *const table_arg, const Rdb_key_def &kd,
     }
 
     rc = row_info.tx->StmtOptimizeLoadDataCacheRecord(
-        m_part_pos, CONVERT_TO_TDSQL_SLICE(new_key_slice),
-        CONVERT_TO_TDSQL_SLICE(new_value_slice), false /*primary_record*/);
+        m_part_pos, new_key_slice, new_value_slice, false /*primary_record*/);
 
   } else if (bulk_load_sk &&
       row_info.old_data == nullptr &&
@@ -4970,7 +5161,7 @@ int ha_rocksdb::HandleStmtOptimizeLoadDataDuplicateEntry(int ret) {
   assert(ret == HA_ERR_FOUND_DUPP_KEY);
   THD *thd = table->in_use;
   tdsql::Transaction *tx = thd->get_tdsql_trans();
-  assert(tx && tx->stmt_optimize_load_data());
+  assert(use_optimize_load_data_by_batch_put(tx));
 
   // If OptimizeLoadData returns HA_ERR_FOUND_DUPP_KEY, it's must be the
   // user-defined primary key and the key number of primary key is 0.
@@ -5002,6 +5193,39 @@ int ha_rocksdb::HandleStmtOptimizeLoadDataDuplicateEntry(int ret) {
     // E.g. INSERT IGNORE INTO t1 VALUES(1,1),(2,2),(3,3),(4,4),(5,5);
     ret = HA_EXIT_SUCCESS;
   }
+  return ret;
+}
+
+int ha_rocksdb::estimate_rec_per_key_from_histogram(const uint field_idx,
+                                                    const uint total_prev_ndv,
+                                                    uint &ndv,
+                                                    uint &rec_per_key) {
+  int ret = HA_EXIT_FAILURE;
+  auto histogram = table->s->find_histogram(field_idx);
+  if (histogram) {
+    ndv = histogram->get_num_distinct_values();
+    if (total_prev_ndv == 1) {
+      // it is the case to calculate rec_per_key[0], just assign from
+      // histogram's rec_per_ndv
+      rec_per_key = histogram->get_rec_per_ndv();
+    } else {
+      auto ndv_product = ndv * total_prev_ndv;
+      if (ndv_product == 0) {
+        rec_per_key = 1;
+      } else {
+        rec_per_key = ceil(histogram->get_total_rows() *
+                           histogram->get_non_null_values_frequency()) /
+                      (ndv_product);
+      }
+    }
+    // Final check values below 1.0 is meaningless, set to 1 to behave like
+    // innodb
+    if (rec_per_key == 0) {
+      rec_per_key = 1;
+    }
+    ret = HA_EXIT_SUCCESS;
+  }
+
   return ret;
 }
 
@@ -5043,7 +5267,7 @@ int ha_rocksdb::update_write_row(const uchar *const old_data,
     return rc;
   }
 
-  if (!skip_unique_check && !use_stmt_optimize_load_data(row_info.tx)) {
+  if (!skip_unique_check && !use_optimize_load_data(row_info.tx)) {
     /*
       Check to see if we are going to have failures because of unique
       keys.  Also lock the appropriate key values.
@@ -5114,8 +5338,6 @@ int ha_rocksdb::rnd_init(bool scan) {
 
   int pk_idx = pk_index(table, m_tbl_def);
   if (!index_is_usable(tx, pk_idx, table, m_tbl_def)) {
-    LogError("table %s.%s index <idx: %u, name: %s> is unusable, table definition has changed, need restart transaction",
-        table->s->db.str, table->s->table_name.str, pk_idx, get_key_name(pk_idx, table, m_tbl_def));
     return HA_ERR_TABLE_DEF_UNUSABLE;
   }
 
@@ -5202,8 +5424,8 @@ int ha_rocksdb::rnd_range_init(const tdsql::parallel::PartKeyRangeInfo& range_in
   // Like rnd_init, range scan base on PK.
   int pk_idx = pk_index(table, m_tbl_def);
 
-  const rocksdb::Slice skey = CONVERT_TO_ROCKSDB_SLICE(range_info.start);
-  const rocksdb::Slice ekey = CONVERT_TO_ROCKSDB_SLICE(range_info.end);
+  const rocksdb::Slice skey = range_info.start;
+  const rocksdb::Slice ekey = range_info.end;
 
   rocksdb::Slice index_prefix(reinterpret_cast<const char*>(
                               m_pk_descr->get_index_number_storage_form()),
@@ -5288,7 +5510,7 @@ int ha_rocksdb::GetPushIndexNo(const QEP_TAB *qep_tab) {
   return key;
 }
 
-void ha_rocksdb::SetCondPush(Item *table_cond,Item *icp_cond,int keyno){
+void ha_rocksdb::SetCondPush(Item *table_cond,Item *icp_cond,int keyno,PushDownPolicy policy){
 
   // projection need this even without cond
   tdstore_pushed_cond_idx_ = keyno;
@@ -5299,6 +5521,11 @@ void ha_rocksdb::SetCondPush(Item *table_cond,Item *icp_cond,int keyno){
   if(!table_cond && !icp_cond) {
     LogDebug("no condition relate to current table");
     m_all_pushed = true;
+    return;
+  }
+
+  if (policy == PushDownPolicy::ProjectionOnly) {
+    m_all_pushed = false;
     return;
   }
 
@@ -5353,8 +5580,6 @@ int ha_rocksdb::index_init(uint idx, bool sorted [[maybe_unused]]) {
   setup_read_decoders();
 
   if (!index_is_usable(tx, idx, table, m_tbl_def)) {
-    LogError("table %s.%s index <idx: %u, name: %s> is unusable, table definition has changed, need restart transaction",
-        table->s->db.str, table->s->table_name.str, idx, get_key_name(idx, table, m_tbl_def));
     return HA_ERR_TABLE_DEF_UNUSABLE;
   }
 
@@ -5523,7 +5748,7 @@ void ha_rocksdb::update_stats(void) {
 }
 
 
-void ha_rocksdb::need_update_table_cache(bool need_persist, bool async) {
+void ha_rocksdb::need_update_table_cache(bool need_persist, bool need_broadcast, bool async) {
   if (IsTmpTableForLogService(table)) return;
 
   m_table_handler->ResetWhenSubmitTask();
@@ -5533,9 +5758,9 @@ void ha_rocksdb::need_update_table_cache(bool need_persist, bool async) {
 
   uint row_len = m_pk_descr->max_value_length() + m_pk_descr->max_storage_fmt_length();
   if (__builtin_expect(async, 1)) {
-    tdsql::NeedUpdateTableCache(m_table_handler, buf, row_len, need_persist);
+    tdsql::NeedUpdateTableCache(m_table_handler, buf, row_len, need_persist, need_broadcast);
   } else {
-    tdsql::UpdateTableCacheSync(m_table_handler, buf, row_len, need_persist);
+    tdsql::UpdateTableCacheSync(m_table_handler, buf, row_len, need_persist, need_broadcast);
     stats.update_time = std::max(stats.update_time, m_table_handler->m_last_update_time_.load() /1000/1000);
   }
 }
@@ -5572,27 +5797,32 @@ int ha_rocksdb::info(uint flag) {
     if (flag & (HA_STATUS_FORCE_UPDATE_CACHE_SYNC |
                 HA_STATUS_FORCE_UPDATE_CACHE_ASYNC)) {
       need_compute_statistic = true;
-    }
-    if (likely(rocksdb_force_compute_memtable_stats &&
-        rocksdb_debug_optimizer_n_rows == 0)) {
-      uint64_t cur_time = my_micro_time();
-      if ( m_table_handler->cache_is_expired_no_lock(rocksdb_force_compute_memtable_stats_cachetime, cur_time) ||
-          m_table_handler->CheckNeedReComputeAnalyzeWhenUpdate()) {
-        need_compute_statistic = true;
+    } else {
+      if (likely(rocksdb_force_compute_memtable_stats &&
+                 rocksdb_debug_optimizer_n_rows == 0)) {
+        if ( m_table_handler->NeedRecompute(rocksdb_force_compute_memtable_stats_cachetime)) {
+          need_compute_statistic = true;
+        }
       }
     }
 
     if (need_compute_statistic) {
       bool need_persist = true;
+      bool need_broadcast = !m_table_handler->IsSystemTable();
       bool async = true;
       if (flag & HA_STATUS_FORCE_UPDATE_CACHE_SYNC) { //analyze table don't need to do persist,but will use sync mode
-        need_persist = false;
+        if (table_share->m_part_info) {
+          need_persist = true;//partition table need update mysql.table_stats by partition name(like test1#P#p1)
+        } else {
+          need_persist = false;
+        }
         async = false;
+        need_broadcast = false;//analyze table will broadcast in mysql_admin_table. So there's no broadcast here
       }
       if (unlikely(!m_table_handler->GetCacheTime() || !m_table_handler->m_mtcache_size)) {
         async = false;
       }
-      need_update_table_cache(need_persist, async);
+      need_update_table_cache(need_persist, need_broadcast, async);
     }
 
     ha_rows table_rows;
@@ -5618,35 +5848,53 @@ int ha_rocksdb::info(uint flag) {
         continue;
       }
       KEY *const k = &table->key_info[i];
+      uint total_prev_ndv = 1;
       for (uint j = 0; j < k->actual_key_parts; j++) {
-        const Rdb_index_stats &k_stats = m_key_descr_arr[i]->m_stats;
+        auto field_idx = k->key_part[j].field->field_index();
         uint x;
-
-        if (k_stats.m_distinct_keys_per_prefix.size() > j &&
-            k_stats.m_distinct_keys_per_prefix[j] > 0) {
-          x = k_stats.m_rows / k_stats.m_distinct_keys_per_prefix[j];
-          /*
-            If the number of rows is less than the number of prefixes (due to
-            sampling), the average number of rows with the same prefix is 1.
-           */
-          if (x == 0) {
-            x = 1;
-          }
+        uint ndv = 1;
+        // try fetching rec_per_key from histogram
+        if (estimate_rec_per_key_from_histogram(field_idx, total_prev_ndv, ndv,
+                                                x) == HA_EXIT_SUCCESS) {
+          LogInfo(
+              "Fetch rec_per_key from histogram success, table %s.%s, key: "
+              "<idx: %d, name: %s>, rec_per_key %u, histogram "
+              "field_idx %u, ndv %u, total_prev_ndv %u",
+              table->s->db.str, table->s->table_name.str, i,
+              get_key_name(i, table, m_tbl_def), x, field_idx, ndv,
+              total_prev_ndv);
         } else {
-          x = 0;
-        }
-        if (x > stats.records)
-          x = stats.records;
-        if ((x == 0 && rocksdb_debug_optimizer_no_zero_cardinality) ||
-            rocksdb_debug_optimizer_n_rows > 0) {
-          // Fake cardinality implementation. For example, (idx1, idx2, idx3)
-          // index
-          // will have rec_per_key for (idx1)=4, (idx1,2)=2, and (idx1,2,3)=1.
-          // rec_per_key for the whole index is 1, and multiplied by 2^n if
-          // n suffix columns of the index are not used.
-          x = 1 << (k->actual_key_parts - j - 1);
+          const Rdb_index_stats &k_stats = m_key_descr_arr[i]->m_stats;
+
+          if (k_stats.m_distinct_keys_per_prefix.size() > j &&
+              k_stats.m_distinct_keys_per_prefix[j] > 0) {
+            x = k_stats.m_rows / k_stats.m_distinct_keys_per_prefix[j];
+            /*
+              If the number of rows is less than the number of prefixes (due to
+              sampling), the average number of rows with the same prefix is 1.
+             */
+            if (x == 0) {
+              x = 1;
+            }
+          } else {
+            x = 0;
+          }
+          if (x > stats.records)
+            x = stats.records;
+          if ((x == 0 && rocksdb_debug_optimizer_no_zero_cardinality) ||
+              rocksdb_debug_optimizer_n_rows > 0) {
+            // Fake cardinality implementation. For example, (idx1, idx2, idx3)
+            // index
+            // will have rec_per_key for (idx1)=4, (idx1,2)=2, and (idx1,2,3)=1.
+            // rec_per_key for the whole index is 1, and multiplied by 2^n if
+            // n suffix columns of the index are not used.
+            x = 1 << (k->actual_key_parts - j - 1);
+          }
+          x = (x == 0 ? 1 : x);
+          ndv = stats.records / x; // x is guranteed non-zero
         }
         k->rec_per_key[j] = x;
+        total_prev_ndv = total_prev_ndv * ndv;
       }
     }
   }
@@ -5990,7 +6238,9 @@ int ha_rocksdb::external_lock(THD *const thd, int lock_type) {
     if (res != HA_EXIT_SUCCESS) DBUG_RETURN(res);
     assert(tx);
     // Update glsv that bring back by start tx msg from mc.
-    tdsql::update_local_glsv_under_lock(tx->glsv());
+    if (tx->glsv() != tdsql::kInvalidSchemaVersion) {
+      tdsql::update_local_glsv_under_lock(tx->glsv());
+    }
     read_thd_vars(thd);
     m_update_scope_is_valid = false;
 
@@ -6060,7 +6310,7 @@ int ha_rocksdb::start_stmt(THD *const thd, thr_lock_type) {
   DBUG_RETURN(HA_EXIT_SUCCESS);
 }
 
-rocksdb::Range get_range(uint32_t i,
+myrocks::Range get_range(uint32_t i,
                          uchar buf[Rdb_key_def::INDEX_NUMBER_SIZE * 2],
                          int offset1, int offset2) {
   uchar *buf_begin = buf;
@@ -6068,18 +6318,18 @@ rocksdb::Range get_range(uint32_t i,
   rdb_netbuf_store_index(buf_begin, i + offset1);
   rdb_netbuf_store_index(buf_end, i + offset2);
 
-  return rocksdb::Range(
+  return Range(
       rocksdb::Slice((const char *)buf_begin, Rdb_key_def::INDEX_NUMBER_SIZE),
       rocksdb::Slice((const char *)buf_end, Rdb_key_def::INDEX_NUMBER_SIZE));
 }
 
-static rocksdb::Range get_range(const Rdb_key_def &kd,
+static myrocks::Range get_range(const Rdb_key_def &kd,
                                 uchar buf[Rdb_key_def::INDEX_NUMBER_SIZE * 2],
                                 int offset1, int offset2) {
   return get_range(kd.get_index_number(), buf, offset1, offset2);
 }
 
-rocksdb::Range get_range(const Rdb_key_def &kd,
+myrocks::Range get_range(const Rdb_key_def &kd,
                          uchar buf[Rdb_key_def::INDEX_NUMBER_SIZE * 2]) {
   if (kd.m_is_reverse_cf) {
     return myrocks::get_range(kd, buf, 1, 0);
@@ -6088,7 +6338,7 @@ rocksdb::Range get_range(const Rdb_key_def &kd,
   }
 }
 
-rocksdb::Range
+myrocks::Range
 ha_rocksdb::get_range(const int &i,
                       uchar buf[Rdb_key_def::INDEX_NUMBER_SIZE * 2]) const {
   return myrocks::get_range(*m_key_descr_arr[i], buf);
@@ -6096,7 +6346,7 @@ ha_rocksdb::get_range(const int &i,
 
 std::string GetIndexIdAddress(uint32 index_id) {
   uchar key_buf[Rdb_key_def::INDEX_NUMBER_SIZE * 2] = {0};
-  rocksdb::Range range = get_range(index_id, key_buf, 0, 1);
+  myrocks::Range range = get_range(index_id, key_buf, 0, 1);
 
   std::string start_key(range.start.data(), range.start.size());
   std::string end_key(range.limit.data(), range.limit.size());
@@ -6137,7 +6387,7 @@ static bool is_myrocks_index_empty(THD* thd,
   // const std::string end_key =
   //     std::string(reinterpret_cast<char *>(key_buf_end), sizeof(key_buf_end));
 
-  rocksdb::Range range1 = get_range(index_id, key_buf, 0, 1);
+  myrocks::Range range1 = get_range(index_id, key_buf, 0, 1);
   const rocksdb::Slice& start_key = range1.start;
   const rocksdb::Slice& end_key = range1.limit;
   // std::unique_ptr<rocksdb::Iterator> it(rdb->NewIterator(read_opts, cfh));
@@ -6161,9 +6411,9 @@ static bool is_myrocks_index_empty(THD* thd,
                               Rdb_key_def::INDEX_NUMBER_SIZE);
 
   rc = tdsql::CreateIterator(thd, nullptr, 0/*iterator_id*/,
-                             CONVERT_TO_TDSQL_SLICE(index_prefix),
-                             CONVERT_TO_TDSQL_SLICE(start_key),
-                             CONVERT_TO_TDSQL_SLICE(end_key), &it,
+                             index_prefix,
+                             start_key,
+                             end_key, &it,
                              true/*is_forward*/,
                              0/*keyno*/,
                              UINT32_MAX/*tindex_id*/,
@@ -6180,8 +6430,8 @@ static bool is_myrocks_index_empty(THD* thd,
   if (is_error_ok(rc)) {
     LogDebug(
         "Iterator seek key (%s), cmp key_buf (%s)",
-        MemoryDumper::ToHex(it->key().data(), it->key().size()).data(),
-        MemoryDumper::ToHex(key_buf, Rdb_key_def::INDEX_NUMBER_SIZE).data());
+        MemoryDumper::ToHex(it->key()).c_str(),
+        MemoryDumper::ToHex((const char*)key_buf, Rdb_key_def::INDEX_NUMBER_SIZE).c_str());
     if (memcmp(it->key().data(), key_buf, Rdb_key_def::INDEX_NUMBER_SIZE)) {
       // Key does not have same prefix
       index_removed = true;
@@ -6227,7 +6477,7 @@ int drop_index_internal(const tdsql::ddl::IndexInfoCollector* const indexes)
 
         const bool is_reverse_cf = 0;
         uchar buf[Rdb_key_def::INDEX_NUMBER_SIZE * 2];
-        rocksdb::Range range = get_range(index_id, buf, is_reverse_cf ? 1 : 0,
+        myrocks::Range range = get_range(index_id, buf, is_reverse_cf ? 1 : 0,
                 is_reverse_cf ? 0 : 1);
 
         /* TDSQL begin */
@@ -6427,11 +6677,7 @@ ha_rows ha_rocksdb::records_in_range(uint inx, key_range *const min_key,
                                      key_range *const max_key) {
   DBUG_ENTER_FUNC();
 
-  if (!index_is_usable(ha_thd()->get_tdsql_trans(),
-                       inx,
-                       table, m_tbl_def)) {
-    LogError("table %s.%s index <idx: %u, name: %s> is unusable, table definition has changed, need restart transaction",
-        table->s->db.str, table->s->table_name.str, inx, get_key_name(inx, table, m_tbl_def));
+  if (!index_is_usable(ha_thd()->get_tdsql_trans(), inx, table, m_tbl_def)) {
     DBUG_RETURN(HA_POS_ERROR);
   }
 
@@ -6487,7 +6733,7 @@ ha_rows ha_rocksdb::records_in_range(uint inx, key_range *const min_key,
     DBUG_RETURN(HA_EXIT_SUCCESS);
   }
 
-  rocksdb::Range r(kd.m_is_reverse_cf ? slice2 : slice1,
+  myrocks::Range r(kd.m_is_reverse_cf ? slice2 : slice1,
                    kd.m_is_reverse_cf ? slice1 : slice2);
 
 
@@ -6738,8 +6984,10 @@ int ha_rocksdb::BuildPushDownPb(uint keyno) {
     tdstore_pushed_cond_pb_->set_begin_ts(tx->begin_ts());
   }
 
-  // 1) push field info to tdstore,need this to parse the key part of record
-  FillTableInfo(table, tdstore_pushed_cond_pb_->mutable_table_info(), keyno);
+  if (tdstore_pushed_cond_ || pk_preload_push_) {
+    // 1) push field info to tdstore,need this to parse the key part of record
+    FillTableInfo(table, tdstore_pushed_cond_pb_->mutable_table_info(), keyno);
+  }
 
   // 2) push cond to tdstore
   if (tdstore_pushed_cond_) {
@@ -6776,6 +7024,53 @@ int ha_rocksdb::BuildPushDownPb(uint keyno) {
       tdstore_pushed_cond_pb_ = nullptr;
       return TDSQL_EXIT_FAILURE;
     }
+  }
+
+  // 3) Push projection
+  if (m_projection) {
+    ProjectionContext ctx;
+    ctx.table_version = table->schema_version;
+    ctx.unpack_info = m_tbl_def->m_maybe_unpack_info;
+    ctx.columns.reserve(table->s->fields);
+    for (uint i = 0; i < table->s->fields; i++) {
+      // We only need the decoder if the whole record is stored.
+      if (m_encoder_arr[i].m_storage_type != Rdb_field_encoder::STORE_ALL) {
+        continue;
+      }
+      const Field *field = table->field[i];
+      ctx.columns.emplace_back();
+      ProjectionColumn& col = ctx.columns.back();
+      col.requested = m_lock_rows == RDB_LOCK_WRITE
+                      || bitmap_is_clear_all(table->read_set)
+                      || bitmap_is_set(table->read_set, field->field_index());
+      col.schema_version = field->m_schema_version;
+      col.nullable = field->is_nullable();
+      switch (m_encoder_arr[i].m_field_type) {
+        case MYSQL_TYPE_BLOB:
+        case MYSQL_TYPE_JSON:
+          col.ty = ProjectionColumnType::MyVarLenPrefixed;
+          col.len = ((const my_core::Field_blob *)field)->pack_length() - portable_sizeof_char_ptr;
+          break;
+        case MYSQL_TYPE_VARCHAR:
+          // Only storage format V2 and above will be pushed down.
+          assert(!UseFixedIntStoreVarcharLength(table));
+          if (UseVarintStoreVarcharLength(table)) {
+            col.ty = ProjectionColumnType::PbVarLenPrefixed;
+            col.len = 0;
+          } else {
+            LogError("unexpected varchar type, do not project to tdstore");
+            delete tdstore_pushed_cond_pb_;
+            tdstore_pushed_cond_pb_ = nullptr;
+            return TDSQL_EXIT_FAILURE;
+          }
+          break;
+        default:
+          col.ty = ProjectionColumnType::Fixed;
+          col.len = m_encoder_arr[i].m_pack_length_in_rec;
+          break;
+      }
+    }
+    ctx.serialize(tdstore_pushed_cond_pb_->mutable_projection_serialize());
   }
 
   return 0;
@@ -7287,8 +7582,8 @@ int ha_rocksdb::index_fillback_sk() {
   DBUG_RETURN(HA_EXIT_SUCCESS);
 }
 
-int ha_rocksdb::index_fillback_sk_by_range(const tdsql::Slice &start,
-                                           const tdsql::Slice &end,
+int ha_rocksdb::index_fillback_sk_by_range(const rocksdb::Slice &start,
+                                           const rocksdb::Slice &end,
                                            uint64 iterator_id) {
   int index_found;
   int64 res = 0;
@@ -7412,7 +7707,7 @@ int ha_rocksdb::thomas_write_fillback(bool has_unique,
         rocksdb::Slice(reinterpret_cast<const char *>(m_sk_tails.ptr()),
             m_sk_tails.get_current_pos());
 
-      if (cntl->AddKV(CONVERT_TO_TDSQL_SLICE(key), CONVERT_TO_TDSQL_SLICE(val),
+      if (cntl->AddKV(key, val,
                       kInvalidIndexId, kInvalidSchemaVersion)) {
         LogError("Data fillback failed during thomas put, stage AddKV.");
         ha_rnd_end();
@@ -7667,7 +7962,8 @@ static void myrocks_update_status() {
 
   export_stats.queries_point = global_stats.queries[QUERIES_POINT];
   export_stats.queries_range = global_stats.queries[QUERIES_RANGE];
-  export_stats.queries_count_optim = global_stats.queries[QUERIES_COUNT_OPTIM];
+  export_stats.queries_request_select_count =
+      global_stats.queries[QUERIES_REQUEST_SELECT_COUNT];
 
   export_stats.covered_secondary_key_lookups =
       global_stats.covered_secondary_key_lookups;
@@ -7697,7 +7993,12 @@ static SHOW_VAR myrocks_status_variables[] = {
                         SHOW_LONGLONG),
     DEF_STATUS_VAR_FUNC("queries_range", &export_stats.queries_range,
                         SHOW_LONGLONG),
-    DEF_STATUS_VAR_FUNC("queries_count_optim", &export_stats.queries_count_optim,
+    // This is deprecated by queries_request_select_count in 17.2
+    DEF_STATUS_VAR_FUNC("queries_count_optim",
+                        &export_stats.queries_request_select_count,
+                        SHOW_LONGLONG),
+    DEF_STATUS_VAR_FUNC("queries_request_select_count",
+                        &export_stats.queries_request_select_count,
                         SHOW_LONGLONG),
     DEF_STATUS_VAR_FUNC("covered_secondary_key_lookups",
                         &export_stats.covered_secondary_key_lookups,
@@ -8057,7 +8358,8 @@ int ha_rocksdb::rpc_put_record(
     tdsql::Transaction* tx,
     const rocksdb::Slice &key_slice,
     const rocksdb::Slice &value_slice,
-    tdstore::PutRecordType &&type) {
+    tdstore::PutRecordType &&type,
+    const bool is_dummy) {
 
   if (tdsql::ddl::HandlerCheckInDDTrans(tx->thd(), table->tindex_id)) {
     return TDSQL_EXIT_FAILURE;
@@ -8088,7 +8390,7 @@ int ha_rocksdb::rpc_put_record(
     return HA_ERR_TABLE_DEF_CHANGED;
   }
 
-  PutRecordCntl cntl(tx->thd(), key_slice.ToString(), value_slice.ToString(), type);
+  PutRecordCntl cntl(tx->thd(), key_slice.ToString(), value_slice.ToString(), type, is_dummy);
   assert(cntl.get_thd() == tx->thd());
   assert(cntl.get_tx() == tx);
 
@@ -8120,8 +8422,7 @@ int ha_rocksdb::bulk_cache_key(tdsql::Transaction *tx,
                                const rocksdb::Slice &key_slice,
                                const rocksdb::Slice &value_slice) {
   assert(tx);
-  return tx->AddKvToBatchPut(CONVERT_TO_TDSQL_SLICE(key_slice),
-                             CONVERT_TO_TDSQL_SLICE(value_slice));
+  return tx->AddKvToBatchPut(key_slice, value_slice);
 }
 
 int ha_rocksdb::bulk_cache_key_in_parallel(const rocksdb::Slice &key_slice,
@@ -8133,8 +8434,8 @@ int ha_rocksdb::bulk_cache_key_in_parallel(const rocksdb::Slice &key_slice,
   int rc = TDSQL_EXIT_SUCCESS;
 
   if (in_parallel_data_fillback_task() && m_parallel_thomas_put) {
-    rc = m_parallel_thomas_put->AddKV(CONVERT_TO_TDSQL_SLICE(key_slice),
-                                      CONVERT_TO_TDSQL_SLICE(value_slice),
+    rc = m_parallel_thomas_put->AddKV(key_slice,
+                                      value_slice,
                                       kInvalidIndexId, kInvalidSchemaVersion);
   } else {
     rc = TDSQL_EXIT_FAILURE;
@@ -8279,10 +8580,11 @@ int ha_rocksdb::rpc_del_record(
       |--CorrelateOption::DeleteRow // correlate table
       |---delete rpc // m_retrieved_record is not set
     */
-    if (m_retrieved_record.size() == 0 && table->correlate_src_table) {
+    if (table->correlate_src_table) {
       ret = m_tbl_def->ConvertRecordToStorageFormat(table, &m_pk_unpack_info, m_storage_record);
       if (ret != HA_EXIT_SUCCESS) return ret;
       // m_retrieved_record is incomplete, but enough for us.
+      m_retrieved_record.Reset();
       m_retrieved_record.PinSelf(rocksdb::Slice(m_storage_record.ptr(), m_storage_record.length()));
     }
 
@@ -8341,8 +8643,8 @@ int ha_rocksdb::init_tdsql_iterator(
   }
 
   rc = tdsql::CreateIterator(
-      tx->thd(), this, 0 /*iterator_id*/, CONVERT_TO_TDSQL_SLICE(index_prefix),
-      CONVERT_TO_TDSQL_SLICE(start_slice), CONVERT_TO_TDSQL_SLICE(end_slice),
+      tx->thd(), this, 0 /*iterator_id*/, index_prefix,
+      start_slice, end_slice,
       &m_td_scan_it, is_forward, keyno, tindex_id, write_fence,
       false /*in_parallel_fillback_index*/);
 
@@ -8395,8 +8697,8 @@ int ha_rocksdb::init_tdsql_iterator(
     write_fence = table->key_info[keyno].schema_version;
 
   rc = tdsql::CreateIterator(
-      current_thd, this, iterator_id, CONVERT_TO_TDSQL_SLICE(index_prefix),
-      CONVERT_TO_TDSQL_SLICE(start_slice), CONVERT_TO_TDSQL_SLICE(end_slice),
+      current_thd, this, iterator_id, index_prefix,
+      start_slice, end_slice,
       &m_td_scan_it, true /*is_forward*/, keyno, tindex_id, write_fence,
       true /*in_parallel_fillback_index*/);
 
@@ -8540,7 +8842,7 @@ int ha_rocksdb::check_index_dup_key(const Rdb_key_def &kd) {
   sk_info.dup_sk_buf_old = m_dup_sk_packed_tuple_old;
 
   uchar buf[Rdb_key_def::INDEX_NUMBER_SIZE * 2];
-  rocksdb::Range range = get_range(kd.get_keyno(), buf);
+  myrocks::Range range = get_range(kd.get_keyno(), buf);
 
   const rocksdb::Slice& start_key = range.start;
   const rocksdb::Slice& end_key = range.limit;
@@ -8565,8 +8867,8 @@ int ha_rocksdb::check_index_dup_key(const Rdb_key_def &kd) {
       DBUG_RETURN(rc);
     }
 
-    rocksdb::Slice key = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->key());
-    rocksdb::Slice value = CONVERT_TO_ROCKSDB_SLICE(m_td_scan_it->value());
+    rocksdb::Slice key = m_td_scan_it->key();
+    rocksdb::Slice value = m_td_scan_it->value();
 
     if (check_duplicate_sk(table, kd, &key, &sk_info)) {
       /*
@@ -8851,6 +9153,8 @@ int ha_rocksdb::get_row_count_from_key(ha_rows *num_rows, uint index) {
   assert(tx);
 
   pk_preload_push_ = false;
+  // Projection is meaningless as it only count rows.
+  m_projection = false;
 
   ret = BuildPushDownPb(index);
 
@@ -8864,10 +9168,6 @@ int ha_rocksdb::get_row_count_from_key(ha_rows *num_rows, uint index) {
   }
 
   if (!index_is_usable(tx, index, table, m_tbl_def)) {
-    LogError("table %s.%s index <idx: %u, name: %s> is unusable, "
-             "table definition has changed, need restart transaction",
-             table->s->db.str, table->s->table_name.str,
-             index, get_key_name(index, table, m_tbl_def));
     *num_rows = HA_POS_ERROR;
     return HA_ERR_TABLE_DEF_UNUSABLE;
   }
@@ -8876,8 +9176,7 @@ int ha_rocksdb::get_row_count_from_key(ha_rows *num_rows, uint index) {
       is_pk(index, table, m_tbl_def) ? *m_pk_descr : *m_key_descr_arr[index];
   set_write_fence(&key);
 
-  if (!tdsql::ddl::GetDDLJob(current_thd) &&
-      !table->correlate_src_table &&
+  if (!tdsql::ddl::GetDDLJob(thd) && !table->correlate_src_table &&
       IsUnReadable((Schema_Status)(table->schema_status))) {
     *num_rows = HA_POS_ERROR;
     return HA_ERR_TABLE_DEF_CHANGED;
@@ -8924,12 +9223,14 @@ int ha_rocksdb::get_row_count_from_key(ha_rows *num_rows, uint index) {
     std::string &end = start_end_keys[i].second;
 
     uint64_t rows = HA_POS_ERROR;
-
-    if (current_thd->variables.tdsql_parallel_optim) {
+    auto parallel_select_count_workers =
+        thd->variables.tdsql_parallel_select_count_workers;
+    if (!pq::parallel_query_enable_select_count(thd) &&
+        parallel_select_count_workers > 0) {
       uint64_t iterator_id = tx->GenerateIteratorID();
       tdsql::parallel::ParallelRowCount paral_count(
           start, end, iterator_id, tdstore_pushed_cond_pb_, tx,
-          current_thd->variables.tdsql_parallel_thread_number);
+          parallel_select_count_workers);
       ret = paral_count.Run();
       if (ret != TDSQL_EXIT_SUCCESS) {
         *num_rows = HA_POS_ERROR;
@@ -8966,7 +9267,7 @@ int ha_rocksdb::get_row_count_from_key(ha_rows *num_rows, uint index) {
              MemoryDumper::ToHex(end).data(),rows);
   }
 
-  global_stats.queries[QUERIES_COUNT_OPTIM].inc();
+  global_stats.queries[QUERIES_REQUEST_SELECT_COUNT].inc();
 
   return ret;
 }
@@ -8993,12 +9294,24 @@ void ha_rocksdb::dbg_assert_part_elem(const TABLE* table) const {
 }
 #endif
 
-bool ha_rocksdb::use_stmt_optimize_load_data(tdsql::Transaction *tx) {
+bool ha_rocksdb::use_optimize_load_data(tdsql::Transaction *tx) {
+  return use_optimize_load_data_by_batch_put(tx) || use_optimize_load_data_by_bulk_load(tx);
+}
+
+bool ha_rocksdb::use_optimize_load_data_by_bulk_load(tdsql::Transaction *tx) {
   if (in_parallel_data_fillback_task()) {
     return false;
   }
   assert(tx);
-  return tx->stmt_optimize_load_data();
+  return tx->optimize_load_data_by_bulk_load();
+}
+
+bool ha_rocksdb::use_optimize_load_data_by_batch_put(tdsql::Transaction *tx) {
+  if (in_parallel_data_fillback_task()) {
+    return false;
+  }
+  assert(tx);
+  return tx->optimize_load_data_by_batch_put();
 }
 
 int ha_rocksdb::ValidateSchemaStatusBeforePutRecord(
@@ -9047,8 +9360,8 @@ int ha_rocksdb::ValidateSchemaStatusBeforePutRecord(
 
 void ha_rocksdb::FixParallelScanRangeIfCrossIndex(const Rdb_key_def& kd) {
   if (RegionKey::KeyRangeCrossIndexId(
-          CONVERT_TO_TDSQL_SLICE(m_scan_it_lower_bound_slice),
-          CONVERT_TO_TDSQL_SLICE(m_scan_it_upper_bound_slice))) {
+          m_scan_it_lower_bound_slice,
+          m_scan_it_upper_bound_slice)) {
     // max_key may cross tindex id after Rdb_key_def.successor.
     // Adjust it to the next tindex id.
     memcpy(m_scan_it_upper_bound, kd.get_index_number_storage_form(),
@@ -9058,8 +9371,8 @@ void ha_rocksdb::FixParallelScanRangeIfCrossIndex(const Rdb_key_def& kd) {
         (const char *)m_scan_it_upper_bound, Rdb_key_def::INDEX_NUMBER_SIZE);
   }
   assert(!RegionKey::KeyRangeCrossIndexId(
-      CONVERT_TO_TDSQL_SLICE(m_scan_it_lower_bound_slice),
-      CONVERT_TO_TDSQL_SLICE(m_scan_it_upper_bound_slice)));
+      m_scan_it_lower_bound_slice,
+      m_scan_it_upper_bound_slice));
 }
 
 int ha_rocksdb::GetParallelScanRegionListRefOrNull(
@@ -9085,15 +9398,14 @@ int ha_rocksdb::GetParallelScanRegionListRefOrNull(
   // myrocks key encoding guarantees that 'IS NULL' cant cross tindex id.
   // encoding:[tindex id][null bitmap][fields] --> null bitmap is 0 if IS NULL.
   assert(!RegionKey::KeyRangeCrossIndexId(
-      CONVERT_TO_TDSQL_SLICE(m_scan_it_lower_bound_slice),
-      CONVERT_TO_TDSQL_SLICE(m_scan_it_upper_bound_slice)));
+      m_scan_it_lower_bound_slice,
+      m_scan_it_upper_bound_slice));
   if (paral_scan_handle) {
     paral_scan_handle->set_null_lower_bound(m_scan_it_lower_bound_slice);
     paral_scan_handle->set_null_upper_bound(m_scan_it_upper_bound_slice);
   }
 
-  ThreadRegionManager *rgn_mgr = tdsql::GetRegionManagerByKey(
-      CONVERT_TO_TDSQL_SLICE(m_scan_it_lower_bound_slice));
+  ThreadRegionManager *rgn_mgr = tdsql::GetRegionManagerByKey(m_scan_it_lower_bound_slice);
   assert(rgn_mgr);
 
   // Get route of null.
@@ -9142,6 +9454,20 @@ int ha_rocksdb::GetParallelScanRegionListRefOrNull(
   }
 
   return ret;
+}
+
+bool ha_rocksdb::CoversJob(uint keynr, const push_down::ScanJob &job) {
+  const Rdb_key_def &kd =
+      *m_key_descr_arr[keynr != MAX_KEY
+                           ? keynr
+                           : pk_index(table, m_tbl_def)];  // hidden pk;
+  const rocksdb::Slice start_slice(job.lower_bound().c_str(),
+                                   job.lower_bound().size());
+
+  if (kd.covers_key(start_slice)) {
+    return true;
+  } else
+    return false;
 }
 
 // Get key range and regions of parallel scan.
@@ -9232,8 +9558,7 @@ int ha_rocksdb::GetParallelScanRegionList(
   }
 
   // Get route.
-  ThreadRegionManager *rgn_mgr = tdsql::GetRegionManagerByKey(
-      CONVERT_TO_TDSQL_SLICE(m_scan_it_lower_bound_slice));
+  ThreadRegionManager *rgn_mgr = tdsql::GetRegionManagerByKey(m_scan_it_lower_bound_slice);
   assert(rgn_mgr);
 
   int ret = rgn_mgr->GetMultiRegion(
@@ -9293,19 +9618,18 @@ int ha_rocksdb::init_parallel_scan(parallel_scan_handle_t *handle,
                        ? scan_desc->keynr
                        : pk_index(table, m_tbl_def);  // hidden pk;
   const Rdb_key_def &kd = *m_key_descr_arr[keynr];
+  bool is_asc = !(scan_desc->flags & parallel_scan_flags::desc);
+  bool is_ref_or_null = scan_desc->flags & parallel_scan_flags::ref_or_null;
 
   MyRocksParallelScan *parallel_scan = new (std::nothrow) MyRocksParallelScan(
-      main_txn, keynr, scan_desc->key_used, scan_desc->is_asc,
-      scan_desc->is_ref_or_null, kd.get_index_number(),
+      main_txn, keynr, scan_desc->key_used, is_asc, is_ref_or_null,
+      kd.get_index_number(),
       is_pk(keynr, table, m_tbl_def) ? table->schema_version
                                      : table->key_info[keynr].schema_version,
       ParallelScanTableSchemaInfo{table->s->db, table->s->table_name,
                                   table->tindex_id, table->schema_version,
                                   table->schema_status});
-  if (!parallel_scan) {
-    LogError("[init_parallel_scan failed][OOM]");
-    return HA_ERR_OUT_OF_MEM;
-  }
+  if (!parallel_scan) return HA_ERR_OUT_OF_MEM;
 
   if ((ret = parallel_scan->Init(scan_desc, this)) != TDSQL_EXIT_SUCCESS) {
     delete parallel_scan;
@@ -9379,31 +9703,19 @@ int ha_rocksdb::restart_parallel_scan(
 }
 
 int ha_rocksdb::estimate_parallel_scan_ranges(uint keynr, key_range *min_key,
-                                              key_range *max_key,
-                                              bool type_ref_or_null,
-                                              ulong *nranges, ha_rows *nrows) {
-  int ret;
-  if (type_ref_or_null) {
-    RegionList ref_rgns, null_rgns;
-    if ((ret = GetParallelScanRegionListRefOrNull(
-             keynr, min_key, max_key, &ref_rgns, &null_rgns, nullptr)) !=
-        TDSQL_EXIT_SUCCESS) {
-      return ret;
-    }
-    *nrows = 1;
-    if ((*nranges = ref_rgns.size() + null_rgns.size()) > 0) {
-      *nrows = stats.records / *nranges;
-    }
-  } else {
-    RegionList rgns;
-    if ((ret = GetParallelScanRegionList(keynr, min_key, max_key, &rgns,
-                                         nullptr)) != TDSQL_EXIT_SUCCESS)
-      return ret;
+                                              key_range *max_key, uint16_t,
+                                              parallel_scan_flags flags,
+                                              ha_rows, ulong *nranges) {
+  RegionList rgns, null_rgns;
+  int ret =
+      flags & parallel_scan_flags::ref_or_null
+          ? GetParallelScanRegionListRefOrNull(keynr, min_key, max_key, &rgns,
+                                               &null_rgns, nullptr)
+          : GetParallelScanRegionList(keynr, min_key, max_key, &rgns, nullptr);
 
-    // Now one range each TDStore Region
-    *nrows = 1;
-    if ((*nranges = rgns.size()) > 0) *nrows = stats.records / *nranges;
-  }
+  if (ret != TDSQL_EXIT_SUCCESS) return ret;
+
+  *nranges = rgns.size() + null_rgns.size();
 
   return ret;
 }
@@ -9411,7 +9723,7 @@ int ha_rocksdb::estimate_parallel_scan_ranges(uint keynr, key_range *min_key,
 int ha_rocksdb::FlushStmtOptimizeLoadDataIfPossible(tdsql::Transaction *txn,
                                                     bool force) {
   int ret = HA_EXIT_SUCCESS;
-  if (txn && use_stmt_optimize_load_data(txn) &&
+  if (txn && use_optimize_load_data(txn) &&
       (force || txn->StmtOptimizeLoadDataBatchSizeExceed(m_part_pos))) {
     ret = txn->StmtOptimizeLoadDataFlush(m_part_pos);
     if (ret == HA_ERR_FOUND_DUPP_KEY) {
@@ -9438,11 +9750,11 @@ void ha_rocksdb::FreeRecordBufferIfNecessary() {
 }
 
 int ha_rocksdb::get_distribution_info_by_scan_range(
-    uint keynr, key_range *min_key, key_range *max_key, bool is_ref_or_null,
-    Fill_dist_info_cbk fill_dist_unit) {
+    uint keynr, key_range *min_key, key_range *max_key,
+    parallel_scan_flags flags, Fill_dist_info_cbk fill_dist_unit) {
   int res;
   RegionList rgns, null_rgns;
-  if (unlikely(is_ref_or_null))
+  if (unlikely(flags & parallel_scan_flags::ref_or_null))
     res = GetParallelScanRegionListRefOrNull(keynr, min_key, max_key, &rgns,
                                              &null_rgns, nullptr);
   else
@@ -9454,6 +9766,7 @@ int ha_rocksdb::get_distribution_info_by_scan_range(
 
   for (auto &rgn : rgns) {
     table_node_storage_info &tnsi = aggregated_rgninfo[rgn.tdstore_addr];
+    if (tnsi.node_addr.empty()) tnsi.node_addr = rgn.tdstore_addr;
     ++tnsi.num_region;
   }
 
@@ -9466,6 +9779,127 @@ int ha_rocksdb::get_distribution_info_by_scan_range(
     fill_dist_unit(pointer_cast<Dist_unit_info>(&pair.second));
 
   return res;
+}
+
+bool ha_rocksdb::CheckSnapshotAndIndexCreateTS(
+    tdsql::Transaction *tx, const uint index, const TABLE *const table_arg,
+    const std::shared_ptr<Rdb_tbl_def> &tbl_def_arg) {
+  if (!tx) return false;
+
+  // TABLE::sql_explicit_partition
+  //
+  // See partition_info::set_partition_bitmaps.
+  //
+  // If SQL specifies partitions, check partition's create_ts.
+  // Otherwise, check base table's create_ts.
+  //
+  // E.g.
+  //   CREATE TABLE pt1(a INT PRIMARY KEY) PARTITION BY HASH(a) PARTITIONS 4;
+  //   SELECT NOW() INTO @time0;
+  //   ALTER TABLE pt1 TRUNCATE PARTITION p0.
+  //   -- This handler is p0 and its create_ts > @time0.
+  //
+  //   SELECT * FROM pt1 AS OF TIMESTAMP @time0;
+  //   -- p0 is queried.
+  //   -- p0.create_ts > @time0 but don't raise error
+  //   -- because SQL does not specify p0 explicitly.
+  //
+  //   SELECT * FROM pt1 PARTITION(p1,p2) AS OF TIMESTAMP @time0;
+  //   -- p0 is not queried.
+  //   -- p0.create_ts > @time0 and it doesn't matter.
+  //
+  //   SELECT * FROM pt1 PARTITION(p0) AS OF TIMESTAMP @time0;
+  //   -- p0 is queried and specified explicitly.
+  //   -- p0.create_ts > @time0, raise error.
+  //
+  //   SELECT * FROM pt1 PARTITION(p0,p1) AS OF TIMESTAMP @time0;
+  //   -- p0 is queried and specified explicitly.
+  //   -- p0.create_ts > @time0, raise error.
+  bool check_partition =
+      is_partition_table() && table_arg->sql_explicit_partition &&
+      bitmap_is_set(&table_arg->part_info->read_partitions, m_part_pos);
+
+  // create_ts is only assigned in Online Copy DDL.
+  // Use create_data_obj_task_id if create_ts is 0 here.
+  uint64_t create_ts = kInvalidCreateTs;
+  char data_obj_name[FN_REFLEN];
+  if (!check_partition) {
+    if (is_pk(index, table_arg, tbl_def_arg)) {
+      (void)strxmov(data_obj_name, table_arg->s->db.str, ".",
+                    table_arg->s->table_name.str, NullS);
+      if (table_arg->s->create_ts) {
+        create_ts = table_arg->s->create_ts;
+      } else {
+        create_ts = table_arg->s->create_data_obj_task_id;
+      }
+    } else {
+      (void)strxmov(data_obj_name, table_arg->s->db.str, ".",
+                    table_arg->s->table_name.str, ".",
+                    table_arg->s->key_info[index].name, NullS);
+      if (table_arg->s->key_info[index].create_ts) {
+        create_ts = table_arg->s->key_info[index].create_ts;
+      } else {
+        create_ts = table_arg->s->key_info[index].create_data_obj_task_id;
+      }
+    }
+  } else {
+    if (is_pk(index, table_arg, tbl_def_arg)) {
+      (void)strxmov(data_obj_name, table_arg->s->db.str, ".",
+                    table_arg->s->table_name.str, ".",
+                    tbl_def_arg->base_partition().data(), NullS);
+      create_ts = m_part_elem->create_data_obj_task_id;
+    } else {
+      (void)strxmov(data_obj_name, table_arg->s->db.str, ".",
+                    table_arg->s->table_name.str, ".",
+                    tbl_def_arg->base_partition().data(), ".",
+                    table_arg->s->key_info[index].name, NullS);
+      if (table_arg->s->key_info[index].create_ts) {
+        create_ts = std::max<uint64_t>(m_part_elem->create_data_obj_task_id,
+                                       table_arg->s->key_info[index].create_ts);
+      } else {
+        create_ts = std::max<uint64_t>(
+            m_part_elem->create_data_obj_task_id,
+            table_arg->s->key_info[index].create_data_obj_task_id);
+      }
+    }
+  }
+
+  assert(tdsql::IsSystemTable(table_arg->tindex_id) ||
+         create_ts != kInvalidCreateTs);
+
+  LogDebug("[data_obj:%s,create_ts:%lu][trans_id:%lu,begin_ts:%lu][query:'%s']",
+           data_obj_name, create_ts, tx->trans_id(), tx->begin_ts(),
+           tx->thd()->query().str);
+
+  DBUG_EXECUTE_IF("table_or_index_create_ts_unusable", {
+    // Don't block system tables.
+    if (!tdsql::IsSystemTable(table_arg->s->db.str,
+                              table_arg->s->table_name.str)) {
+      create_ts = (~(ulonglong)0);  // ULONGLONG_MAX
+    }
+  });
+
+  if (tx->begin_ts() > 0 && tx->begin_ts() < create_ts) {
+    char buff0[64];
+    (void)GtsToDatetimeLiteral(tx->begin_ts(), buff0, 0);
+    char buff1[64];
+    (void)GtsToDatetimeLiteral(create_ts, buff1, 0);
+    char buff[1024];
+    snprintf(buff, sizeof(buff),
+             "Table or index did not exist at the transaction's timestamp. "
+             "May be caused by Stale Read or DDL. txn.start_ts:%lu,%s. "
+             "%s.create_ts:%lu,%s",
+             tx->begin_ts(), buff0, data_obj_name, create_ts, buff1);
+    LogError(
+        "%s. Assign a younger timestamp if Stale Read. "
+        "Restart the transaction if caused by DDL.",
+        buff);
+    my_error(ER_TABLE_DEF_UNUSABLE, MYF(0), table_arg->s->db.str,
+             table_arg->s->table_name.str, buff);
+    return true;
+  }
+
+  return false;
 }
 
 std::string rdb_corruption_marker_file_name() {
