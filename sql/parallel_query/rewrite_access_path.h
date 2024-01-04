@@ -74,7 +74,8 @@ class AccessPathRewriter {
     return false;
   }
   virtual bool rewrite_stream(AccessPath *, AccessPath *) = 0;
-  virtual bool rewrite_materialize(AccessPath *in, AccessPath *out);
+  virtual bool rewrite_materialize(AccessPath *in, AccessPath *out,
+                                   bool under_join);
   virtual bool rewrite_remove_duplicates_on_index(AccessPath *, AccessPath *) {
     return false;
   }
@@ -139,7 +140,8 @@ class AccessPathParallelizer : public AccessPathRewriter {
   bool rewrite_limit_offset(AccessPath *in, AccessPath *out,
                             bool under_join) override;
   bool rewrite_stream(AccessPath *in, AccessPath *out) override;
-  bool rewrite_materialize(AccessPath *in, AccessPath *out) override;
+  bool rewrite_materialize(AccessPath *in, AccessPath *out,
+                           bool under_join) override;
 
   void post_rewrite_out_path(AccessPath *out) override;
 
@@ -193,10 +195,10 @@ class PartialAccessPathRewriter : public AccessPathRewriter {
   bool rewrite_aggregate(AccessPath *in, AccessPath *out) override;
   bool rewrite_temptable_aggregate(AccessPath *in, AccessPath *out) override;
   bool rewrite_stream(AccessPath *in, AccessPath *out) override;
-  bool rewrite_materialize(AccessPath *in, AccessPath *out) override;
-  bool rewrite_remove_duplicates_on_index(AccessPath *in, AccessPath *out) override;
-
-  TABLE *m_leaf_table{nullptr};
+  bool rewrite_materialize(AccessPath *in, AccessPath *out,
+                           bool under_join) override;
+  bool rewrite_remove_duplicates_on_index(AccessPath *in,
+                                          AccessPath *out) override;
 };
 
 }  // namespace pq

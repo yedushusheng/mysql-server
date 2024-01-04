@@ -5,6 +5,7 @@
 #include "sql/handler.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
+#include "sql/nested_join.h"
 #include "sql/opt_range.h"
 #include "sql/opt_trace.h"
 #include "sql/parallel_query/distribution.h"
@@ -82,6 +83,8 @@ static bool IsAccessSupportedForPartition(QEP_TAB *qt) {
   return true;
 }
 
+///  Check supported JOIN_TYPE. NOTE, temporary table's type could be
+/// JT_UNKNOWN, but it does not block parallel.
 static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
   auto typ = qt->type();
 
@@ -89,7 +92,6 @@ static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
     return "unsupported_access_for_partition_table";
   }
 
-  assert(typ != JT_UNKNOWN);
   // Currently, we don't support JT_SYSTEM, JT_FT and JT_INDEX_MERGE.
   if (typ == JT_SYSTEM || typ == JT_FT || typ == JT_INDEX_MERGE)
     return "table_access_type_is_not_supported";
@@ -215,8 +217,7 @@ static uint32 ChooseParallelDegreeByScanRange(
   return parallel_degree;
 }
 
-static bool ChooseParallelScanTable(ParallelPlan *parallel_plan,
-                                    uint parallel_table_index,
+static bool ChooseParallelScanTable(ParallelPlan *parallel_plan, QEP_TAB *&qt,
                                     uint32 *parallel_degree,
                                     bool *specified_by_hint,
                                     const char **cause) {
@@ -226,10 +227,16 @@ static bool ChooseParallelScanTable(ParallelPlan *parallel_plan,
   parallel_scan_desc_t scan_desc;
 
   // Only support first table do parallel scan.
-  // TODO: we can support other tables for HASH JOIN even there is no parallel
-  // rescan.
-  auto *qt = &join->qep_tab[parallel_table_index];
 
+  // TODO: we need rescan support for parallel scan to choose other than the
+  // 1st table. We can support other tables to do parallel scan for HASH
+  // JOIN even there is no parallel rescan. Following code did a bit hack to
+  // allow the second table to do parallel for semi-join materialized scan
+  // testing.
+  if (qt->materialize_table == QEP_TAB::MATERIALIZE_SEMIJOIN &&
+      (qt + 1)->op_type == QEP_TAB::OT_BNL) {
+    qt += 1;
+  }
   // semi-join inner tables could not do parallel scan because we could
   // not eliminate duplicates between workers. we need a repartition with
   // unique.
@@ -300,15 +307,15 @@ static bool ChooseParallelScanTable(ParallelPlan *parallel_plan,
     *cause = "insufficient_parallel_scan_ranges";
     return true;
   }
-  auto *table = join->qep_tab[parallel_table_index].table();
+  auto *table = qt->table();
   parallel_plan->SetTableParallelScan(table, scan_ranges, scan_desc);
 
   return false;
 }
 
-static bool ChooseExecNodes(ParallelPlan *parallel_plan,
-                            uint parallel_table_index, uint32 parallel_degree,
-                            bool forbid_degree_reduce, const char **cause) {
+static bool ChooseExecNodes(ParallelPlan *parallel_plan, QEP_TAB *parallel_table,
+                            uint32 parallel_degree, bool forbid_degree_reduce,
+                            const char **cause) {
   auto *join = parallel_plan->SourceJoin();
   THD *thd = join->thd;
   auto *dist_adapter = parallel_plan->DistAdapter();
@@ -349,7 +356,7 @@ static bool ChooseExecNodes(ParallelPlan *parallel_plan,
   }
 
   // Currently, we just use parallel scan table to determine execution nodes.
-  auto *dist_desc = saved_table_dists->at(parallel_table_index);
+  auto *dist_desc = saved_table_dists->at(parallel_table - join->qep_tab);
   auto *store_nodes = dist_desc->GetStoreNodes();
   dist::NodeArray *exec_nodes = store_nodes;
   // TODO: should we make sure current node is in exec_nodes?
@@ -461,38 +468,7 @@ static void ChooseParallelPlan(JOIN *join) {
   auto *dist_adapter = dist::CreateTDStoreAdapter(thd->mem_root);
   if (!dist_adapter) return;
 
-  // Block parallel query based on table properties
-  for (uint i = 0; i < join->primary_tables; i++) {
-    auto *qt = &join->qep_tab[i];
-    auto *table_ref = qt->table_ref;
-
-    if (table_ref->is_placeholder()) {
-      cause = "table_is_not_real_user_table";
-      return;
-    }
-
-    // Materialization semijoin is blocked by this
-    if (is_temporary_table(table_ref)) {
-      cause = "temporary_table_is_not_supported";
-      return;
-    }
-
-    auto *table = qt->table();
-    // Distribution system may refuse some table to parallel, e.g. a local table
-    // in a sharding system and currently 3.0 does not enable parallel query to
-    // system table.
-    if ((cause = dist_adapter->TableRefuseParallel(table))) return;
-
-    // Weed out plan execution depends on QEP_TAB, so block it.
-    if (qt->get_sj_strategy() == SJ_OPT_DUPS_WEEDOUT) {
-      cause = "duplicateweedout_semijoin_plan_is_not_supported";
-      return;
-    }
-
-    if ((cause = TableAccessTypeRefuseParallel(qt))) return;
-  }
-
-  // Block parallel query based on item expressions
+  // Block parallel based on items and each table property
 
   const char *item_refuse_cause;
   for (Item *item : join->query_block->fields) {
@@ -502,50 +478,80 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  for (uint i = 0; i < join->tables; ++i) {
-    auto *qep_tab = &join->qep_tab[i];
-    if (!qep_tab->table()) break;
-
-    if (qep_tab->condition() &&
-        ItemRefuseParallel(qep_tab->condition(), &item_refuse_cause)) {
-      cause =
-          item_refuse_cause ? item_refuse_cause : "filter_has_unsafe_condition";
-      return;
-    }
-    Item *item = qep_tab->table()->file->pushed_idx_cond;
-    if (item && ItemRefuseParallel(item, &item_refuse_cause)) {
-      cause = item_refuse_cause ? item_refuse_cause
-                                : "filter_pushed_idx_cond_has_unsafe_condition";
-      return;
-    }
-
-    if (qep_tab->having &&
-        ItemRefuseParallel(qep_tab->having, &item_refuse_cause)) {
-      cause = item_refuse_cause ? item_refuse_cause
-                                : "table_having_has_unsafe_condition";
-      return;
-    }
-  }
-
   if (join->having_cond &&
       ItemRefuseParallel(join->having_cond, &item_refuse_cause)) {
     cause = item_refuse_cause ? item_refuse_cause : "having_is_unsafe";
     return;
   }
 
+  // Loop on each table to block unsupported query
+  for (uint i = 0; i < join->tables; i++) {
+    auto *qt = &join->qep_tab[i];
+
+    // Weed out plan execution depends on QEP_TAB, so block it.
+    if (qt->get_sj_strategy() == SJ_OPT_DUPS_WEEDOUT) {
+      cause = "duplicateweedout_semijoin_plan_is_not_supported";
+      return;
+    }
+
+    auto *table_ref = qt->table_ref;
+    if (table_ref && table_ref->is_placeholder()) {
+      cause = "table_is_not_real_user_table";
+      return;
+    }
+
+    // Materialization semijoin is blocked by this
+    if (table_ref && is_temporary_table(table_ref) &&
+        qt->materialize_table != QEP_TAB::MATERIALIZE_SEMIJOIN) {
+      cause = "include_unsupported_temporary_table";
+      return;
+    }
+
+    if (qt->having && ItemRefuseParallel(qt->having, &item_refuse_cause)) {
+      cause = item_refuse_cause ? item_refuse_cause
+                                : "table_having_has_unsafe_condition";
+      return;
+    }
+
+    if (qt->condition() &&
+        ItemRefuseParallel(qt->condition(), &item_refuse_cause)) {
+      cause =
+          item_refuse_cause ? item_refuse_cause : "filter_has_unsafe_condition";
+      return;
+    }
+
+    auto *table = qt->table();
+    if (!table) continue;
+
+    Item *item = table->file->pushed_idx_cond;
+    if (item && ItemRefuseParallel(item, &item_refuse_cause)) {
+      cause = item_refuse_cause ? item_refuse_cause
+                                : "filter_pushed_idx_cond_has_unsafe_condition";
+      return;
+    }
+
+    // Distribution system may refuse some table to parallel, e.g. a local table
+    // in a sharding system and currently 3.0 does not enable parallel query to
+    // system table.
+    if ((cause = dist_adapter->TableRefuseParallel(table))) return;
+
+    if ((cause = TableAccessTypeRefuseParallel(qt))) return;
+  }
+
   if (!(join->parallel_plan = new (thd->mem_root) ParallelPlan(join))) return;
   auto *parallel_plan = join->parallel_plan;
   parallel_plan->SetDistAdapter(dist_adapter);
 
-  constexpr int parallel_scan_table_index = 0;
+  constexpr uint parallel_scan_table_index = 0;
+  QEP_TAB *parallel_table = &join->qep_tab[parallel_scan_table_index];
   uint32 parallel_degree = degree_unspecified;
   bool specified_by_hint = false;
   if (dist_adapter->NeedParallelScan() &&
-      ChooseParallelScanTable(parallel_plan, parallel_scan_table_index,
-                              &parallel_degree, &specified_by_hint, &cause))
+      ChooseParallelScanTable(parallel_plan, parallel_table, &parallel_degree,
+                              &specified_by_hint, &cause))
     return;
 
-  if (ChooseExecNodes(parallel_plan, parallel_scan_table_index, parallel_degree,
+  if (ChooseExecNodes(parallel_plan, parallel_table, parallel_degree,
                       specified_by_hint, &cause))
     return;
 
@@ -613,6 +619,46 @@ THD *PartialPlan::thd() const { return m_query_block->join->thd; }
 void PartialPlan::SetTableParallelScan(TABLE *table, ulong suggested_ranges,
                                        const parallel_scan_desc_t &psdesc) {
   m_parallel_scan_info = {table, suggested_ranges, psdesc};
+}
+
+bool PartialPlan::CollectSJMatInfoList(JOIN *source_join,
+                                       Item_clone_context *clone_context) {
+  auto *mem_root = source_join->thd->mem_root;
+  // For semi join materialization temporary table recreating
+  for (auto &sjm : source_join->sjm_exec_list) {
+    auto *sjm_info = new (mem_root) Semijoin_mat_info(mem_root, sjm.table);
+    if (!sjm_info) return true;
+    for (auto *item : sjm.sj_nest->nested_join->sj_inner_exprs) {
+      Item *new_item;
+      if (!(new_item = item->clone(clone_context)) ||
+          sjm_info->sj_inner_exprs.push_back(new_item))
+        return true;
+    }
+    sjm_info_list.push_back(sjm_info);
+  }
+
+  return false;
+}
+
+bool PartialPlan::CloneSJMatInnerExprsForTable(
+    TABLE *orig_table, mem_root_deque<Item *> *sjm_fields,
+    Item_clone_context *clone_context) {
+  Semijoin_mat_info *sj_mat_info = nullptr;
+  for (auto &sjmi : sjm_info_list) {
+    if (sjmi.table == orig_table) {
+      sj_mat_info = &sjmi;
+      break;
+    }
+  }
+  assert(sj_mat_info);
+  for (auto *item : sj_mat_info->sj_inner_exprs) {
+    Item *new_item;
+    if (!(new_item = item->clone(clone_context)) ||
+        sjm_fields->push_back(new_item))
+      return true;
+  }
+
+  return false;
 }
 
 uint ParallelDegreeHolder::acquire(uint degree, bool forbid_reduce) {
@@ -1011,6 +1057,9 @@ bool ParallelPlan::GeneratePartialPlan(
 
   join->tmp_table_param.precomputed_group_by =
       source_join->tmp_table_param.precomputed_group_by;
+
+  if (m_partial_plan.CollectSJMatInfoList(source_join, *partial_clone_context))
+    return true;
 
   if (CreateCollector(thd)) return true;
 

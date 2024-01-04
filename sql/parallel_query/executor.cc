@@ -515,10 +515,10 @@ class PartialItemCloneContext : public Item_clone_context {
         m_find_user_var_entry(find_user_var_entry) {}
 
   using Item_clone_context::Item_clone_context;
+
   void rebind_field(Item_field *item_field,
                     const Item_field *from_field) override {
-    item_field->table_ref =
-        m_query_block->find_identical_table_with(from_field->table_ref);
+    item_field->table_ref = find_field_table(from_field->table_ref);
     TABLE *table = item_field->table_ref->table;
     item_field->field = table->field[from_field->field_index];
     item_field->set_result_field(item_field->field);
@@ -529,9 +529,8 @@ class PartialItemCloneContext : public Item_clone_context {
                            const Item_sum_hybrid_field *from_item) override {
     // Rebind to current worker leaf table
     Field *orig_field = from_item->get_field();
-    TABLE_LIST *table_ref = m_query_block->find_identical_table_with(
-        orig_field->table->pos_in_table_list);
-    assert(table_ref);
+    TABLE_LIST *table_ref =
+        find_field_table(orig_field->table->pos_in_table_list);
     item_hybrid->set_field(table_ref->table->field[orig_field->field_index()]);
   }
 
@@ -541,10 +540,10 @@ class PartialItemCloneContext : public Item_clone_context {
         !(*item->ref = (*from->ref)->clone(this)))
       return true;
     if (from->get_first_inner_table()) {
-      auto *table = m_query_block->find_identical_table_with(
-          from->get_first_inner_table());
+      auto *table = find_field_table(from->get_first_inner_table());
       item->set_first_inner_table(table);
     }
+
     return false;
   }
 
@@ -555,6 +554,20 @@ class PartialItemCloneContext : public Item_clone_context {
   }
 
  private:
+  TABLE_LIST *find_field_table(TABLE_LIST *table_ref) {
+    if (!is_temporary_table(table_ref))
+      return m_query_block->find_identical_table_with(table_ref);
+
+    // Some fields could be found in semi-join materialization tables.
+    for (auto &ttc : m_query_block->join->temp_tables) {
+      auto *tl = ttc.table->pos_in_table_list;
+      if (table_ref->m_id == tl->m_id) return tl;
+    }
+
+    assert(false);
+    return nullptr;
+  }
+
   std::function<user_var_entry *(const std::string &)> m_find_user_var_entry;
 };
 

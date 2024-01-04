@@ -12,7 +12,8 @@
 #include "sql/sql_tmp_table.h"
 
 namespace pq {
-bool AccessPathRewriter::rewrite_materialize(AccessPath *in, AccessPath *out) {
+bool AccessPathRewriter::rewrite_materialize(AccessPath *in, AccessPath *out,
+                                             bool) {
   out->materialize().table_path = pointer_cast<AccessPath *>(memdup_root(
       mem_root(), in->materialize().table_path, sizeof(AccessPath)));
   auto *src = in->materialize().param;
@@ -243,7 +244,7 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *&path,
       break;
     case AccessPath::MATERIALIZE:
       dup = accesspath_dup_if_out(path);
-      if (rewrite_materialize(path, dup)) return true;
+      if (rewrite_materialize(path, dup, curjoin != nullptr)) return true;
       if (dup) dup->materialize().param->query_blocks[0].subquery_path = out;
       break;
     // REMOVE_DUPLICATES is only used in hypergraph
@@ -413,12 +414,16 @@ bool AccessPathParallelizer::rewrite_unqualified_count(AccessPath *&in,
 
 /// Rewrite the temporary table scan access path under a materialize access
 /// path, replace its table with @param table
-static void rewrite_temptable_scan_path(AccessPath *table_path, TABLE *table) {
+static void rewrite_temptable_scan_path(AccessPath *table_path, TABLE *table,
+                                        Item_clone_context *clone_context) {
   TABLE **table_ptr = nullptr;
 
   assert(table_path->type == AccessPath::TABLE_SCAN ||
          table_path->type == AccessPath::INDEX_RANGE_SCAN ||
-         table_path->type == AccessPath::FOLLOW_TAIL);
+         table_path->type == AccessPath::FOLLOW_TAIL ||
+         table_path->type == AccessPath::EQ_REF ||
+         table_path->type == AccessPath::CONST_TABLE);
+
   switch (table_path->type) {
     case AccessPath::TABLE_SCAN:
       table_ptr = &table_path->table_scan().table;
@@ -428,6 +433,16 @@ static void rewrite_temptable_scan_path(AccessPath *table_path, TABLE *table) {
       break;
     case AccessPath::FOLLOW_TAIL:
       table_ptr = &table_path->follow_tail().table;
+      break;
+    case AccessPath::EQ_REF:
+      table_ptr = &table_path->eq_ref().table;
+      table_path->eq_ref().ref = table_path->eq_ref().ref->clone(
+          *table_ptr, INNER_TABLE_BIT, clone_context);
+      break;
+    case AccessPath::CONST_TABLE:
+      table_ptr = &table_path->const_table().table;
+      table_path->const_table().ref = table_path->const_table().ref->clone(
+          *table_ptr, INNER_TABLE_BIT, clone_context);
       break;
     default:
       assert(false);
@@ -533,13 +548,14 @@ bool recreate_materialized_table(THD *thd, JOIN *join, ORDER *group,
 }
 
 bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
-                                                 AccessPath *out) {
+                                                 AccessPath *out,
+                                                 bool under_join) {
   auto *src = in->materialize().param;
   auto &query_block = src->query_blocks[0];
 
   if (out) {
     // Clone access path itself for workers
-    if (super::rewrite_materialize(in, out)) return true;
+    if (super::rewrite_materialize(in, out, under_join)) return true;
     if (src->table->group) {
       assert(m_join_out->group_list.empty());
       // Uses JOIN::group_list to save TABLE::group of this access path to avoid
@@ -558,6 +574,12 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
 
     // Following scenario is for full push down, that is leader do not do
     // this materialization any more.
+
+    //  This is the semijoin materialize currently.
+    if (under_join) {
+      assert(src->ref_slice == -1);
+      return false;
+    }
 
     if (!MaterializeIsDoingDeduplication(src->table)) {
 #ifndef NDEBUG
@@ -633,7 +655,8 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
   m_join_in->temp_tables.push_back(
       JOIN::TemporaryTableToCleanup{table, temp_table_param});
 
-  rewrite_temptable_scan_path(in->materialize().table_path, table);
+  rewrite_temptable_scan_path(in->materialize().table_path, table,
+                              m_item_clone_context);
 
   set_sorting_info({table, src->ref_slice});
 
@@ -674,7 +697,7 @@ bool AccessPathParallelizer::rewrite_temptable_aggregate(
     post_rewrite_out_path(out->temptable_aggregate().table_path);
   }
 
-  rewrite_temptable_scan_path(tagg.table_path, table);
+  rewrite_temptable_scan_path(tagg.table_path, table, m_item_clone_context);
 
   set_sorting_info({table, tagg.ref_slice});
   set_collector_path_pos(&tagg.subquery_path);
@@ -983,47 +1006,112 @@ bool PartialAccessPathRewriter::rewrite_hash_join(AccessPath *,
   return false;
 }
 
-bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
-                                                    AccessPath *out) {
-  assert(out);
-  if (super::rewrite_materialize(in, out)) return true;
-  auto *dest_param = out->materialize().param;
-  THD *thd = m_join_out->thd;
-  Query_block *query_block_out = m_join_out->query_block;
-  Query_block *query_block_in = m_join_in->query_block;
-  if (m_join_out->alloc_ref_item_slice(thd, dest_param->ref_slice)) return true;
-  auto &query_block = dest_param->query_blocks[0];
-  ORDER *group =
-      m_join_in->group_list.empty()
-          ? nullptr
-          : clone_order_list(m_join_in->group_list.order,
-                             {thd->mem_root, &query_block_out->base_ref_items,
-                              query_block_out->fields.size(),
-                              &query_block_in->base_ref_items[0]});
+/**
+  Re-create materialized table for semi-join, see
+  setup_semijoin_materialized_table().
+*/
+static TABLE *recreate_semijoin_materialized_table(
+    MEM_ROOT *mem_root, PartialPlan *partial_plan,
+    Item_clone_context *clone_context, TABLE *orig_table,
+    Temp_table_param *temp_table_param, Query_block *query_block) {
+  THD *thd = clone_context->thd();
+  TABLE *table;
+  mem_root_deque<Item *> sjm_fields(mem_root);
+  if (partial_plan->CloneSJMatInnerExprsForTable(orig_table, &sjm_fields,
+                                                 clone_context))
+    return nullptr;
 
-  if (recreate_materialized_table(thd, m_join_out, group,
-                                  dest_param->table->s->is_distinct, false,
-                                  dest_param->ref_slice, dest_param->limit_rows,
-                                  &dest_param->table, &query_block.temp_table_param))
-    return true;
-  TABLE *table = dest_param->table;
-  auto *temp_table_param = query_block.temp_table_param;
-  // See setup_tmptable_write_func()
-  if (temp_table_param->precomputed_group_by) {
-    for (Item_sum **func_ptr = m_join_out->sum_funcs; *func_ptr != nullptr;
-         ++func_ptr) {
-      if (temp_table_param->items_to_copy->push_back(
-              Func_ptr(*func_ptr, (*func_ptr)->get_result_field())))
-        return true;
+  count_field_types(query_block, temp_table_param, sjm_fields, false, true);
+  temp_table_param->bit_fields_as_long = true;
+
+  const char *name = strdup_root(mem_root, orig_table->alias);
+  if (name == nullptr) return nullptr; /* purecov: inspected */
+
+  if (!(table =
+            create_tmp_table(thd, temp_table_param, sjm_fields, nullptr,
+                             true /* distinct */, true /* save_sum_fields */,
+                             thd->variables.option_bits | TMP_TABLE_ALL_COLUMNS,
+                             HA_POS_ERROR /* rows_limit */, name)))
+    return nullptr; /* purecov: inspected */
+
+  table->file->ha_extra(HA_EXTRA_IGNORE_DUP_KEY);
+  table->keys_in_use_for_query.set_all();
+
+  auto table_list = new (thd->mem_root) TABLE_LIST("", name, TL_IGNORE);
+  if (table_list == nullptr) return nullptr; /* purecov: inspected */
+  table_list->table = table;
+  table_list->set_tableno(orig_table->pos_in_table_list->tableno());
+  table_list->m_id = orig_table->pos_in_table_list->m_id;
+  table->pos_in_table_list = table_list;
+  table->pos_in_table_list->query_block = query_block;
+
+  /// See Also GetTableAccessPath() for items_to_copy regenerating.
+  temp_table_param->items_to_copy = nullptr;
+  ConvertItemsToCopy(sjm_fields, table->visible_field_ptr(), temp_table_param);
+
+  return table;
+}
+
+bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
+                                                    AccessPath *out,
+                                                    bool under_join) {
+  assert(out);
+  if (super::rewrite_materialize(in, out, under_join)) return true;
+  auto *dest_param = out->materialize().param;
+  auto &param_query_block = dest_param->query_blocks[0];
+  THD *thd = m_join_out->thd;
+  TABLE *table;
+  Temp_table_param *temp_table_param;
+
+  if (under_join) {
+    // This is the semijoin materialization table
+    if (!(temp_table_param = new (mem_root()) Temp_table_param)) return true;
+    if (!(table = recreate_semijoin_materialized_table(
+              mem_root(), m_join_in->partial_plan, m_item_clone_context,
+              dest_param->table, temp_table_param, m_join_out->query_block)))
+      return true;
+
+    dest_param->table = table;
+    param_query_block.temp_table_param = temp_table_param;
+  } else {
+    Query_block *query_block_out = m_join_out->query_block;
+    Query_block *query_block_in = m_join_in->query_block;
+    if (m_join_out->alloc_ref_item_slice(thd, dest_param->ref_slice))
+      return true;
+    ORDER *group =
+        m_join_in->group_list.empty()
+            ? nullptr
+            : clone_order_list(m_join_in->group_list.order,
+                               {thd->mem_root, &query_block_out->base_ref_items,
+                                query_block_out->fields.size(),
+                                &query_block_in->base_ref_items[0]});
+
+    if (recreate_materialized_table(
+            thd, m_join_out, group, dest_param->table->s->is_distinct, false,
+            dest_param->ref_slice, dest_param->limit_rows, &dest_param->table,
+            &param_query_block.temp_table_param))
+      return true;
+    table = dest_param->table;
+    temp_table_param = param_query_block.temp_table_param;
+    // See setup_tmptable_write_func()
+    if (temp_table_param->precomputed_group_by) {
+      for (Item_sum **func_ptr = m_join_out->sum_funcs; *func_ptr != nullptr;
+           ++func_ptr) {
+        if (temp_table_param->items_to_copy->push_back(
+                Func_ptr(*func_ptr, (*func_ptr)->get_result_field())))
+          return true;
+      }
     }
   }
+
   // We made a new table, so make sure it gets properly cleaned up
   // at the end of execution.
   m_join_out->temp_tables.push_back(
       JOIN::TemporaryTableToCleanup{table, temp_table_param});
   set_sorting_info({table, dest_param->ref_slice});
   out->materialize().table_path = accesspath_dup(out->materialize().table_path);
-  rewrite_temptable_scan_path(out->materialize().table_path, table);
+  rewrite_temptable_scan_path(out->materialize().table_path, table,
+                              m_item_clone_context);
   post_rewrite_out_path(out->materialize().table_path);
   return false;
 }
@@ -1061,7 +1149,8 @@ bool PartialAccessPathRewriter::rewrite_temptable_aggregate(AccessPath *,
       JOIN::TemporaryTableToCleanup{tagg.table, tagg.temp_table_param});
 
   tagg.table_path = accesspath_dup(tagg.table_path);
-  rewrite_temptable_scan_path(tagg.table_path, tagg.table);
+  rewrite_temptable_scan_path(tagg.table_path, tagg.table,
+                              m_item_clone_context);
   post_rewrite_out_path(tagg.table_path);
   set_sorting_info({tagg.table, tagg.ref_slice});
   return false;

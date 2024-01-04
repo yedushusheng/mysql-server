@@ -37,6 +37,13 @@ struct ParallelScanInfo {
   parallel_scan_desc_t scan_desc;
 };
 
+struct Semijoin_mat_info {
+  Semijoin_mat_info(MEM_ROOT *mem_root, TABLE *mat_table)
+      : sj_inner_exprs(mem_root), table(mat_table) {}
+  mem_root_deque<Item *> sj_inner_exprs;
+  TABLE *table;
+};
+
 /**
    Currently, partial plan executor only depends on access path (No JOIN is
    created).
@@ -71,9 +78,15 @@ class PartialPlan {
   /// Init execution, called by CollectorIterator::Init(), currently we do
   /// parallel scan initialization in it.
   bool InitExecution(uint num_workers);
+  bool CollectSJMatInfoList(JOIN *source_join,
+                            Item_clone_context *clone_context);
+  bool CloneSJMatInnerExprsForTable(TABLE *orig_table,
+                                    mem_root_deque<Item *> *sjm_fields,
+                                    Item_clone_context *clone_context);
 
  private:
   Query_block *m_query_block;
+  List<Semijoin_mat_info> sjm_info_list{};
   /// Parallel scan info, current only support one table, This should be in
   /// class dist::PartialDistPlan, but we use it everywhere.
   ParallelScanInfo m_parallel_scan_info;
