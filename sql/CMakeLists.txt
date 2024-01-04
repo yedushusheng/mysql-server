@@ -587,7 +587,7 @@ SET(SQL_SHARED_SOURCES
   parallel_query/distribution.cc
   parallel_query/dist_tdstore.cc  
   parallel_query/executor.cc
-  parallel_query/worker.cc
+  parallel_query/local_worker.cc
   parallel_query/rewrite_access_path.cc  
 )
 

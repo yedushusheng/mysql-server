@@ -9,7 +9,7 @@
 #include "sql/opt_explain_traditional.h"
 #include "sql/parallel_query/planner.h"
 #include "sql/parallel_query/row_channel.h"
-#include "sql/parallel_query/worker.h"
+#include "sql/parallel_query/local_worker.h"
 #include "sql/query_result.h"
 #include "sql/sql_optimizer.h"
 #include "sql/sql_tmp_table.h"
@@ -115,7 +115,7 @@ bool Collector::Init(THD *thd) {
 
   DEBUG_SYNC(thd, "before_launch_pqworkers");
 
-  if (LaunchWorkers(thd)) return true;
+  if (LaunchWorkers()) return true;
 
   // Initialize row exchange reader after workers are started. The reader with
   // merge sort do a block read in Init().
@@ -135,28 +135,11 @@ void Collector::Reset() {
   for (auto *&worker : m_workers) destroy(worker);
 }
 
-bool Collector::LaunchWorkers(THD *thd) {
-  bool has_failed_worker = false;
-  bool all_start_error = true;
-
-  for (uint widx = 0; widx < m_workers.size(); ++widx) {
-    auto *worker = m_workers[widx];
-
+bool Collector::LaunchWorkers() {
+  for (auto *worker : m_workers) {
     SET_DBUG_CS_STACK_CLONE(worker, &dbug_cs_stack_clone);
-    if (!worker->Start()) {
-      if (all_start_error) all_start_error = false;
-      continue;
-    }
-
-    assert(worker->IsStartFailed());
-    // Let row exchange reader skip the worker by closing the queue
-    m_receiver_exchange.CloseChannel(widx);
-    if (!has_failed_worker) has_failed_worker = true;
+    if (worker->Start()) return true;
   }
-
-  if (all_start_error) return true;
-
-  if (has_failed_worker) thd->clear_error();
 
   return false;
 }

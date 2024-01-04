@@ -1,7 +1,7 @@
 #include "sql/parallel_query/distribution.h"
 
+#include "sql/parallel_query/local_worker.h"
 #include "sql/parallel_query/planner.h"
-#include "sql/parallel_query/worker.h"
 #include "sql/parse_tree_hints.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"

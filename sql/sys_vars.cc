@@ -106,7 +106,7 @@
 #include "sql/opt_trace_context.h"
 #include "sql/options_mysqld.h"
 #include "sql/parallel_query/planner.h"
-#include "sql/parallel_query/worker.h"
+#include "sql/parallel_query/local_worker.h"
 #include "sql/protocol_classic.h"
 #include "sql/psi_memory_key.h"
 #include "sql/query_options.h"

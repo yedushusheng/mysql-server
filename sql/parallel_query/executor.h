@@ -50,7 +50,7 @@ class Collector {
   }
 
  private:
-  bool LaunchWorkers(THD *thd);
+  bool LaunchWorkers();
   void TerminateWorkers();
   void CollectStatusFromWorkers(THD *thd);
   Diagnostics_area *combine_workers_stmt_da(THD *thd, ha_rows *found_rows);
