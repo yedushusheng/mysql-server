@@ -431,9 +431,10 @@ void Worker::ExecuteQuery() {
 
   if (lex->unit->execute(thd)) {
     assert(thd->is_error() || thd->killed);
-    goto cleanup;
   }
 
+  // Always print plan timing even the worker is error or got killed, see also
+  // send_kill_message();
   if (lex->is_explain_analyze) {
     auto *unit = lex->unit;
     auto *join = unit->first_query_block()->join;

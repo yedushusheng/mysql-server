@@ -34,7 +34,14 @@ class Worker {
   MessageQueue *message_queue() { return m_message_queue; }
   MessageQueueEvent *message_queue_event() { return m_row_exchange_writer.Event(); }
   Diagnostics_area *stmt_da(ha_rows *found_rows, ha_rows *examined_rows);
-  std::string *QueryPlanTimingData() { return m_query_plan_timing_data.get(); }
+  std::string *QueryPlanTimingData() {
+    if (m_query_plan_timing_data->size() != 0)
+      return m_query_plan_timing_data.get();
+    // No data if the worker got killed in plan preparing stage or starts
+    // failed.
+    assert(m_terminate_requested || IsStartFailed());
+    return nullptr;
+  }
   static bool IsScheduleSysThread() {
     return worker_handling == (ulong)ScheduleType::SysThread;
   }
