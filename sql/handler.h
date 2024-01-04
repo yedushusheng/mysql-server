@@ -3632,20 +3632,25 @@ inline bool operator&(parallel_scan_flags lhs, parallel_scan_flags rhs) {
   return (int(lhs) & int(rhs)) != 0;
 }
 
+
 struct parallel_scan_desc_t {
-  uint keynr;           // Key number for parallel scan
-  key_range *min_key;   // Min key of range scan or ref key for ref scan
-  key_range *max_key;   // Max key of range scan, same with min_key for ref
-                        // scan, null ref key for REF_OR_NULL type
-  uint16_t key_used;    // Part of keys used by parallel scan
+  uint keynr;          // Key number for parallel scan
+  key_range *min_key;  // Min key of range scan or ref key for ref scan
+  key_range *max_key;  // Max key of range scan, same with min_key for ref
+                       // scan, null ref key for REF_OR_NULL type
+  uint16_t key_used;   // Part of keys used by parallel scan
   parallel_scan_flags flags;  // miscellaneous flags for parallel scan
-  uint degree;         // parallel degree, used by pre-assign mode currently.
+  uint degree;  // parallel degree, used by pre-assign mode currently.
   // Call this function to assign range if scan_range_assign_fn is not nullptr
   // otherwise use round robin, Used in init_parallel_scan() only.
   parallel_scan_range_assign_cbk scan_range_assign_fn;
 
   void* job_desc{nullptr}; // if not nullptr,then use this info instead min_key&max_key
 };
+
+typedef uint parallel_scan_exec_flags_t;
+#define PARALLEL_SCAN_EXEC_NOT_PSCAN (1U << 0)
+#define PARALLEL_SCAN_EXEC_NULL_KEY (1U << 1)
 
 /**
   Wrapper for struct ft_hints.
@@ -4169,6 +4174,7 @@ class handler {
   */
   bool in_range_check_pushed_down;
 
+  parallel_scan_exec_flags_t parallel_scan_exec_flags{0};
  public:
   /**
     End value for a range scan. If this is NULL the range scan has no
@@ -5664,6 +5670,17 @@ class handler {
       parallel_scan_flags flags [[maybe_unused]],
       Fill_dist_info_cbk fill_dist_unit [[maybe_unused]]) {
     return HA_ERR_UNSUPPORTED;
+  }
+
+  inline void set_parallel_scan_exec_flags(parallel_scan_exec_flags_t flags) {
+    parallel_scan_exec_flags |= flags;
+  }
+  inline bool is_parallel_scan_exec_flag_set(
+      parallel_scan_exec_flags_t flag) const {
+    return parallel_scan_exec_flags & flag;
+  }
+  inline void reset_parallel_scan_exec_flags() {
+    if (parallel_scan_exec_flags) parallel_scan_exec_flags = 0;
   }
 
   /**

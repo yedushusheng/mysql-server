@@ -3297,6 +3297,7 @@ int handler::ha_index_read_map(uchar *buf, const uchar *key,
     result = update_generated_read_fields(buf, table, active_index);
     m_update_generated_read_fields = false;
   }
+  reset_parallel_scan_exec_flags();
   table->set_row_status_from_handler(result);
   return result;
 }
@@ -3484,6 +3485,7 @@ int handler::ha_index_last(uchar *buf) {
     result = update_generated_read_fields(buf, table, active_index);
     m_update_generated_read_fields = false;
   }
+  reset_parallel_scan_exec_flags();
   table->set_row_status_from_handler(result);
   return result;
 }
@@ -3517,6 +3519,7 @@ int handler::ha_index_next_same(uchar *buf, const uchar *key, uint keylen) {
     result = update_generated_read_fields(buf, table, active_index);
     m_update_generated_read_fields = false;
   }
+  reset_parallel_scan_exec_flags();
   table->set_row_status_from_handler(result);
   return result;
 }

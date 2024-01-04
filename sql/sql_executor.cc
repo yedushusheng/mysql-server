@@ -4089,7 +4089,8 @@ int RefOrNullIterator::Read() {
   }
 
   pair<uchar *, key_part_map> key_buff_and_map = FindKeyBufferAndMap(m_ref);
-
+  if (table()->is_parallel_scan() && *m_ref->null_ref_key)
+    table()->file->set_parallel_scan_exec_flags(PARALLEL_SCAN_EXEC_NULL_KEY);
   int error;
   if (m_reading_first_row) {
     m_reading_first_row = false;
