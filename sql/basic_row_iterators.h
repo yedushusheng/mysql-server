@@ -347,8 +347,10 @@ class FakeSingleRowIterator final : public RowIterator {
  */
 class UnqualifiedCountIterator final : public RowIterator {
  public:
-  UnqualifiedCountIterator(THD *thd, JOIN *join)
-      : RowIterator(thd), m_join(join) {}
+  UnqualifiedCountIterator(
+      THD *thd, JOIN *join,
+      Mem_root_array<std::pair<TABLE *, uint>> *tables)
+      : RowIterator(thd), m_join(join), m_tables(tables) {}
 
   bool Init() override {
     m_has_row = true;
@@ -364,6 +366,7 @@ class UnqualifiedCountIterator final : public RowIterator {
  private:
   bool m_has_row;
   JOIN *const m_join;
+  Mem_root_array<std::pair<TABLE *, uint>> *m_tables;  
 };
 
 /**

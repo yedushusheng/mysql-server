@@ -4319,6 +4319,10 @@ AccessPath *QEP_TAB::access_path() {
 
         But with the new function 'end_send_count' in the execution phase,
         such an error should be properly returned so that it can be raised.
+
+  @note Please change its overload version below: ulonglong get_exact_record_count(
+        Mem_root_array<std::pair<TABLE *, uint>> *tables, int *error) if you change
+        this function.
 */
 ulonglong get_exact_record_count(QEP_TAB *qep_tab, uint table_count,
                                  int *error) {
@@ -4336,6 +4340,33 @@ ulonglong get_exact_record_count(QEP_TAB *qep_tab, uint table_count,
       *error = qt->table()->file->ha_records(&tmp, qt->index());
     if (*error != 0) {
       (void)report_handler_error(qt->table(), *error);
+      return 0;
+    }
+    count *= tmp;
+  }
+  *error = 0;
+  return count;
+}
+
+/**
+  Get exact count of rows in all tables. used when tables of unqualified count
+  access path has a valid value.
+
+  The function used when these is no QEP_TAB in JOIN object. only parallel query
+  use this currently.
+*/
+ulonglong get_exact_record_count(
+    Mem_root_array<std::pair<TABLE *, uint>> *tables, int *error) {
+  ulonglong count = 1;
+  for (auto &it : *tables) {
+    ha_rows tmp = 0;
+    auto *table = it.first;
+    handler *file = table->file;
+    auto index = it.second;
+    *error = index == MAX_KEY ? file->ha_records(&tmp)
+                              : file->ha_records(&tmp, index);
+    if (*error != 0) {
+      (void)report_handler_error(table, *error);
       return 0;
     }
     count *= tmp;
@@ -6547,8 +6578,10 @@ int UnqualifiedCountIterator::Read() {
     if (item->type() == Item::SUM_FUNC_ITEM &&
         down_cast<Item_sum *>(item)->sum_func() == Item_sum::COUNT_FUNC) {
       int error;
-      ulonglong count = get_exact_record_count(m_join->qep_tab,
-                                               m_join->primary_tables, &error);
+      ulonglong count =
+          m_tables ? get_exact_record_count(m_tables, &error)
+                   : get_exact_record_count(m_join->qep_tab,
+                                            m_join->primary_tables, &error);
       if (error) return 1;
 
       down_cast<Item_sum_count *>(item)->make_const(

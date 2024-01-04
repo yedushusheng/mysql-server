@@ -628,6 +628,9 @@ struct AccessPath {
       AccessPath *table_path;
     } materialized_table_function;
     struct {
+      // Each item is a pair of TABLE and keyno used for calling
+      // handler::ha_record() and keyno is MAX_KEY if no key is used.
+      Mem_root_array<std::pair<TABLE *, uint>> *tables;
     } unqualified_count;
 
     struct {
@@ -950,6 +953,7 @@ inline AccessPath *NewMaterializedTableFunctionAccessPath(
 inline AccessPath *NewUnqualifiedCountAccessPath(THD *thd) {
   AccessPath *path = new (thd->mem_root) AccessPath;
   path->type = AccessPath::UNQUALIFIED_COUNT;
+  path->unqualified_count().tables = nullptr;
   return path;
 }
 

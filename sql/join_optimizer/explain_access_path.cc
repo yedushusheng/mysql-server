@@ -566,8 +566,12 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
       description.emplace_back("Materialize table function");
       break;
     case AccessPath::UNQUALIFIED_COUNT:
-      description.push_back("Count rows in " +
-                            string(join->qep_tab->table()->alias));
+      if (path->unqualified_count().tables) {
+        auto *table = path->unqualified_count().tables->at(0).first;
+        description.push_back("Count rows in " + string(table->alias));
+      } else
+        description.push_back("Count rows in " +
+                              string(join->qep_tab->table()->alias));
       break;
     case AccessPath::NESTED_LOOP_JOIN:
       description.push_back(
