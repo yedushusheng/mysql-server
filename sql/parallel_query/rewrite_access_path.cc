@@ -546,19 +546,37 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
   m_path_changes_store->register_changes(
       NewAccessPathChanges(in, src->table, query_block.temp_table_param));
   TABLE *orig_table [[maybe_unused]] = src->table;
-  if (recreate_materialized_table(m_join_in->thd, m_join_in, src->table->group,
-                                  src->table->s->is_distinct, false,
-                                  src->ref_slice, src->limit_rows, &src->table,
-                                  &query_block.temp_table_param))
+  if (recreate_materialized_table(
+          m_join_in->thd, m_join_in, src->table->group,
+          src->table->s->is_distinct,
+          !m_join_in->group_list.empty() && m_join_in->simple_group,
+          src->ref_slice, src->limit_rows, &src->table,
+          &query_block.temp_table_param))
     return true;
   TABLE *table = src->table;
 
   assert_same_rewrite_table(orig_table, table);
 
+  auto *temp_table_param = query_block.temp_table_param;
+  // See setup_tmptable_write_func(), Should we add precomputed_group_by
+  // here? JOIN::streaming_aggregation is reset by make_tmp_tables_info(),
+  // We reset it true by make_group_fields() in rewrite_aggregate()
+  if (m_join_in->streaming_aggregation) {
+    for (Item_sum **func_ptr = m_join_in->sum_funcs; *func_ptr != nullptr;
+         ++func_ptr) {
+      if (temp_table_param->items_to_copy->push_back(
+              Func_ptr(*func_ptr, (*func_ptr)->get_result_field())))
+        return true;
+    }
+    // See make_tmp_tables_info(), only first tmp table needs to append
+    // entries to items_to_copy
+    m_join_in->streaming_aggregation = false;
+  }
+
   // We made a new table, so make sure it gets properly cleaned up
   // at the end of execution.
   m_join_in->temp_tables.push_back(
-      JOIN::TemporaryTableToCleanup{table, query_block.temp_table_param});
+      JOIN::TemporaryTableToCleanup{table, temp_table_param});
 
   if (out) {
     out->materialize().table_path =
