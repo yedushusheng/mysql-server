@@ -512,6 +512,11 @@ enum enum_alter_inplace_result {
 */
 #define HA_MULTI_VALUED_KEY_SUPPORT (1LL << 55)
 
+/**
+  Supports parallel scan
+*/
+#define HA_CAN_PARALLEL_SCAN (1LL << 57)
+
 /*
   Bits in index_flags(index_number) for what you can do with index.
   If you do not implement indexes, just return zero here.
