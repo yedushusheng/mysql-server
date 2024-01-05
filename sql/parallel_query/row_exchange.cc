@@ -13,16 +13,7 @@ bool RowExchange::Init(MEM_ROOT *mem_root,
   for (uint i = 0; i < m_num_queues; i++) {
     MessageQueue *queue = get_queue(i);
     assert(queue);
-    switch (m_type) {
-      case Type::SENDER:
-        queue->SetSenderEvent(&m_message_queue_event);
-        break;
-      case Type::RECEIVER:
-        queue->SetReceiverEvent(&m_message_queue_event);
-        break;
-      default:
-        assert(0);
-    }
+    queue->SetEvent(&m_message_queue_event);
     m_message_queues[i] = queue;
   }
 
@@ -51,21 +42,23 @@ bool RowExchangeContainer::Init(THD *thd, MY_BITMAP *closed_queues) {
   return false;
 }
 
-RowExchangeResult RowExchangeReader::Read(THD *thd, uchar **buf) {
+RowExchange::Result RowExchangeReader::Read(THD *thd, uchar **buf) {
   assert(m_left_queues > 0);
   uint visited = 0;
   for (;;) {
-    if (thd->killed) return RowExchangeResult::KILLED;
+    if (thd->killed) return Result::KILLED;
     size_t nbytes;
     void *data;
     auto *handler = m_message_queue_handles[m_next_queue];
     auto result = handler->Receive(&nbytes, &data, true);
-    if (likely(result == RowExchangeResult::SUCCESS)) {
+
+    if (likely(result == MessageQueue::Result::SUCCESS)) {
       *buf = (uchar *)data;
-      return RowExchangeResult::SUCCESS;
+      return Result::SUCCESS;
     }
-    if (result == RowExchangeResult::DETACHED) {
-      CloseQueue(m_next_queue);
+
+    if (result == MessageQueue::Result::DETACHED) {
+      if (HandleQueueDetach(m_next_queue)) return Result::ERROR;
       m_left_queues--;
 
       if (unlikely(m_left_queues == 0)) break;
@@ -73,8 +66,12 @@ RowExchangeResult RowExchangeReader::Read(THD *thd, uchar **buf) {
       AdvanceQueue();
       continue;
     }
+
     // Could be OOM or END
-    if (result != RowExchangeResult::WOULD_BLOCK) return result;
+    if (result == MessageQueue::Result::OOM) return Result::OOM;
+    if (result == MessageQueue::Result::KILLED) return Result::KILLED;
+
+    assert(result == MessageQueue::Result::WOULD_BLOCK);
 
     /*
       Advance nextreader pointer in round-robin fashion. Note that we only reach
@@ -90,29 +87,29 @@ RowExchangeResult RowExchangeReader::Read(THD *thd, uchar **buf) {
     }
   }
 
-  return RowExchangeResult::END;
+  return Result::END;
 }
 
-RowExchangeResult RowExchangeWriter::WriteToQueue(uint queue, uchar *data,
-                                                   size_t nbytes, bool nowait) {
-  // When the target mq is detached by receiver, some receiver may quit early
-  // because the data repartition is tilted.
-  // Ignore it and return success directly to avoid query hang.
-  if (IsQueueClosed(queue)) return MessageQueueResult::SUCCESS;
-
-  return m_message_queue_handles[queue]->Send(nbytes, data, nowait);
-}
-
-RowExchangeResult RowExchangeWriter::Write(uchar *record, size_t nbytes) {
+RowExchange::Result RowExchangeWriter::Write(uchar *data, size_t nbytes) {
   assert(m_row_exchange->NumQueues() == 1);
-  RowExchangeResult res = WriteToQueue(0, record, nbytes, false);
-  assert(res != RowExchangeResult::WOULD_BLOCK);
-  if (unlikely(res == RowExchangeResult::DETACHED)) {
-    CloseQueue(0);
-    res = RowExchangeResult::SUCCESS;
+  uint queue = 0;
+  if (IsQueueClosed(queue)) return Result::SUCCESS;
+  auto result = m_message_queue_handles[queue]->Send(nbytes, data, false);
+  switch (result) {
+    case MessageQueue::Result::SUCCESS:
+      return Result::SUCCESS;
+    case MessageQueue::Result::OOM:
+      return Result::OOM;
+    case MessageQueue::Result::KILLED:
+      return Result::KILLED;
+    case MessageQueue::Result::DETACHED:
+      CloseQueue(0);
+      return Result::SUCCESS;
+    case MessageQueue::Result::WOULD_BLOCK:
+      assert(0);
   }
 
-  return res;
+  return Result::SUCCESS;
 }
 
 void RowExchangeWriter::WriteEOF() {
@@ -130,50 +127,48 @@ bool RowExchangeMergeSortReader::Init(THD *thd, MY_BITMAP *closed_queues) {
   return false;
 }
 
-MergeSort::Result RowExchangeMergeSortReader::ReadFromChannel(
-    uint index, size_t *nbytes, void **data, bool no_wait) {
+MergeSort::Result RowExchangeMergeSortReader::ReadFromChannel(uint index,
+                                                              size_t *nbytes,
+                                                              void **data,
+                                                              bool no_wait) {
   auto result = m_message_queue_handles[index]->Receive(nbytes, data, no_wait);
   switch (result) {
-    case RowExchangeResult::SUCCESS:
+    case MessageQueue::Result::SUCCESS:
       break;
-    case RowExchangeResult::OOM:
+    case MessageQueue::Result::OOM:
       return MergeSort::Result::OOM;
-    case RowExchangeResult::KILLED:
+    case MessageQueue::Result::KILLED:
       return MergeSort::Result::KILLED;
-    case RowExchangeResult::DETACHED:
-      CloseQueue(index);
+    case MessageQueue::Result::DETACHED:
+      if (unlikely(HandleQueueDetach(index))) return MergeSort::Result::ERROR;
       return MergeSort::Result::NODATA;
-    case RowExchangeResult::WOULD_BLOCK:
+    case MessageQueue::Result::WOULD_BLOCK:
       // no wait , return now
       return MergeSort::Result::NODATA;
-    case RowExchangeResult::END:
-    case RowExchangeResult::NONE:
-    case RowExchangeResult::ERROR:
-      assert(false);
   }
 
-  assert(result == RowExchangeResult::SUCCESS);
+  assert(result == MessageQueue::Result::SUCCESS);
 
   return MergeSort::Result::SUCCESS;
 }
 
-RowExchangeResult RowExchangeMergeSortReader::Read(THD *, uchar **buf) {
+RowExchange::Result RowExchangeMergeSortReader::Read(THD *, uchar **buf) {
   auto result = m_mergesort.Read(buf);
   switch (result) {
     case MergeSort::Result::SUCCESS:
-      return RowExchangeResult::SUCCESS;
+      return Result::SUCCESS;
     case MergeSort::Result::END:
-      return RowExchangeResult::END;
+      return Result::END;
     case MergeSort::Result::KILLED:
-      return RowExchangeResult::KILLED;
+      return Result::KILLED;
     case MergeSort::Result::OOM:
-      return RowExchangeResult::OOM;
+      return Result::OOM;
     case MergeSort::Result::ERROR:
-      return RowExchangeResult::ERROR;
+      return Result::ERROR;
     case MergeSort::Result::NODATA:
       assert(false);
   }
-  return RowExchangeResult::SUCCESS;
+  return Result::SUCCESS;
 }
 
 }  // namespace pq

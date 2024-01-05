@@ -30,8 +30,10 @@ class Collector {
  private:
   bool CreateRowExchange(MEM_ROOT *mem_root);
   bool LaunchWorkers(bool &has_failed_worker);
-  void TerminateWorkers(THD *thd);
+  void TerminateWorkers();
+  bool HandleWorkerExited(uint windex);
   Diagnostics_area *combine_workers_stmt_da(THD *thd, ha_rows *found_rows);
+
   PartialPlan *m_partial_plan;
   TABLE *m_table{nullptr};
   Filesort *m_merge_sort{nullptr};

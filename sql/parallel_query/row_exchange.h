@@ -2,23 +2,17 @@
 #define PARALLEL_QUERY_ROW_EXCHANGE_H
 
 #include <functional>
-#include "sql/parallel_query/message_queue.h"
 #include "sql/parallel_query/merge_sort.h"
+#include "sql/parallel_query/message_queue.h"
 
 class Filesort;
 struct MY_BITMAP;
 
 namespace pq {
-  using RowExchangeResult = MessageQueueResult;
-
 class RowExchange {
  public:
-  enum class Type {
-    SENDER,    // Send records to message queues.
-    RECEIVER,  // Recv records from message queues.
-  };
-  RowExchange(uint num_queues, Type ex_type)
-      : m_num_queues(num_queues), m_type(ex_type) {}
+  enum Result { SUCCESS, END, ERROR, OOM, KILLED };
+  RowExchange(uint num_queues) : m_num_queues(num_queues) {}
   bool Init(MEM_ROOT *mem_root, std::function<MessageQueue *(uint)> get_queue);
   uint NumQueues() const { return m_num_queues; }
   MessageQueue *Queue(uint i) const { return m_message_queues[i]; }
@@ -28,17 +22,18 @@ class RowExchange {
   MessageQueue **m_message_queues{nullptr};
   MessageQueueEvent m_message_queue_event;
   uint m_num_queues;
-  Type m_type;
 };
 
 class RowExchangeContainer {
  public:
+  using Result = RowExchange::Result;
   RowExchangeContainer(RowExchange *row_exchange)
       : m_row_exchange(row_exchange) {}
   RowExchangeContainer(const RowExchangeContainer &) = delete;
   virtual ~RowExchangeContainer();
 
   virtual bool Init(THD *thd, MY_BITMAP *closed_queues);
+
  protected:
   bool IsQueueClosed(uint queue) {
     return m_message_queue_handles[queue]->IsClosed();
@@ -51,14 +46,19 @@ class RowExchangeContainer {
 /// Normal collect rows from multiple workers for normal gather operator.
 class RowExchangeReader : public RowExchangeContainer {
  public:
-  RowExchangeReader(RowExchange *row_exchange)
+  RowExchangeReader(RowExchange *row_exchange,
+                    std::function<bool(uint)> queue_detach_handler)
       : RowExchangeContainer(row_exchange),
-        m_left_queues(row_exchange->NumQueues()) {}
+        m_left_queues(row_exchange->NumQueues()),
+        m_queue_detach_handler(queue_detach_handler) {}
 
-  virtual RowExchangeResult Read(THD *thd, uchar **buf);
+  virtual Result Read(THD *thd, uchar **buf);
 
  protected:
-  uint m_left_queues;
+  bool HandleQueueDetach(uint index) {
+    CloseQueue(index);
+    return m_queue_detach_handler(index);
+  }
 
  private:
   void AdvanceQueue() {
@@ -67,6 +67,9 @@ class RowExchangeReader : public RowExchangeContainer {
       if (++m_next_queue >= queues) m_next_queue = 0;
     } while (IsQueueClosed(m_next_queue));
   }
+  uint m_left_queues;
+  std::function<bool(uint)> m_queue_detach_handler;
+
   uint m_next_queue{0};
 };
 
@@ -74,23 +77,20 @@ class RowExchangeWriter : public RowExchangeContainer {
  public:
   RowExchangeWriter(RowExchange *row_exchange)
       : RowExchangeContainer(row_exchange) {}
-  RowExchangeResult Write(uchar *record, size_t nbytes);
+  Result Write(uchar *record, size_t nbytes);
   void WriteEOF();
-
- protected:
-  RowExchangeResult WriteToQueue(uint queue, uchar *data, size_t nbytes,
-                                 bool nowait);
 };
 
 /// Collect rows for multiple workers for gather operator with merge sort
 class RowExchangeMergeSortReader : public RowExchangeReader, MergeSortSource {
  public:
-  RowExchangeMergeSortReader(RowExchange *row_exchange, Filesort *filesort)
-      : RowExchangeReader(row_exchange),
+  RowExchangeMergeSortReader(RowExchange *row_exchange, Filesort *filesort,
+                             std::function<bool(uint)> queue_detach_handler)
+      : RowExchangeReader(row_exchange, queue_detach_handler),
         m_filesort(filesort),
         m_mergesort(this) {}
   bool Init(THD *thd, MY_BITMAP *closed_queues) override;
-  RowExchangeResult Read(THD *thd, uchar **buf) override;
+  Result Read(THD *thd, uchar **buf) override;
 
   bool IsChannelFinished(uint i) override { return IsQueueClosed(i); }
   void Wait(THD *thd) override { m_row_exchange->Wait(thd); }
@@ -101,5 +101,5 @@ class RowExchangeMergeSortReader : public RowExchangeReader, MergeSortSource {
   Filesort *m_filesort;
   MergeSort m_mergesort;
 };
-}
+}  // namespace pq
 #endif
