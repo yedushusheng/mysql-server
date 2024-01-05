@@ -1776,7 +1776,8 @@ struct TABLE {
   /* If true, all partitions have been pruned away */
   bool all_partitions_pruned_away{false};
   MDL_ticket *mdl_ticket{nullptr};
-
+  parallel_scan_handle_t parallel_scan_handle{nullptr};
+  
  private:
   /// Cost model object for operations on this table
   Cost_model_table m_cost_model;

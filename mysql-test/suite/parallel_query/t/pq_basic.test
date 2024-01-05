@@ -1,7 +1,11 @@
 SET max_parallel_degree = 1;
+
 CREATE TABLE t1(a int, b int, c int);
 INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
---echo ### basic queries ###
+
+--echo ###
+--echo ### some basic queries
+--echo ###
 let $query=SELECT * FROM t1;
 --source suite/parallel_query/include/explain_and_run.inc
 let $query=SELECT * FROM t1 where a > 1;
@@ -19,11 +23,15 @@ let $query=SELECT a, sum(b) FROM t1 GROUP BY a order by 2;
 let $query=SELECT a, sum(b) + 1 FROM t1 GROUP BY a order by 2;
 --source suite/parallel_query/include/explain_and_run.inc
 
---echo ### Aggregate access path ###
+--echo ###
+--echo ### access path coverage
+--echo ###
+
+--echo ### aggregate access path ###
 let $query=SELECT SQL_BIG_RESULT a FROM t1 GROUP BY a;
 --source suite/parallel_query/include/explain_and_run.inc
 
---echo ### Stream access path ###
+--echo ### stream access path ###
 let $query=SELECT DISTINCT SQL_BIG_RESULT a FROM t1 GROUP BY a,b ORDER BY a DESC;
 --source suite/parallel_query/include/explain_and_run.inc
 
@@ -41,6 +49,26 @@ let $query=SELECT * FROM t1 ORDER BY a LIMIT 2 OFFSET 1;
 let $query=SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5;
 --source suite/parallel_query/include/explain_and_run.inc
 let $query=SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5 LIMIT 1 OFFSET 2;
+--source suite/parallel_query/include/explain_and_run.inc
+
+DROP TABLE t1;
+
+--echo ###
+--echo ### bottom access path type coverage
+--echo ###
+
+--echo ### index scan ###
+CREATE TABLE t1(a int, b int, c int, index(b));
+INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
+let $query=SELECT b FROM t1;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT b FROM t1 LIMIT 4;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT b FROM t1 ORDER BY b LIMIT 4;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT b FROM t1 GROUP BY b LIMIT 4;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT count(a), b FROM t1 GROUP BY b ORDER BY 2,1 LIMIT 4;
 --source suite/parallel_query/include/explain_and_run.inc
 
 DROP TABLE t1;

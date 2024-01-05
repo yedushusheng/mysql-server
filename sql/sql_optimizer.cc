@@ -964,11 +964,9 @@ bool JOIN::optimize() {
   // Creating iterators may evaluate a constant hash join condition, which may
   // fail:
   if (thd->is_error()) return true;
+
+  if (pq::GenerateParallelPlan(this)) return true;
   
-  pq::ChooseParallelPlan(this);
-
-  if (parallel_plan && (parallel_plan->Generate())) return true;
-
   // Make plan visible for EXPLAIN
   set_plan_state(PLAN_READY);
 
