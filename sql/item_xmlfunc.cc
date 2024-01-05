@@ -2307,6 +2307,14 @@ bool Item_xml_str_func::resolve_type(THD *thd) {
   return false;
 }
 
+bool Item_xml_str_func::init_from(const Item *from,
+                                  Item_clone_context *context) {
+  if (Item_str_func::init_from(from, context)) return true;
+  if (args[1]->const_item() && parse_xpath(args[1])) return true;
+  if (nodeset_func != nullptr) nodeset_func_permanent = true;
+  return false;
+}
+
 bool Item_xml_str_func::parse_xpath(Item *xpath_expr) {
   String *xp;
   MY_XPATH xpath;

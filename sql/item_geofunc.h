@@ -259,6 +259,9 @@ class Item_func_geometry_from_text : public Item_geometry_func {
   bool itemize(Parse_context *pc, Item **res) override;
   const char *func_name() const override;
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_geometry_from_text(POS(), args[0], m_functype);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1)) return true;
     if (param_type_is_default(thd, 1, 2, MYSQL_TYPE_LONGLONG)) return true;
@@ -306,6 +309,9 @@ class Item_func_geometry_from_wkb : public Item_geometry_func {
     @retval false The geometry type is not allowed
   */
   bool is_allowed_wkb_type(Geometry::wkbType type) const;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_geometry_from_wkb(POS(), args[0], m_functype);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1)) return true;
     if (param_type_is_default(thd, 1, 2, MYSQL_TYPE_LONGLONG)) return true;
@@ -335,6 +341,9 @@ class Item_func_as_wkt : public Item_str_ascii_func {
       : Item_str_ascii_func(pos, a, b) {}
   const char *func_name() const override { return "st_astext"; }
   String *val_str_ascii(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_as_wkt(POS(), args[0]);
+  }
   bool resolve_type(THD *) override;
 };
 
@@ -345,6 +354,9 @@ class Item_func_as_wkb : public Item_geometry_func {
       : Item_geometry_func(pos, a, b) {}
   const char *func_name() const override { return "st_aswkb"; }
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_as_wkb(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     if (param_type_is_default(thd, 1, 2)) return true;
@@ -360,6 +372,9 @@ class Item_func_geometry_type : public Item_str_ascii_func {
       : Item_str_ascii_func(pos, a) {}
   String *val_str_ascii(String *) override;
   const char *func_name() const override { return "st_geometrytype"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_geometry_type(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     // "MultiLinestring" is the longest
@@ -409,6 +424,9 @@ class Item_func_geomfromgeojson : public Item_geometry_func {
         m_srid_found_in_document(-1) {}
   String *val_str(String *) override;
   bool fix_fields(THD *, Item **ref) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_geomfromgeojson(POS(), args[0]);
+  }
   const char *func_name() const override { return "st_geomfromgeojson"; }
   Geometry::wkbType get_wkbtype(const char *typestring);
   bool get_positions(const Json_array *coordinates, Gis_point *point);
@@ -536,6 +554,9 @@ class Item_func_as_geojson : public Item_json_func {
         m_add_short_crs_urn(false),
         m_add_long_crs_urn(false) {}
   bool fix_fields(THD *thd, Item **ref) override;
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_func_as_geojson(context->thd(), POS(), args[0]);
+  }
   bool val_json(Json_wrapper *wr) override;
   const char *func_name() const override { return "st_asgeojson"; }
   bool parse_options_argument();
@@ -607,6 +628,9 @@ class Item_func_geohash : public Item_str_ascii_func {
         min_longitude(-180.0),
         upper_limit_output_length(100) {}
   String *val_str_ascii(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_geohash(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *) override;
   bool fix_fields(THD *thd, Item **ref) override;
   const char *func_name() const override { return "st_geohash"; }
@@ -688,6 +712,9 @@ class Item_func_latfromgeohash : public Item_func_latlongfromgeohash {
                                      false) {}
 
   const char *func_name() const override { return "ST_LATFROMGEOHASH"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_latfromgeohash(POS(), args[0]);
+  }
 };
 
 /**
@@ -701,6 +728,9 @@ class Item_func_longfromgeohash : public Item_func_latlongfromgeohash {
   }
 
   const char *func_name() const override { return "ST_LONGFROMGEOHASH"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_longfromgeohash(POS(), args[0]);
+  }
 };
 
 class Item_func_centroid : public Item_geometry_func {
@@ -714,6 +744,9 @@ class Item_func_centroid : public Item_geometry_func {
   const char *func_name() const override { return "st_centroid"; }
   String *val_str(String *) override;
   Field::geometry_type get_geometry_type() const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_centroid(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     return Item_geometry_func::resolve_type(thd);
@@ -731,6 +764,9 @@ class Item_func_convex_hull : public Item_geometry_func {
   const char *func_name() const override { return "st_convexhull"; }
   String *val_str(String *) override;
   Field::geometry_type get_geometry_type() const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_convex_hull(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     return Item_geometry_func::resolve_type(thd);
@@ -743,6 +779,9 @@ class Item_func_envelope : public Item_geometry_func {
   const char *func_name() const override { return "st_envelope"; }
   String *val_str(String *) override;
   Field::geometry_type get_geometry_type() const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_envelope(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     return Item_geometry_func::resolve_type(thd);
@@ -756,6 +795,9 @@ class Item_func_make_envelope : public Item_geometry_func {
   const char *func_name() const override { return "st_makeenvelope"; }
   String *val_str(String *) override;
   Field::geometry_type get_geometry_type() const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_make_envelope(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     return Item_geometry_func::resolve_type(thd);
@@ -768,6 +810,9 @@ class Item_func_validate : public Item_geometry_func {
  public:
   Item_func_validate(const POS &pos, Item *a) : Item_geometry_func(pos, a) {}
   const char *func_name() const override { return "st_validate"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_validate(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     return Item_geometry_func::resolve_type(thd);
@@ -781,6 +826,9 @@ class Item_func_st_simplify : public Item_geometry_func {
  public:
   Item_func_st_simplify(const POS &pos, Item *a, Item *b)
       : Item_geometry_func(pos, a, b) {}
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_simplify(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     if (param_type_is_default(thd, 1, 2, MYSQL_TYPE_DOUBLE)) return true;
@@ -798,6 +846,9 @@ class Item_func_point : public Item_geometry_func {
   const char *func_name() const override { return "point"; }
   String *val_str(String *) override;
   Field::geometry_type get_geometry_type() const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_point(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_DOUBLE)) return true;
     return Item_geometry_func::resolve_type(thd);
@@ -836,6 +887,9 @@ class Item_func_pointfromgeohash : public Item_geometry_func {
   const char *func_name() const override { return "st_pointfromgeohash"; }
   String *val_str(String *) override;
   bool fix_fields(THD *thd, Item **ref) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_pointfromgeohash(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override;
   Field::geometry_type get_geometry_type() const override {
     return Field::GEOM_POINT;
@@ -844,6 +898,9 @@ class Item_func_pointfromgeohash : public Item_geometry_func {
 
 class Item_func_spatial_decomp : public Item_geometry_func {
   enum Functype decomp_func;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_spatial_decomp(POS(), args[0], decomp_func);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     return Item_geometry_func::resolve_type(thd);
@@ -872,6 +929,10 @@ class Item_func_spatial_decomp : public Item_geometry_func {
 
 class Item_func_spatial_decomp_n : public Item_geometry_func {
   enum Functype decomp_func_n;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_spatial_decomp_n(POS(), args[0], args[0],
+                                          decomp_func_n);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     if (param_type_is_default(thd, 1, 2, MYSQL_TYPE_LONGLONG)) return true;
@@ -914,6 +975,10 @@ class Item_func_spatial_collection : public Item_geometry_func {
     item_type = it;
   }
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_spatial_collection(POS(), nullptr, coll_type,
+                                            item_type);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     if (Item_geometry_func::resolve_type(thd)) return true;
@@ -966,6 +1031,9 @@ class Item_func_spatial_mbr_rel : public Item_bool_func2 {
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override {
     Item_func::print(thd, str, query_type);
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_spatial_mbr_rel(args[0], args[1], spatial_rel);
   }
   bool resolve_type(THD *) override {
     maybe_null = true;
@@ -1083,6 +1151,9 @@ class Item_func_st_contains final : public Item_func_spatial_relation {
   const char *func_name() const override { return "st_contains"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_contains(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_st_crosses final : public Item_func_spatial_relation {
@@ -1094,6 +1165,9 @@ class Item_func_st_crosses final : public Item_func_spatial_relation {
   const char *func_name() const override { return "st_crosses"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_crosses(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_st_disjoint final : public Item_func_spatial_relation {
@@ -1105,6 +1179,9 @@ class Item_func_st_disjoint final : public Item_func_spatial_relation {
   const char *func_name() const override { return "st_disjoint"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_disjoint(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_st_equals final : public Item_func_spatial_relation {
@@ -1116,6 +1193,9 @@ class Item_func_st_equals final : public Item_func_spatial_relation {
   const char *func_name() const override { return "st_equals"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_equals(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_st_intersects final : public Item_func_spatial_relation {
@@ -1127,6 +1207,9 @@ class Item_func_st_intersects final : public Item_func_spatial_relation {
   const char *func_name() const override { return "st_intersects"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_intersects(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_mbrcontains final : public Item_func_spatial_relation {
@@ -1138,6 +1221,9 @@ class Item_func_mbrcontains final : public Item_func_spatial_relation {
   const char *func_name() const override { return "mbrcontains"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_mbrcontains(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_mbrcoveredby final : public Item_func_spatial_relation {
@@ -1149,6 +1235,9 @@ class Item_func_mbrcoveredby final : public Item_func_spatial_relation {
   const char *func_name() const override { return "mbrcoveredby"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_mbrcoveredby(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_mbrcovers final : public Item_func_spatial_relation {
@@ -1160,6 +1249,9 @@ class Item_func_mbrcovers final : public Item_func_spatial_relation {
   const char *func_name() const override { return "mbrcovers"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_mbrcovers(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_mbrdisjoint final : public Item_func_spatial_relation {
@@ -1171,6 +1263,9 @@ class Item_func_mbrdisjoint final : public Item_func_spatial_relation {
   const char *func_name() const override { return "mbrdisjoint"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_mbrdisjoint(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_mbrequals final : public Item_func_spatial_relation {
@@ -1182,6 +1277,9 @@ class Item_func_mbrequals final : public Item_func_spatial_relation {
   const char *func_name() const override { return "mbrequals"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_mbrequals(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_mbrintersects final : public Item_func_spatial_relation {
@@ -1193,6 +1291,9 @@ class Item_func_mbrintersects final : public Item_func_spatial_relation {
   const char *func_name() const override { return "mbrintersects"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_mbrintersects(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_mbroverlaps final : public Item_func_spatial_relation {
@@ -1204,6 +1305,9 @@ class Item_func_mbroverlaps final : public Item_func_spatial_relation {
   const char *func_name() const override { return "mbroverlaps"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_mbroverlaps(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_mbrtouches final : public Item_func_spatial_relation {
@@ -1215,6 +1319,9 @@ class Item_func_mbrtouches final : public Item_func_spatial_relation {
   const char *func_name() const override { return "mbrtouches"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_mbrtouches(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_mbrwithin final : public Item_func_spatial_relation {
@@ -1226,6 +1333,9 @@ class Item_func_mbrwithin final : public Item_func_spatial_relation {
   const char *func_name() const override { return "mbrwithin"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_mbrwithin(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_st_overlaps final : public Item_func_spatial_relation {
@@ -1237,6 +1347,9 @@ class Item_func_st_overlaps final : public Item_func_spatial_relation {
   const char *func_name() const override { return "st_overlaps"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_overlaps(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_st_touches final : public Item_func_spatial_relation {
@@ -1248,6 +1361,9 @@ class Item_func_st_touches final : public Item_func_spatial_relation {
   const char *func_name() const override { return "st_touches"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_touches(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_st_within final : public Item_func_spatial_relation {
@@ -1259,6 +1375,9 @@ class Item_func_st_within final : public Item_func_spatial_relation {
   const char *func_name() const override { return "st_within"; }
   bool eval(const dd::Spatial_reference_system *srs, const gis::Geometry *g1,
             const gis::Geometry *g2, bool *result, bool *null) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_within(POS(), args[0], args[1]);
+  }
 };
 
 /**
@@ -1346,6 +1465,9 @@ class Item_func_st_difference final : public Item_func_spatial_operation {
   Item_func_st_difference(const POS &pos, Item *a, Item *b)
       : Item_func_spatial_operation(pos, a, b, op_difference) {}
   const char *func_name() const override { return "st_difference"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_difference(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_st_intersection final : public Item_func_spatial_operation {
@@ -1353,6 +1475,9 @@ class Item_func_st_intersection final : public Item_func_spatial_operation {
   Item_func_st_intersection(const POS &pos, Item *a, Item *b)
       : Item_func_spatial_operation(pos, a, b, op_intersection) {}
   const char *func_name() const override { return "st_intersection"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_intersection(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_st_symdifference final : public Item_func_spatial_operation {
@@ -1360,6 +1485,9 @@ class Item_func_st_symdifference final : public Item_func_spatial_operation {
   Item_func_st_symdifference(const POS &pos, Item *a, Item *b)
       : Item_func_spatial_operation(pos, a, b, op_symdifference) {}
   const char *func_name() const override { return "st_symdifference"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_symdifference(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_st_union final : public Item_func_spatial_operation {
@@ -1367,6 +1495,9 @@ class Item_func_st_union final : public Item_func_spatial_operation {
   Item_func_st_union(const POS &pos, Item *a, Item *b)
       : Item_func_spatial_operation(pos, a, b, op_union) {}
   const char *func_name() const override { return "st_union"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_union(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_buffer : public Item_geometry_func {
@@ -1439,6 +1570,9 @@ class Item_func_buffer : public Item_geometry_func {
   Item_func_buffer(const POS &pos, PT_item_list *ilist);
   const char *func_name() const override { return "st_buffer"; }
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_buffer(POS(), nullptr);
+  }
 };
 
 class Item_func_buffer_strategy : public Item_str_func {
@@ -1450,6 +1584,9 @@ class Item_func_buffer_strategy : public Item_str_func {
   Item_func_buffer_strategy(const POS &pos, PT_item_list *ilist);
   const char *func_name() const override { return "st_buffer_strategy"; }
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_buffer_strategy(POS(), nullptr);
+  }
   bool resolve_type(THD *thd) override;
 };
 
@@ -1459,6 +1596,9 @@ class Item_func_isempty : public Item_bool_func {
   longlong val_int() override;
   optimize_type select_optimize(const THD *) override { return OPTIMIZE_NONE; }
   const char *func_name() const override { return "st_isempty"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_isempty(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     maybe_null = true;
@@ -1471,6 +1611,9 @@ class Item_func_st_issimple : public Item_bool_func {
   Item_func_st_issimple(const POS &pos, Item *a) : Item_bool_func(pos, a) {}
   longlong val_int() override;
   const char *func_name() const override { return "st_issimple"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_issimple(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     return Item_bool_func::resolve_type(thd);
@@ -1483,6 +1626,9 @@ class Item_func_isclosed : public Item_bool_func {
   longlong val_int() override;
   optimize_type select_optimize(const THD *) override { return OPTIMIZE_NONE; }
   const char *func_name() const override { return "st_isclosed"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_isclosed(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     maybe_null = true;
@@ -1496,6 +1642,9 @@ class Item_func_isvalid : public Item_bool_func {
   longlong val_int() override;
   optimize_type select_optimize(const THD *) override { return OPTIMIZE_NONE; }
   const char *func_name() const override { return "st_isvalid"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_isvalid(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     return Item_bool_func::resolve_type(thd);
@@ -1509,6 +1658,9 @@ class Item_func_dimension : public Item_int_func {
   Item_func_dimension(const POS &pos, Item *a) : Item_int_func(pos, a) {}
   longlong val_int() override;
   const char *func_name() const override { return "st_dimension"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_dimension(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     max_length = 10;
@@ -1590,6 +1742,9 @@ class Item_func_st_latitude_mutator final
   int coordinate_number(const dd::Spatial_reference_system *) const override {
     return 1;
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_latitude_mutator(POS(), args[0], args[1]);
+  }
 };
 
 /// This class implements the one-parameter ST_Latitude function which returns
@@ -1604,6 +1759,9 @@ class Item_func_st_latitude_observer final
   const char *func_name() const override { return "st_latitude"; }
   int coordinate_number(const dd::Spatial_reference_system *) const override {
     return 1;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_latitude_observer(POS(), args[0]);
   }
 };
 
@@ -1620,6 +1778,9 @@ class Item_func_st_longitude_mutator final
   int coordinate_number(const dd::Spatial_reference_system *) const override {
     return 0;
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_longitude_mutator(POS(), args[0], args[1]);
+  }
 };
 
 /// This class implements the one-parameter ST_Longitude function which returns
@@ -1635,6 +1796,9 @@ class Item_func_st_longitude_observer final
   int coordinate_number(const dd::Spatial_reference_system *) const override {
     return 0;
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_longitude_observer(POS(), args[0]);
+  }
 };
 
 /// This class implements the two-parameter ST_X function which sets the X
@@ -1647,6 +1811,9 @@ class Item_func_st_x_mutator final : public Item_func_coordinate_mutator {
  protected:
   const char *func_name() const override { return "st_x"; }
   int coordinate_number(const dd::Spatial_reference_system *srs) const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_x_mutator(POS(), args[0], args[1]);
+  }
 };
 
 /// This class implements the one-parameter ST_X function which returns the X
@@ -1659,6 +1826,9 @@ class Item_func_st_x_observer final : public Item_func_coordinate_observer {
  protected:
   const char *func_name() const override { return "st_x"; }
   int coordinate_number(const dd::Spatial_reference_system *srs) const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_x_observer(POS(), args[0]);
+  }
 };
 
 /// This class implements the two-parameter ST_Y function which sets the Y
@@ -1671,6 +1841,9 @@ class Item_func_st_y_mutator final : public Item_func_coordinate_mutator {
  protected:
   const char *func_name() const override { return "st_y"; }
   int coordinate_number(const dd::Spatial_reference_system *srs) const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_y_mutator(POS(), args[0], args[1]);
+  }
 };
 
 /// This class implements the one-parameter ST_Y function which returns the Y
@@ -1683,9 +1856,15 @@ class Item_func_st_y_observer final : public Item_func_coordinate_observer {
  protected:
   const char *func_name() const override { return "st_y"; }
   int coordinate_number(const dd::Spatial_reference_system *srs) const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_y_observer(POS(), args[0]);
+  }
 };
 
 class Item_func_swap_xy : public Item_geometry_func {
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_swap_xy(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     return Item_geometry_func::resolve_type(thd);
@@ -1704,6 +1883,9 @@ class Item_func_numgeometries : public Item_int_func {
   Item_func_numgeometries(const POS &pos, Item *a) : Item_int_func(pos, a) {}
   longlong val_int() override;
   const char *func_name() const override { return "st_numgeometries"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_numgeometries(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     max_length = 10;
@@ -1719,6 +1901,9 @@ class Item_func_numinteriorring : public Item_int_func {
   Item_func_numinteriorring(const POS &pos, Item *a) : Item_int_func(pos, a) {}
   longlong val_int() override;
   const char *func_name() const override { return "st_numinteriorrings"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_numinteriorring(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     max_length = 10;
@@ -1734,6 +1919,9 @@ class Item_func_numpoints : public Item_int_func {
   Item_func_numpoints(const POS &pos, Item *a) : Item_int_func(pos, a) {}
   longlong val_int() override;
   const char *func_name() const override { return "st_numpoints"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_numpoints(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     max_length = 10;
@@ -1747,6 +1935,9 @@ class Item_func_st_area : public Item_real_func {
   Item_func_st_area(const POS &pos, Item *a) : Item_real_func(pos, a) {}
   double val_real() override;
   const char *func_name() const override { return "st_area"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_area(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     // ST_Area returns NULL if the geometry is empty.
@@ -1763,6 +1954,9 @@ class Item_func_st_length : public Item_real_func {
       : Item_real_func(pos, ilist) {}
   double val_real() override;
   const char *func_name() const override { return "st_length"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_length(POS(), nullptr);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
@@ -1780,6 +1974,9 @@ class Item_func_st_srid_mutator : public Item_geometry_func {
       : Item_geometry_func(pos, a, b) {}
   String *val_str(String *) override;
   const char *func_name() const override { return "st_srid"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_srid_mutator(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     if (param_type_is_default(thd, 1, 2, MYSQL_TYPE_LONGLONG)) return true;
@@ -1794,6 +1991,9 @@ class Item_func_st_srid_observer : public Item_int_func {
   Item_func_st_srid_observer(const POS &pos, Item *a) : Item_int_func(pos, a) {}
   longlong val_int() override;
   const char *func_name() const override { return "st_srid"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_srid_observer(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     bool error = Item_int_func::resolve_type(thd);
@@ -1821,6 +2021,9 @@ class Item_func_distance : public Item_real_func {
     */
     maybe_null = true;
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_distance(POS(), nullptr);
+  }
 
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY)) return true;
@@ -1838,6 +2041,9 @@ class Item_func_st_frechet_distance : public Item_real_func {
       : Item_real_func(pos, ilist) {}
   double val_real() override;
   const char *func_name() const override { return "st_frechetdistance"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_frechet_distance(POS(), nullptr);
+  }
   bool resolve_type(THD *thd) override {
     param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY);
     if (Item_real_func::resolve_type(thd)) return true;
@@ -1852,6 +2058,9 @@ class Item_func_st_hausdorff_distance : public Item_real_func {
       : Item_real_func(pos, ilist) {}
   double val_real() override;
   const char *func_name() const override { return "st_hausdorffdistance"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_hausdorff_distance(POS(), nullptr);
+  }
   bool resolve_type(THD *thd) override {
     param_type_is_default(thd, 0, -1, MYSQL_TYPE_GEOMETRY);
     if (Item_real_func::resolve_type(thd)) return true;
@@ -1866,6 +2075,9 @@ class Item_func_st_distance_sphere : public Item_real_func {
       : Item_real_func(pos, ilist) {}
   double val_real() override;
   const char *func_name() const override { return "st_distance_sphere"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_distance_sphere(POS(), nullptr);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 2, MYSQL_TYPE_GEOMETRY)) return true;
     if (param_type_is_default(thd, 2, 3, MYSQL_TYPE_DOUBLE)) return true;
@@ -1880,6 +2092,9 @@ class Item_func_st_transform final : public Item_geometry_func {
   Item_func_st_transform(const POS &pos, Item *a, Item *b)
       : Item_geometry_func(pos, a, b) {}
   String *val_str(String *str) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_st_transform(POS(), args[0], args[1]);
+  }
 
  private:
   const char *func_name() const override { return "st_transform"; }

@@ -508,7 +508,7 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join) {
     case AccessPath::PARALLEL_COLLECTOR_SCAN: {
       char buff[64];
       pq::Collector *collector = path->parallel_collector_scan().collector;
-      snprintf(buff, sizeof(buff), "Gather (slice: 0, workers: %u)",
+      snprintf(buff, sizeof(buff), "Gather (slice: 1, workers: %u)",
                collector->NumWorkers());
       string ret(buff);
       Filesort *merge_sort = collector->MergeSort();

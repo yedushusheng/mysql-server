@@ -1050,7 +1050,8 @@ TABLE *create_tmp_table(THD *thd, Temp_table_param *param,
 
           arg = sum_item->set_arg(thd, i,
                                   new (thd->mem_root) Item_field(new_field));
-
+          if (!arg) return nullptr;
+          
           if (!new_field->is_flag_set(NOT_NULL_FLAG)) {
             null_count++;
             /*

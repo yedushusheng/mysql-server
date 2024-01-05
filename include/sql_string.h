@@ -493,6 +493,13 @@ class String {
                            const CHARSET_INFO *cs);
   bool copy(const char *s, size_t arg_length, const CHARSET_INFO *csfrom,
             const CHARSET_INFO *csto, uint *errors);
+  /**
+    Clone new string. Only allocate new string when the source string has been
+    allocated.
+
+   @param s    source string to clone
+  */
+  bool clone_from(const String &s);  
   bool append(const String &s);
   bool append(const char *s);
   bool append(LEX_STRING *ls) { return append(ls->str, ls->length); }

@@ -1,0 +1,27 @@
+SET max_parallel_degree = 1;
+CREATE TABLE t1(a int primary key, b int, c text, index(b));
+INSERT INTO t1 VALUES(1, 1, '1'),(2, 2, '2');
+EXPLAIN FORMAT=tree SELECT * FROM t1;
+EXPLAIN
+-> Table scan on t1  (cost=1125002.50 rows=10000000)
+
+EXPLAIN FORMAT=tree SELECT b FROM t1 where c = 1;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=1125002.50 rows=1000000)
+    -> Filter: (t1.c = 1)  (cost=1125002.50 rows=1000000)
+        -> Table scan on t1  (cost=1125002.50 rows=10000000)
+
+EXPLAIN FORMAT=tree SELECT a, b FROM t1 WHERE a = 1;
+EXPLAIN
+-> Rows fetched before execution  (cost=0.00..0.00 rows=1)
+
+EXPLAIN FORMAT=tree SELECT a, b FROM t1 WHERE b = 1;
+EXPLAIN
+-> Index lookup on t1 using b (b=1)  (cost=0.35 rows=1)
+
+EXPLAIN FORMAT=tree SELECT b FROM t1 WHERE b between 1 and 2;
+EXPLAIN
+-> Filter: (t1.b between 1 and 2)  (cost=0.46 rows=1)
+    -> Index range scan on t1 using b  (cost=0.46 rows=1)
+
+DROP TABLE t1;

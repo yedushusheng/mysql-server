@@ -180,6 +180,9 @@ class Item_func_md5 final : public Item_str_ascii_func {
  public:
   Item_func_md5(const POS &pos, Item *a) : Item_str_ascii_func(pos, a) {}
   String *val_str_ascii(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_md5(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "md5"; }
 };
@@ -188,6 +191,9 @@ class Item_func_sha : public Item_str_ascii_func {
  public:
   Item_func_sha(const POS &pos, Item *a) : Item_str_ascii_func(pos, a) {}
   String *val_str_ascii(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_sha(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "sha"; }
 };
@@ -197,6 +203,9 @@ class Item_func_sha2 : public Item_str_ascii_func {
   Item_func_sha2(const POS &pos, Item *a, Item *b)
       : Item_str_ascii_func(pos, a, b) {}
   String *val_str_ascii(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_sha2(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "sha2"; }
 };
@@ -207,6 +216,9 @@ class Item_func_to_base64 final : public Item_str_ascii_func {
  public:
   Item_func_to_base64(const POS &pos, Item *a) : Item_str_ascii_func(pos, a) {}
   String *val_str_ascii(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_to_base64(POS(), args[0]);
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "to_base64"; }
 };
@@ -225,6 +237,11 @@ class Item_func_statement_digest final : public Item_str_ascii_func {
     return (func_arg->source == VGS_GENERATED_COLUMN);
   }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_statement_digest(POS(), args[0]);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
+
   bool resolve_type(THD *thd) override;
 
   String *val_str_ascii(String *) override;
@@ -239,6 +256,11 @@ class Item_func_statement_digest_text final : public Item_str_func {
       : Item_str_func(pos, query_string) {}
 
   const char *func_name() const override { return "statement_digest_text"; }
+
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_statement_digest_text(POS(), args[0]);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
 
   /**
     The type is always LONGTEXT, just like the digest_text columns in
@@ -265,6 +287,9 @@ class Item_func_from_base64 final : public Item_str_func {
  public:
   Item_func_from_base64(const POS &pos, Item *a) : Item_str_func(pos, a) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_from_base64(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "from_base64"; }
 };
@@ -281,6 +306,9 @@ class Item_func_aes_encrypt final : public Item_str_func {
 
   bool itemize(Parse_context *pc, Item **res) override;
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_aes_encrypt(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "aes_encrypt"; }
 };
@@ -296,6 +324,9 @@ class Item_func_aes_decrypt : public Item_str_func {
 
   bool itemize(Parse_context *pc, Item **res) override;
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_aes_decrypt(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "aes_decrypt"; }
 };
@@ -310,6 +341,9 @@ class Item_func_random_bytes : public Item_str_func {
   Item_func_random_bytes(const POS &pos, Item *a) : Item_str_func(pos, a) {}
 
   bool itemize(Parse_context *pc, Item **res) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_random_bytes(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override;
   String *val_str(String *a) override;
 
@@ -326,6 +360,9 @@ class Item_func_concat : public Item_str_func {
       : Item_str_func(pos, a, b) {}
 
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_concat(POS(), nullptr);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "concat"; }
 };
@@ -342,6 +379,9 @@ class Item_func_concat_ws : public Item_str_func {
     null_on_null = false;
   }
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_concat_ws(POS(), nullptr);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "concat_ws"; }
 };
@@ -354,6 +394,9 @@ class Item_func_reverse : public Item_str_func {
   Item_func_reverse(const POS &pos, Item *a) : Item_str_func(pos, a) {}
 
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_reverse(args[0]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "reverse"; }
 };
@@ -367,6 +410,9 @@ class Item_func_replace : public Item_str_func {
   Item_func_replace(const POS &pos, Item *org, Item *find, Item *replace)
       : Item_str_func(pos, org, find, replace) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_replace(POS(), args[0], args[1], args[2]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "replace"; }
 };
@@ -381,6 +427,9 @@ class Item_func_insert : public Item_str_func {
                    Item *new_str)
       : Item_str_func(pos, org, start, length, new_str) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_insert(POS(), args[0], args[1], args[2], args[3]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "insert"; }
 };
@@ -393,6 +442,7 @@ class Item_str_conv : public Item_str_func {
 
  public:
   Item_str_conv(const POS &pos, Item *item) : Item_str_func(pos, item) {}
+  bool init_from(const Item *from, Item_clone_context *context) override;
   String *val_str(String *) override;
 };
 
@@ -400,6 +450,9 @@ class Item_func_lower : public Item_str_conv {
  public:
   Item_func_lower(const POS &pos, Item *item) : Item_str_conv(pos, item) {}
   const char *func_name() const override { return "lower"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_lower(POS(), args[0]);
+  }
   bool resolve_type(THD *) override;
 };
 
@@ -407,6 +460,9 @@ class Item_func_upper : public Item_str_conv {
  public:
   Item_func_upper(const POS &pos, Item *item) : Item_str_conv(pos, item) {}
   const char *func_name() const override { return "upper"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_upper(POS(), args[0]);
+  }
   bool resolve_type(THD *) override;
 };
 
@@ -416,6 +472,9 @@ class Item_func_left : public Item_str_func {
  public:
   Item_func_left(const POS &pos, Item *a, Item *b) : Item_str_func(pos, a, b) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_left(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "left"; }
 };
@@ -427,6 +486,9 @@ class Item_func_right : public Item_str_func {
   Item_func_right(const POS &pos, Item *a, Item *b)
       : Item_str_func(pos, a, b) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_right(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "right"; }
 };
@@ -445,6 +507,9 @@ class Item_func_substr : public Item_str_func {
       : super(pos, a, b, c) {}
 
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_substr(args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "substr"; }
 };
@@ -456,6 +521,9 @@ class Item_func_substr_index final : public Item_str_func {
   Item_func_substr_index(const POS &pos, Item *a, Item *b, Item *c)
       : Item_str_func(pos, a, b, c) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_substr_index(POS(), args[0], args[1], args[2]);
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "substring_index"; }
 };
@@ -519,6 +587,10 @@ class Item_func_trim : public Item_str_func {
   }
 
   String *val_str(String *) override;
+  bool init_from(const Item *from, Item_clone_context *context) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_trim(args[0], m_trim_mode);
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override {
     switch (m_trim_mode) {
@@ -545,12 +617,18 @@ class Item_func_ltrim final : public Item_func_trim {
  public:
   Item_func_ltrim(const POS &pos, Item *a)
       : Item_func_trim(pos, a, TRIM_LTRIM) {}
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_ltrim(POS(), args[0]);
+  }
 };
 
 class Item_func_rtrim final : public Item_func_trim {
  public:
   Item_func_rtrim(const POS &pos, Item *a)
       : Item_func_trim(pos, a, TRIM_RTRIM) {}
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_rtrim(POS(), args[0]);
+  }
 };
 
 class Item_func_sysconst : public Item_str_func {
@@ -590,6 +668,9 @@ class Item_func_database : public Item_func_sysconst {
   bool itemize(Parse_context *pc, Item **res) override;
 
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_database(POS());
+  }
   bool resolve_type(THD *) override {
     set_data_type_string(uint32{MAX_FIELD_NAME});
     maybe_null = true;
@@ -631,6 +712,9 @@ class Item_func_user : public Item_func_sysconst {
     func_arg->banned_function_name = func_name();
     return true;
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_user;
+  }
   bool resolve_type(THD *) override {
     set_data_type_string(uint32{USERNAME_CHAR_LENGTH + HOSTNAME_LENGTH + 1U});
     return false;
@@ -664,6 +748,11 @@ class Item_func_current_user : public Item_func_user {
   const Name_string fully_qualified_func_name() const override {
     return NAME_STRING("current_user()");
   }
+  Item *new_item(Item_clone_context *) const override {
+    auto *item = new Item_func_current_user(POS());
+    item->context = context;
+    return item;
+  }
 
   String *val_str(String *) override;
 };
@@ -675,6 +764,9 @@ class Item_func_soundex : public Item_str_func {
   Item_func_soundex(Item *a) : Item_str_func(a) {}
   Item_func_soundex(const POS &pos, Item *a) : Item_str_func(pos, a) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_soundex(args[0]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "soundex"; }
 };
@@ -686,6 +778,9 @@ class Item_func_elt final : public Item_str_func {
   double val_real() override;
   longlong val_int() override;
   String *val_str(String *str) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_elt(POS(), nullptr);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "elt"; }
 };
@@ -711,6 +806,15 @@ class Item_func_make_set final : public Item_str_func {
   }
   void split_sum_func(THD *thd, Ref_item_array ref_item_array,
                       mem_root_deque<Item *> *fields) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_make_set(POS(), item, nullptr);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (super::init_from(from, context)) return true;
+    auto *item = down_cast<const Item_func_make_set *>(from);
+    if (!(this->item = item->item->clone(context))) return true;
+    return false;
+  }
   bool resolve_type(THD *) override;
   void update_used_tables() override;
   const char *func_name() const override { return "make_set"; }
@@ -741,6 +845,11 @@ class Item_func_format final : public Item_str_ascii_func {
 
   MY_LOCALE *get_locale(Item *item);
   String *val_str_ascii(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    auto *item = new Item_func_format(POS(), args[0], args[1]);
+    item->locale = locale;
+    return item;
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "format"; }
   void print(const THD *thd, String *str,
@@ -758,6 +867,9 @@ class Item_func_char final : public Item_str_func {
     collation.set(cs);
   }
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_char(POS(), nullptr);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1, MYSQL_TYPE_LONGLONG)) return true;
     set_data_type_string(arg_count * 4U);
@@ -773,6 +885,9 @@ class Item_func_repeat final : public Item_str_func {
   Item_func_repeat(const POS &pos, Item *arg1, Item *arg2)
       : Item_str_func(pos, arg1, arg2) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_repeat(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "repeat"; }
 };
@@ -781,6 +896,9 @@ class Item_func_space final : public Item_str_func {
  public:
   Item_func_space(const POS &pos, Item *arg1) : Item_str_func(pos, arg1) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_space(POS(), args[0]);
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "space"; }
 };
@@ -792,6 +910,9 @@ class Item_func_rpad final : public Item_str_func {
   Item_func_rpad(const POS &pos, Item *arg1, Item *arg2, Item *arg3)
       : Item_str_func(pos, arg1, arg2, arg3) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_rpad(POS(), args[0], args[1], args[2]);
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "rpad"; }
 };
@@ -803,6 +924,9 @@ class Item_func_lpad final : public Item_str_func {
   Item_func_lpad(const POS &pos, Item *arg1, Item *arg2, Item *arg3)
       : Item_str_func(pos, arg1, arg2, arg3) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_lpad(POS(), args[0], args[1], args[2]);
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "lpad"; }
 };
@@ -817,6 +941,9 @@ class Item_func_uuid_to_bin final : public Item_str_func {
   Item_func_uuid_to_bin(const POS &pos, Item *arg1, Item *arg2)
       : Item_str_func(pos, arg1, arg2) {}
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_uuid_to_bin(POS(), args[0]);
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "uuid_to_bin"; }
 };
@@ -831,6 +958,9 @@ class Item_func_bin_to_uuid final : public Item_str_ascii_func {
   Item_func_bin_to_uuid(const POS &pos, Item *arg1, Item *arg2)
       : Item_str_ascii_func(pos, arg1, arg2) {}
   String *val_str_ascii(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_bin_to_uuid(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "bin_to_uuid"; }
 };
@@ -842,6 +972,9 @@ class Item_func_is_uuid final : public Item_bool_func {
   Item_func_is_uuid(const POS &pos, Item *a) : Item_bool_func(pos, a) {}
   longlong val_int() override;
   const char *func_name() const override { return "is_uuid"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_is_uuid(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     bool res = super::resolve_type(thd);
     maybe_null = true;
@@ -857,6 +990,9 @@ class Item_func_conv final : public Item_str_func {
       : Item_str_func(pos, a, b, c) {}
   const char *func_name() const override { return "conv"; }
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_conv(POS(), args[0], args[1], args[2]);
+  }
   bool resolve_type(THD *) override;
 };
 
@@ -867,6 +1003,9 @@ class Item_func_hex : public Item_str_ascii_func {
   Item_func_hex(const POS &pos, Item *a) : Item_str_ascii_func(pos, a) {}
   const char *func_name() const override { return "hex"; }
   String *val_str_ascii(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_hex(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, -1)) return true;
     set_data_type_string(args[0]->max_length * 2U, default_charset());
@@ -888,6 +1027,9 @@ class Item_func_unhex final : public Item_str_func {
     if (param_type_is_default(thd, 0, -1)) return true;
     set_data_type_string((1U + args[0]->max_length) / 2U, &my_charset_bin);
     return false;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_unhex(POS(), args[0]);
   }
 };
 
@@ -917,6 +1059,9 @@ class Item_func_like_range_min final : public Item_func_like_range {
   Item_func_like_range_min(const POS &pos, Item *a, Item *b)
       : Item_func_like_range(pos, a, b, true) {}
   const char *func_name() const override { return "like_range_min"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_like_range_min(POS(), args[0], args[1]);
+  }
 };
 
 class Item_func_like_range_max final : public Item_func_like_range {
@@ -924,6 +1069,9 @@ class Item_func_like_range_max final : public Item_func_like_range {
   Item_func_like_range_max(const POS &pos, Item *a, Item *b)
       : Item_func_like_range(pos, a, b, false) {}
   const char *func_name() const override { return "like_range_max"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_like_range_max(POS(), args[0], args[1]);
+  }
 };
 #endif
 
@@ -944,6 +1092,12 @@ class Item_typecast_char final : public Item_str_func {
   const char *func_name() const override { return "cast_as_char"; }
   String *val_str(String *a) override;
   bool resolve_type(THD *) override;
+  Item *new_item(Item_clone_context *) const override {
+    auto *item = new Item_typecast_char(args[0], cast_length, cast_cs);
+    item->from_cs = from_cs;
+    item->charset_conversion = charset_conversion;
+    return item;
+  }
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
 };
@@ -961,6 +1115,9 @@ class Item_load_file final : public Item_str_func {
   const char *func_name() const override { return "load_file"; }
   table_map get_initial_pseudo_tables() const override {
     return INNER_TABLE_BIT;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_load_file(POS(), args[0]);
   }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1)) return true;
@@ -988,6 +1145,9 @@ class Item_func_export_set final : public Item_str_func {
                        Item *e)
       : Item_str_func(pos, a, b, c, d, e) {}
   String *val_str(String *str) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_export_set(POS(), args[0], args[1], args[2]);
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "export_set"; }
 };
@@ -999,6 +1159,9 @@ class Item_func_quote : public Item_str_func {
   Item_func_quote(const POS &pos, Item *a) : Item_str_func(pos, a) {}
   const char *func_name() const override { return "quote"; }
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_quote(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override;
 };
 
@@ -1047,6 +1210,12 @@ class Item_func_conv_charset final : public Item_str_func {
     }
   }
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    auto *item = new Item_func_conv_charset(POS(), args[0], conv_charset);
+    item->safe = safe;
+    item->use_cached_value = use_cached_value;
+    return item;
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "convert"; }
   void print(const THD *thd, String *str,
@@ -1065,6 +1234,9 @@ class Item_func_set_collation final : public Item_str_func {
 
   bool itemize(Parse_context *pc, Item **res) override;
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_set_collation(POS(), args[0], collation_string);
+  }
   bool resolve_type(THD *) override;
   bool eq(const Item *item, bool binary_cmp) const override;
   const char *func_name() const override { return "collate"; }
@@ -1084,6 +1256,9 @@ class Item_func_charset final : public Item_str_func {
   }
   String *val_str(String *) override;
   const char *func_name() const override { return "charset"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_charset(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     set_data_type_string(64U, system_charset_info);
     maybe_null = false;
@@ -1098,6 +1273,9 @@ class Item_func_collation : public Item_str_func {
   }
   String *val_str(String *) override;
   const char *func_name() const override { return "collation"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_collation(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (Item_str_func::resolve_type(thd)) return true;
     set_data_type_string(64U, system_charset_info);
@@ -1132,6 +1310,17 @@ class Item_func_weight_string final : public Item_str_func {
   const char *func_name() const override { return "weight_string"; }
   bool eq(const Item *item, bool binary_cmp) const override;
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_weight_string(POS(), args[0], result_length,
+                                       num_codepoints, flags, as_binary);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (super::init_from(from, context)) return true;
+    // Refer to resolve_type()
+    if (args[0]->type() == FIELD_ITEM && args[0]->is_temporal())
+      m_field_ref = down_cast<Item_field *>(args[0]);
+    return false;
+  }
   bool resolve_type(THD *) override;
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
@@ -1145,6 +1334,9 @@ class Item_func_crc32 final : public Item_int_func {
     unsigned_flag = true;
   }
   const char *func_name() const override { return "crc32"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_crc32(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1)) return true;
     max_length = 10;
@@ -1160,6 +1352,9 @@ class Item_func_uncompressed_length final : public Item_int_func {
   Item_func_uncompressed_length(const POS &pos, Item *a)
       : Item_int_func(pos, a) {}
   const char *func_name() const override { return "uncompressed_length"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_uncompressed_length(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1)) return true;
     max_length = 10;
@@ -1173,6 +1368,9 @@ class Item_func_compress final : public Item_str_func {
 
  public:
   Item_func_compress(const POS &pos, Item *a) : Item_str_func(pos, a) {}
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_compress(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (Item_str_func::resolve_type(thd)) return true;
     set_data_type_string((args[0]->max_length * 120U) / 100U + 12U);
@@ -1187,6 +1385,9 @@ class Item_func_uncompress final : public Item_str_func {
 
  public:
   Item_func_uncompress(const POS &pos, Item *a) : Item_str_func(pos, a) {}
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_uncompress(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (Item_str_func::resolve_type(thd)) return true;
     maybe_null = true;
@@ -1208,6 +1409,9 @@ class Item_func_uuid final : public Item_str_func {
   table_map get_initial_pseudo_tables() const override {
     return RAND_TABLE_BIT;
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_uuid;
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "uuid"; }
   String *val_str(String *) override;
@@ -1227,6 +1431,9 @@ class Item_func_gtid_subtract final : public Item_str_ascii_func {
  public:
   Item_func_gtid_subtract(const POS &pos, Item *a, Item *b)
       : Item_str_ascii_func(pos, a, b) {}
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_gtid_subtract(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "gtid_subtract"; }
   String *val_str_ascii(String *) override;
@@ -1242,6 +1449,9 @@ class Item_func_current_role final : public Item_func_sysconst {
   const char *func_name() const override { return "current_role"; }
   void cleanup() override;
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_current_role;
+  }
   bool resolve_type(THD *) override {
     set_data_type_string(MAX_BLOB_WIDTH, system_charset_info);
     return false;
@@ -1273,7 +1483,9 @@ class Item_func_roles_graphml final : public Item_func_sysconst {
       : super(pos), value_cache_set(false) {}
   String *val_str(String *) override;
   void cleanup() override;
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_roles_graphml;
+  }
   bool resolve_type(THD *) override {
     set_data_type_string(MAX_BLOB_WIDTH, system_charset_info);
     return false;
@@ -1306,6 +1518,10 @@ class Item_func_get_dd_column_privileges final : public Item_str_func {
       : Item_str_func(pos, a, b, c) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_get_dd_column_privileges(POS(), args[0], args[1],
+                                                  args[2]);
+  }
   bool resolve_type(THD *) override {
     /*
       There are 14 kinds of grants, with a max length
@@ -1330,6 +1546,10 @@ class Item_func_get_dd_create_options final : public Item_str_func {
       : Item_str_func(pos, a, b, c) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_get_dd_create_options(POS(), args[0], args[1],
+                                               args[2]);
+  }
   bool resolve_type(THD *) override {
     // maximum string length of all options is expected
     // to be less than 256 characters.
@@ -1351,6 +1571,9 @@ class Item_func_get_dd_schema_options final : public Item_str_func {
       : Item_str_func(pos, a) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_get_dd_schema_options(POS(), args[0]);
+  }
   bool resolve_type(THD *) override {
     // maximum string length of all options is expected
     // to be less than 256 characters.
@@ -1372,6 +1595,9 @@ class Item_func_internal_get_comment_or_error final : public Item_str_func {
       : Item_str_func(pos, list) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_internal_get_comment_or_error(POS(), nullptr);
+  }
   bool resolve_type(THD *) override {
     /*
       maximum expected string length to be less than 2048 characters,
@@ -1398,6 +1624,9 @@ class Item_func_get_dd_tablespace_private_data final : public Item_str_func {
       : Item_str_func(pos, a, b) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_get_dd_tablespace_private_data(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *) override {
     /* maximum string length of the property value is expected
     to be less than 256 characters. */
@@ -1421,6 +1650,9 @@ class Item_func_get_dd_index_private_data final : public Item_str_func {
       : Item_str_func(pos, a, b) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_get_dd_index_private_data(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *) override {
     /* maximum string length of the property value is expected
     to be less than 256 characters. */
@@ -1442,6 +1674,9 @@ class Item_func_get_partition_nodegroup final : public Item_str_func {
       : Item_str_func(pos, a) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_get_partition_nodegroup(POS(), args[0]);
+  }
   bool resolve_type(THD *) override {
     // maximum string length of all options is expected
     // to be less than 256 characters.
@@ -1466,6 +1701,10 @@ class Item_func_internal_tablespace_type : public Item_str_func {
       : Item_str_func(pos, a, b, c, d) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_internal_tablespace_type(POS(), args[0], args[1],
+                                                  args[2], args[3]);
+  }
   bool resolve_type(THD *) override {
     // maximum string length of all options is expected
     // to be less than 256 characters.
@@ -1488,6 +1727,10 @@ class Item_func_internal_tablespace_logfile_group_name : public Item_str_func {
       : Item_str_func(pos, a, b, c, d) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_internal_tablespace_logfile_group_name(
+        POS(), args[0], args[1], args[2], args[3]);
+  }
   bool resolve_type(THD *) override {
     // maximum string length of all options is expected
     // to be less than 256 characters.
@@ -1512,6 +1755,10 @@ class Item_func_internal_tablespace_status : public Item_str_func {
       : Item_str_func(pos, a, b, c, d) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_internal_tablespace_status(POS(), args[0], args[1],
+                                                    args[2], args[3]);
+  }
   bool resolve_type(THD *) override {
     // maximum string length of all options is expected
     // to be less than 256 characters.
@@ -1535,6 +1782,10 @@ class Item_func_internal_tablespace_row_format : public Item_str_func {
       : Item_str_func(pos, a, b, c, d) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_internal_tablespace_row_format(POS(), args[0], args[1],
+                                                        args[2], args[3]);
+  }
   bool resolve_type(THD *) override {
     // maximum string length of all options is expected
     // to be less than 256 characters.
@@ -1559,6 +1810,10 @@ class Item_func_internal_tablespace_extra : public Item_str_func {
       : Item_str_func(pos, a, b, c, d) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_internal_tablespace_extra(POS(), args[0], args[1],
+                                                   args[2], args[3]);
+  }
   bool resolve_type(THD *) override {
     // maximum string length of all options is expected
     // to be less than 256 characters.
@@ -1579,6 +1834,9 @@ class Item_func_convert_cpu_id_mask final : public Item_str_func {
   Item_func_convert_cpu_id_mask(const POS &pos, Item *list)
       : Item_str_func(pos, list) {}
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_convert_cpu_id_mask(POS(), args[0]);
+  }
   bool resolve_type(THD *) override {
     maybe_null = false;
     set_data_type_string(1024U, &my_charset_bin);
@@ -1596,6 +1854,9 @@ class Item_func_get_dd_property_key_value final : public Item_str_func {
       : Item_str_func(pos, a, b) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_get_dd_property_key_value(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *) override {
     set_data_type_string(MAX_BLOB_WIDTH, system_charset_info);
     maybe_null = true;
@@ -1615,6 +1876,9 @@ class Item_func_remove_dd_property_key final : public Item_str_func {
       : Item_str_func(pos, a, b) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_remove_dd_property_key(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *) override {
     set_data_type_string(MAX_BLOB_WIDTH, system_charset_info);
     maybe_null = true;
@@ -1634,6 +1898,10 @@ class Item_func_convert_interval_to_user_interval final : public Item_str_func {
       : Item_str_func(pos, a, b) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_convert_interval_to_user_interval(POS(), args[0],
+                                                           args[1]);
+  }
   bool resolve_type(THD *) override {
     // maximum string length of all options is expected
     // to be less than 256 characters.
@@ -1657,6 +1925,9 @@ class Item_func_internal_get_username final : public Item_str_func {
       : Item_str_func(pos, list) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_internal_get_username(POS(), nullptr);
+  }
   bool resolve_type(THD *) override {
     set_data_type_string(uint32(USERNAME_LENGTH + 1), system_charset_info);
     maybe_null = true;
@@ -1676,6 +1947,9 @@ class Item_func_internal_get_hostname final : public Item_str_func {
       : Item_str_func(pos, list) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_internal_get_hostname(POS(), nullptr);
+  }
   bool resolve_type(THD *) override {
     set_data_type_string(uint32(HOSTNAME_LENGTH + 1), system_charset_info);
     maybe_null = true;
@@ -1695,6 +1969,9 @@ class Item_func_internal_get_enabled_role_json final : public Item_str_func {
       : Item_str_func(pos) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_internal_get_enabled_role_json(POS());
+  }
   bool resolve_type(THD *) override {
     set_data_type_string(uint32(MAX_BLOB_WIDTH), system_charset_info);
     maybe_null = true;
@@ -1716,6 +1993,9 @@ class Item_func_internal_get_mandatory_roles_json final : public Item_str_func {
       : Item_str_func(pos) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_internal_get_mandatory_roles_json(POS());
+  }
   bool resolve_type(THD *) override {
     set_data_type_string(uint32(MAX_BLOB_WIDTH), system_charset_info);
     maybe_null = true;
@@ -1737,6 +2017,9 @@ class Item_func_internal_get_dd_column_extra final : public Item_str_func {
       : Item_str_func(pos, list) {}
 
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_internal_get_dd_column_extra(POS(), nullptr);
+  }
   bool resolve_type(THD *) override {
     // maximum string length of all options is expected
     // to be less than 256 characters.

@@ -772,55 +772,50 @@ class Item_tree_walker {
   const Item *stopped_at_item;
 };
 
-enum class Item_parallel_safe { Safe, Unsafe, Restrict };
+/**
+  The planner classifies operations involved in a query as either parallel safe,
+  parallel restricted, or parallel unsafe. A parallel safe operation is one that
+  does not conflict with the use of parallel query. A parallel restricted
+  operation is one that cannot be performed in a parallel worker, but that can
+  be performed in the leader while parallel query is in use. Therefore, parallel
+  restricted operations can never occur below a Gather node, but can occur
+  elsewhere in a plan that contains such a node. A parallel unsafe operation is
+  one that cannot be performed while parallel query is in use, not even in the
+  leader. When a query contains anything that is parallel unsafe, parallel query
+  is completely disabled for that query.
+*/
+enum class Item_parallel_safe { Safe, Restricted, Unsafe };
+class Item_sum_hybrid_field;
+class Item_ref;
+class Item_func_get_user_var;
 class Item_clone_context {
  public:
-  enum Fix_func_type {
-    FIELD_FIX_FUNC = 0,
-    FUNC_SET_ARG_FUNC,
-    SUM_FIX_FUNC,
-    REF_FIX_FUNC
-  };
-  struct Func_set_arg {
-    uint arg_index;
-    bool is_set;
-  };
   Item_clone_context(THD *thd, Query_block *query_block)
-      : m_thd(thd), m_target_query_block(query_block) {}
+      : m_thd(thd), m_query_block(query_block) {}
   THD *thd() const { return m_thd; }
   MEM_ROOT *mem_root() const;
-  Query_block *target_query_block() const { return m_target_query_block; }
+  Query_block *query_block() const { return m_query_block; }
+  /// Rebind table_ref, field, field_index for Item_field
+  virtual void rebind_field(Item_field *item, const Item_field *from) = 0;
+  /// Rebind field for Item_sum_hybrid_field
+  virtual void rebind_hybrid_field(Item_sum_hybrid_field *item,
+                                   const Item_sum_hybrid_field *from) = 0;
+  /// Replace arguments for Item_sum
+  virtual Item *replace_sum_arg(Item_sum *func [[maybe_unused]],
+                                const Item *arg [[maybe_unused]]) {
+    return nullptr;
+  }
+  virtual void repoint_ref(Item_ref *item [[maybe_unused]],
+                           const Item_ref *from [[maybe_unused]]) {
+    assert(0);
+  }
+  virtual void rebind_user_var(Item_func_get_user_var *item [[maybe_unused]]) {}
 
-  void set_fix_func(Fix_func_type func_type,
-                    std::function<bool(Item *, uchar *)> fix_func) {
-    m_fix_funcs[func_type] = fix_func;
-  }
-
-  bool fix_cloned_field(Item *item, uchar *data) {
-    if (m_fix_funcs[FIELD_FIX_FUNC])
-      return m_fix_funcs[FIELD_FIX_FUNC](item, data);
-    return false;
-  }
-  bool set_cloned_func_arg(Item *item, uchar *data) {
-    if (m_fix_funcs[FUNC_SET_ARG_FUNC])
-      return m_fix_funcs[FUNC_SET_ARG_FUNC](item, data);
-    return false;
-  }
-
-  bool fix_cloned_sum(Item *item, uchar *data) {
-    if (m_fix_funcs[SUM_FIX_FUNC]) return m_fix_funcs[SUM_FIX_FUNC](item, data);
-    return false;
-  }
-
-  bool fix_cloned_ref(Item *item, uchar *data) {
-    assert(m_fix_funcs[REF_FIX_FUNC]);
-    return m_fix_funcs[REF_FIX_FUNC](item, data);
-  }
- private:
+ protected:
+  // Target thread descriptor
   THD *m_thd;
-  Query_block *m_target_query_block;
-  std::function<bool(Item *, uchar *)> m_fix_funcs[4] = {nullptr, nullptr,
-                                                         nullptr, nullptr};
+  // Target query block
+  Query_block *m_query_block;
 };
 
 /** NOTE:约束条件是指WHERE或JOIN/ON或HAVING子句中的谓词表达式,
@@ -2153,8 +2148,15 @@ class Item : public Parse_tree_node {
   */
   virtual Item *clone_item() const { return nullptr; }
   Item *clone(Item_clone_context *context) const;
-  virtual Item_parallel_safe parallel_safe() {
-    return Item_parallel_safe::Safe;
+  /**
+    Clone a new object from this instance for a new execution.
+   */
+  Item *clone(Item_clone_context *context) const;
+  /**
+    How to deal with this item in a parallel plan.
+   */
+  virtual Item_parallel_safe parallel_safe() const {
+    return Item_parallel_safe::Unsafe;
   }
   virtual cond_result eq_cmp_result() const { return COND_OK; }
   inline uint float_length(uint decimals_par) const {
@@ -3473,6 +3475,9 @@ class Item_basic_constant : public Item {
     //       and remove the call to Item::cleanup()
     Item::cleanup();
   }
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Safe;
+  }  
   bool basic_const_item() const override { return true; }
   void set_str_value(String *str) { str_value = *str; }
 };
@@ -3926,6 +3931,9 @@ class Item_ident : public Item {
   void print(const THD *thd, String *str, enum_query_type query_type,
              const char *db_name_arg, const char *table_name_arg) const;
   bool init_from(const Item *from, Item_clone_context *context) override;
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Safe;
+  }
 
  public:
   ///< Argument object to change_context_processor
@@ -4273,8 +4281,10 @@ class Item_field : public Item_ident {
   bool init_from(const Item *from, Item_clone_context *context) override;
   Item *new_item(Item_clone_context *context) const override {
     auto *item = new Item_field(context->thd(), const_cast<Item_field *>(this));
-    // Avoid use original field
+    // Avoid access original field
+    item->table_ref = nullptr;
     item->field = nullptr;
+    item->field_index = NO_FIELD_INDEX;
     return item;
   }
   /**
@@ -4381,7 +4391,7 @@ class Item_null : public Item_basic_constant {
   bool send(Protocol *protocol, String *str) override;
   Item_result result_type() const override { return STRING_RESULT; }
   Item *clone_item() const override { return new Item_null(item_name); }
-  Item *new_item(Item_clone_context *) const override { return clone_item(); }
+  Item *new_item(Item_clone_context *) const override { return new Item_null; }
   bool is_null() override { return true; }
 
   void print(const THD *, String *str,
@@ -4633,7 +4643,14 @@ class Item_param final : public Item, private Settable_routine_parameter {
   */
   Item *safe_charset_converter(THD *thd, const CHARSET_INFO *tocs) override;
   Item *clone_item() const override;
-  Item *new_item(Item_clone_context *) const override { return clone_item(); }
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_param(POS(), context->mem_root(), pos_in_query);
+  }
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Safe;
+  }
+  bool init_from(const Item *item, Item_clone_context *context) override;
+
   /*
     Implement by-value equality evaluation if parameter value
     is set and is a basic constant (integer, real or string).
@@ -4786,7 +4803,9 @@ class Item_int : public Item_num {
   }
   bool get_time(MYSQL_TIME *ltime) override { return get_time_from_int(ltime); }
   Item *clone_item() const override { return new Item_int(this); }
-  Item *new_item(Item_clone_context *) const override { return clone_item(); }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_int(value);
+  }
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
   Item_num *neg() override {
@@ -4808,6 +4827,7 @@ class Item_int_0 final : public Item_int {
  public:
   Item_int_0() : Item_int(NAME_STRING("0"), 0, 1) {}
   explicit Item_int_0(const POS &pos) : Item_int(pos, NAME_STRING("0"), 0, 1) {}
+  Item *new_item(Item_clone_context *) const override { return new Item_int_0; }
 };
 
 /*
@@ -4844,6 +4864,9 @@ class Item_temporal final : public Item_int {
   Item *clone_item() const override {
     return new Item_temporal(data_type(), value);
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_temporal(data_type(), value);
+  }  
   longlong val_time_temporal() override { return val_int(); }
   longlong val_date_temporal() override { return val_int(); }
   bool get_date(MYSQL_TIME *, my_time_flags_t) override {
@@ -4884,6 +4907,9 @@ class Item_uint : public Item_int {
   Item *clone_item() const override {
     return new Item_uint(item_name, value, max_length);
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_uint(value);
+  }  
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
   Item_num *neg() override;
@@ -4924,7 +4950,10 @@ class Item_decimal : public Item_num {
   Item *clone_item() const override {
     return new Item_decimal(item_name, &decimal_value, decimals, max_length);
   }
-  Item *new_item(Item_clone_context *) const override { return clone_item(); }
+  Item *new_item(Item_clone_context *) const override {
+    auto *dec = const_cast<my_decimal *>(&decimal_value);
+    return new Item_decimal(dec);
+  }  
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
   Item_num *neg() override {
@@ -5012,7 +5041,9 @@ class Item_float : public Item_num {
   Item *clone_item() const override {
     return new Item_float(item_name, value, decimals, max_length);
   }
-  Item *new_item(Item_clone_context *) const override { return clone_item(); }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_float(value, decimals);
+  }  
   Item_num *neg() override {
     value = -value;
     return this;
@@ -5033,7 +5064,9 @@ class Item_func_pi : public Item_float {
   void print(const THD *, String *str, enum_query_type) const override {
     str->append(func_name);
   }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_pi(POS());
+  }
   Item *safe_charset_converter(THD *thd, const CHARSET_INFO *tocs) override;
 };
 
@@ -5175,7 +5208,10 @@ class Item_string : public Item_basic_constant {
     return new Item_string(static_cast<Name_string>(item_name), str_value.ptr(),
                            str_value.length(), collation.collation);
   }
-  Item *new_item(Item_clone_context *) const override { return clone_item(); }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_string(str_value.ptr(), str_value.length(),
+                           collation.collation);
+  }
   Item *safe_charset_converter(THD *thd, const CHARSET_INFO *tocs) override;
   Item *charset_converter(THD *thd, const CHARSET_INFO *tocs, bool lossless);
   inline void append(char *str, size_t length) {
@@ -5256,6 +5292,12 @@ class Item_static_string_func : public Item_string {
     str->append(func_name);
   }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_static_string_func(func_name, str_value.ptr(),
+                                       str_value.length(), collation.collation,
+                                       collation.derivation);
+  }
+
   bool check_partition_func_processor(uchar *) override { return true; }
   bool check_function_as_value_generator(uchar *args) override {
     Check_function_as_value_generator_parameters *func_arg =
@@ -5283,6 +5325,9 @@ class Item_blob final : public Item_partition_func_safe_string {
     set_data_type(MYSQL_TYPE_BLOB);
   }
   enum Type type() const override { return TYPE_HOLDER; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_blob(item_name.ptr(), max_length);
+  }
   bool check_function_as_value_generator(uchar *args) override {
     Check_function_as_value_generator_parameters *func_arg =
         pointer_cast<Check_function_as_value_generator_parameters *>(args);
@@ -5305,6 +5350,10 @@ class Item_empty_string : public Item_partition_func_safe_string {
                                         cs ? cs : &my_charset_utf8_general_ci) {
     max_length = static_cast<uint32>(length * collation.collation->mbmaxlen);
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_empty_string(item_name.ptr(), max_length,
+                                 collation.collation);
+  }
   void make_field(Send_field *field) override;
 };
 
@@ -5316,6 +5365,9 @@ class Item_return_int : public Item_int {
                  value_arg, length) {
     set_data_type(field_type_arg);
     unsigned_flag = true;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_return_int(item_name.ptr(), max_length, data_type(), value);
   }
 };
 
@@ -5381,6 +5433,10 @@ class Item_bin_string final : public Item_hex_string {
   }
   Item_bin_string(const POS &pos, const LEX_STRING &literal) : super(pos) {
     bin_string_init(literal.str, literal.length);
+  }
+
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_bin_string(str_value.ptr(), str_value.length());
   }
 
   static LEX_CSTRING make_bin_str(const char *str, size_t str_length);
@@ -5865,6 +5921,11 @@ class Item_outer_ref final : public Item_ref {
   }
   table_map not_null_tables() const override { return 0; }
 
+  // PQTODO: don't support yet.
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Unsafe;
+  }
+
   Ref_Type ref_type() const override { return OUTER_REF; }
 };
 
@@ -5898,6 +5959,14 @@ class Item_ref_null_helper final : public Item_ref {
   bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzydate) override;
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_ref_null_helper(context, owner, nullptr);
+  }
+  // PQTODO: don't support yet.
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Unsafe;
+  }
+
   /*
     we add RAND_TABLE_BIT to prevent moving this item from HAVING to WHERE
   */
@@ -5931,6 +6000,10 @@ class Item_int_with_ref : public Item_int {
     set_data_type(field_type);
     unsigned_flag = unsigned_arg;
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_int_with_ref(data_type(), value, ref, unsigned_flag);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
   Item *clone_item() const override;
   Item *real_item() override { return ref; }
 };
@@ -5944,6 +6017,10 @@ class Item_temporal_with_ref : public Item_int_with_ref {
                          longlong i, Item *ref_arg, bool unsigned_arg)
       : Item_int_with_ref(field_type_arg, i, ref_arg, unsigned_arg) {
     decimals = decimals_arg;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_temporal_with_ref(data_type(), decimals, value, ref,
+                                      unsigned_flag);
   }
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
@@ -5976,6 +6053,9 @@ class Item_datetime_with_ref final : public Item_temporal_with_ref {
                          longlong i, Item *ref_arg)
       : Item_temporal_with_ref(field_type_arg, decimals_arg, i, ref_arg, true) {
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_datetime_with_ref(data_type(), decimals, value, ref);
+  }
   Item *clone_item() const override;
   longlong val_date_temporal() override { return val_int(); }
   longlong val_time_temporal() override {
@@ -6001,6 +6081,9 @@ class Item_time_with_ref final : public Item_temporal_with_ref {
   Item_time_with_ref(uint8 decimals_arg, longlong i, Item *ref_arg)
       : Item_temporal_with_ref(MYSQL_TYPE_TIME, decimals_arg, i, ref_arg,
                                false) {}
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_time_with_ref(decimals, value, ref);
+  }
   Item *clone_item() const override;
   longlong val_time_temporal() override { return val_int(); }
   longlong val_date_temporal() override {
@@ -6058,6 +6141,14 @@ class Item_metadata_copy final : public Item {
   bool val_json(Json_wrapper *) override {
     DBUG_ASSERT(false);
     return true;
+  }
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Safe;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    auto *item = new Item_metadata_copy(const_cast<Item_metadata_copy *>(this));
+    item->cached_result_type = cached_result_type;
+    return item;
   }
 
  private:
@@ -6170,6 +6261,11 @@ class Item_default_value final : public Item_field {
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
   table_map used_tables() const override { return 0; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_default_value(POS(), arg);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
+
   Item *get_tmp_table_item(THD *thd) override { return copy_or_same(thd); }
 
   /*
@@ -6192,6 +6288,8 @@ class Item_default_value final : public Item_field {
   Item *transform(Item_transformer transformer, uchar *args) override;
 
  private:
+  // For cloned object, we just evaluate this item in query execution.
+  bool only_evaluate{false};
   /// The argument for this function
   Item *arg;
   /// Pointer to row buffer that was used to calculate field value offset
@@ -6244,6 +6342,9 @@ class Item_insert_value final : public Item_field {
   bool fix_fields(THD *, Item **) override;
   void bind_fields() override;
   void cleanup() override;
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Unsafe;
+  }
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
   /*
@@ -6331,6 +6432,9 @@ class Item_trigger_field final : public Item_field,
   bool fix_fields(THD *, Item **) override;
   void bind_fields() override;
   bool check_column_privileges(uchar *arg) override;
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Unsafe;
+  }
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
   table_map used_tables() const override { return INNER_TABLE_BIT; }
@@ -6470,6 +6574,12 @@ class Item_cache : public Item_basic_constant {
    */
   bool has_value();
 
+  bool init_from(const Item *from, Item_clone_context *context) override;
+  Item_parallel_safe parallel_safe() const override {
+    return example ? example->parallel_safe() : Item_parallel_safe::Safe;
+  }
+  virtual bool copy_cached_value(const Item_cache *from) = 0;
+
   /**
     If this item caches a field value, return pointer to underlying field.
 
@@ -6550,6 +6660,17 @@ class Item_cache_int final : public Item_cache {
     return get_date_from_int(ltime, fuzzydate);
   }
   bool get_time(MYSQL_TIME *ltime) override { return get_time_from_int(ltime); }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_cache_int;
+  }
+  bool copy_cached_value(const Item_cache *from) override {
+    auto *item = down_cast<const Item_cache_int *>(from);
+    if (!item->value_cached) return false;
+    value_cached = true;
+    null_value = from->null_value;
+    value = item->value;
+    return false;
+  }
   Item_result result_type() const override { return INT_RESULT; }
   bool cache_value() override;
 };
@@ -6569,6 +6690,17 @@ class Item_cache_real final : public Item_cache {
   }
   bool get_time(MYSQL_TIME *ltime) override {
     return get_time_from_real(ltime);
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_cache_real;
+  }
+  bool copy_cached_value(const Item_cache *from) override {
+    auto *item = down_cast<const Item_cache_real *>(from);
+    if (!item->value_cached) return false;
+    value_cached = true;
+    null_value = from->null_value;
+    value = item->value;
+    return false;
   }
   Item_result result_type() const override { return REAL_RESULT; }
   bool cache_value() override;
@@ -6591,6 +6723,17 @@ class Item_cache_decimal final : public Item_cache {
   }
   bool get_time(MYSQL_TIME *ltime) override {
     return get_time_from_decimal(ltime);
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_cache_decimal;
+  }
+  bool copy_cached_value(const Item_cache *from) override {
+    auto *item = down_cast<const Item_cache_decimal *>(from);
+    if (!item->value_cached) return false;
+    value_cached = true;
+    null_value = from->null_value;
+    decimal_value = item->decimal_value;
+    return false;
   }
   Item_result result_type() const override { return DECIMAL_RESULT; }
   bool cache_value() override;
@@ -6625,6 +6768,10 @@ class Item_cache_str final : public Item_cache {
   bool get_time(MYSQL_TIME *ltime) override {
     return get_time_from_string(ltime);
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_cache_str(this);
+  }
+  bool copy_cached_value(const Item_cache *from) override;
   Item_result result_type() const override { return STRING_RESULT; }
   const CHARSET_INFO *charset() const { return value->charset(); }
   bool cache_value() override;
@@ -6675,6 +6822,11 @@ class Item_cache_row final : public Item_cache {
     return true;
   }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_cache_row;
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
+  bool copy_cached_value(const Item_cache *from) override;
   Item_result result_type() const override { return ROW_RESULT; }
 
   uint cols() const override { return item_count; }
@@ -6710,6 +6862,11 @@ class Item_cache_datetime : public Item_cache {
   my_decimal *val_decimal(my_decimal *) override;
   bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzydate) override;
   bool get_time(MYSQL_TIME *ltime) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_cache_datetime(data_type());
+  }
+  bool copy_cached_value(const Item_cache *from) override;
+
   Item_result result_type() const override { return STRING_RESULT; }
   /*
     In order to avoid INT <-> STRING conversion of a DATETIME value
@@ -6747,6 +6904,10 @@ class Item_cache_json : public Item_cache {
   my_decimal *val_decimal(my_decimal *val) override;
   bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzydate) override;
   bool get_time(MYSQL_TIME *ltime) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_cache_json;
+  }
+  bool copy_cached_value(const Item_cache *from) override;
   /// Sort cached data. Only arrays are affected.
   void sort();
   /// Returns true when cached value is array and it's sorted
@@ -6781,6 +6942,17 @@ class Item_aggregate_type : public Item {
   bool join_types(THD *, Item *);
   Field *make_field_by_type(TABLE *table, bool strict);
   static uint32 display_length(Item *item);
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Safe;
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (Item::init_from(from, context)) return true;
+    auto *item = down_cast<const Item_aggregate_type *>(from);
+    m_typelib = item->m_typelib;
+    geometry_type = item->geometry_type;
+
+    return false;
+  }
   Field::geometry_type get_geometry_type() const override {
     return geometry_type;
   }
@@ -6816,6 +6988,10 @@ class Item_type_holder final : public Item_aggregate_type {
   longlong val_int() override;
   my_decimal *val_decimal(my_decimal *) override;
   String *val_str(String *) override;
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_type_holder(context->thd(),
+                                const_cast<Item_type_holder *>(this));
+  }
   bool get_date(MYSQL_TIME *, my_time_flags_t) override;
   bool get_time(MYSQL_TIME *) override;
 };
@@ -6864,6 +7040,18 @@ class Item_values_column final : public Item_aggregate_type {
   bool is_null() override;
   bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzydate) override;
   bool get_time(MYSQL_TIME *ltime) override;
+
+  Item *new_item(Item_clone_context *context) const override {
+    return new Item_values_column(context->thd(),
+                                  const_cast<Item_values_column *>(this));
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (super::init_from(from, context)) return true;
+    auto *item = down_cast<const Item_values_column *>(from);
+    if (item->m_value_ref) m_value_ref = m_value_ref->clone(context);
+
+    return false;
+  }
 
   enum Type type() const override { return VALUES_COLUMN_ITEM; }
   void set_value(Item *new_value) { m_value_ref = new_value; }

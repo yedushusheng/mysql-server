@@ -68,6 +68,7 @@ class Item_xml_str_func : public Item_str_func {
       : Item_str_func(pos, a, b, c), nodeset_func(nullptr) {
     maybe_null = true;
   }
+  bool init_from(const Item *from, Item_clone_context *context) override;
   bool resolve_type(THD *thd) override;
   void cleanup() override {
     Item_str_func::cleanup();
@@ -97,6 +98,9 @@ class Item_func_xml_extractvalue final : public Item_xml_str_func {
   Item_func_xml_extractvalue(const POS &pos, Item *a, Item *b)
       : Item_xml_str_func(pos, a, b) {}
   const char *func_name() const override { return "extractvalue"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_xml_extractvalue(POS(), args[0], args[1]);
+  }
   String *val_str(String *) override;
 };
 
@@ -107,6 +111,9 @@ class Item_func_xml_update final : public Item_xml_str_func {
   Item_func_xml_update(const POS &pos, Item *a, Item *b, Item *c)
       : Item_xml_str_func(pos, a, b, c) {}
   const char *func_name() const override { return "updatexml"; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_xml_update(POS(), args[0], args[1], args[2]);
+  }
   String *val_str(String *) override;
   bool check_function_as_value_generator(uchar *checker_args) override {
     auto *func_arg =

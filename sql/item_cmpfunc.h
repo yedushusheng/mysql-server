@@ -306,13 +306,15 @@ class Item_bool_func : public Item_int_func {
   Item_bool_func(THD *thd, Item_bool_func *item)
       : Item_int_func(thd, item),
         m_created_by_in2exists(item->m_created_by_in2exists) {}
+
+ public:
+  bool is_bool_func() const override { return true; }
   bool init_from(const Item *from, Item_clone_context *context) override {
     if (Item_int_func::init_from(from, context)) return true;
     m_created_by_in2exists =
         down_cast<const Item_bool_func *>(from)->m_created_by_in2exists;
     return false;
-  }  
-  bool is_bool_func() const override { return true; }
+  }
   bool resolve_type(THD *thd) override {
     max_length = 1;
     return Item_int_func::resolve_type(thd);
@@ -373,6 +375,9 @@ class Item_func_true : public Item_func_bool_const {
   void print(const THD *, String *str, enum_query_type) const override {
     str->append("true");
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_true;
+  }
   enum Functype functype() const override { return TRUE_FUNC; }
 };
 
@@ -385,6 +390,9 @@ class Item_func_false : public Item_func_bool_const {
   const char *func_name() const override { return "false"; }
   bool val_bool() override { return false; }
   longlong val_int() override { return 0; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_false;
+  }
   void print(const THD *, String *str, enum_query_type) const override {
     str->append("false");
   }
@@ -399,6 +407,9 @@ class Item_func_truth final : public Item_bool_func {
 
  public:
   longlong val_int() override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_truth(args[0], truth_test);
+  }
   bool resolve_type(THD *) override;
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
@@ -497,6 +508,9 @@ class Item_in_optimizer final : public Item_bool_func {
     set_subquery();
   }
   bool fix_fields(THD *, Item **) override;
+  Item_parallel_safe parallel_safe() const override {
+    return Item_parallel_safe::Unsafe;
+  }
   bool fix_left(THD *thd, Item **ref);
   void fix_after_pullout(SELECT_LEX *parent_select,
                          SELECT_LEX *removed_select) override;
@@ -717,6 +731,9 @@ class Item_func_xor final : public Item_bool_func2 {
   bool itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
   void apply_is_true() override {}
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_xor(args[0], args[1]);
+  }
   Item *truth_transformer(THD *, Bool_test) override;
 
   float get_filtering_effect(THD *thd, table_map filter_for_table,
@@ -737,6 +754,9 @@ class Item_func_not : public Item_bool_func {
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_not(args[0]);
+  }
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
@@ -765,6 +785,9 @@ class Item_func_match_predicate : public Item_bool_func {
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override {
     args[0]->print(thd, str, query_type);
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_match_predicate(args[0]);
   }
 
   float get_filtering_effect(THD *thd, table_map filter_for_table,
@@ -876,6 +899,10 @@ class Item_func_trig_cond final : public Item_bool_func {
     add_trig_func_tables();
     return false;
   }
+  Item_parallel_safe parallel_safe() const override {
+    // Don't support this yet.
+    return Item_parallel_safe::Unsafe;
+  }
   void add_trig_func_tables() {
     if (trig_type == IS_NOT_NULL_COMPL || trig_type == FOUND_MATCH) {
       DBUG_ASSERT(m_join != nullptr);
@@ -928,6 +955,10 @@ class Item_func_not_all : public Item_func_not {
   void set_sum_test(Item_sum_hybrid *item) { test_sum_item = item; }
   void set_sub_test(Item_maxmin_subselect *item) { test_sub_item = item; }
   void set_subselect(Item_subselect *item) { subselect = item; }
+  Item_parallel_safe parallel_safe() const override {
+    // Don't support this yet.
+    return Item_parallel_safe::Unsafe;
+  }
   table_map not_null_tables() const override {
     /*
       See handling of not_null_tables_cache in
@@ -981,7 +1012,9 @@ class Item_func_eq : public Item_func_comparison {
   bool equality_substitution_analyzer(uchar **) override { return true; }
   Item *equality_substitution_transformer(uchar *arg) override;
   bool gc_subst_analyzer(uchar **) override { return true; }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_eq(args[0], args[1]);
+  }
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
@@ -1022,9 +1055,7 @@ class Item_func_eq : public Item_func_comparison {
   /// @returns either the argument it was given, or the argument wrapped in a
   ///   typecast
   Item *create_cast_if_needed(MEM_ROOT *mem_root, Item *argument) const;
-  Item *new_item(Item_clone_context *) const override {
-    return new Item_func_eq(args[0], args[1]);
-  }
+
   /// See if this is a condition where any of the arguments refers to a field
   /// that is outside the bits marked by 'left_side_tables' and
   /// 'right_side_tables'.
@@ -1075,15 +1106,16 @@ class Item_func_equal final : public Item_func_comparison {
     null_on_null = false;
   }
   longlong val_int() override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_equal(args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override;
   enum Functype functype() const override { return EQUAL_FUNC; }
   enum Functype rev_functype() const override { return EQUAL_FUNC; }
   cond_result eq_cmp_result() const override { return COND_TRUE; }
   const char *func_name() const override { return "<=>"; }
   Item *truth_transformer(THD *, Bool_test) override { return nullptr; }
-  Item *new_item(Item_clone_context *) const override {
-    return new Item_func_equal(args[0], args[1]);
-  }
+
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
@@ -1150,6 +1182,36 @@ class Item_func_le final : public Item_func_comparison {
   Item *new_item(Item_clone_context *) const override {
     return new Item_func_le(args[0], args[1]);
   }
+  float get_filtering_effect(THD *thd, table_map filter_for_table,
+                             table_map read_tables,
+                             const MY_BITMAP *fields_to_ignore,
+                             double rows_in_table) override;
+};
+
+/**
+  Internal function used by subquery to derived tranformation to check
+  if a subquery is scalar. We model it to check if the count is greater than
+  1 using Item_func_gt.
+*/
+
+class Item_func_reject_if : public Item_bool_func {
+ public:
+  Item_func_reject_if(Item *a) : Item_bool_func(a) {}
+  longlong val_int() override;
+  const char *func_name() const override { return "reject_if"; }
+  /// Redefine to avoid pushing into derived table
+  bool is_valid_for_pushdown(uchar *arg [[maybe_unused]]) override {
+    return true;
+  }
+  /// Redefine to avoid pushing into spider table
+  bool check_column_from_spider_tables(
+      uchar *arg MY_ATTRIBUTE((unused))) override {
+    return true;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_reject_if(args[0]);
+  }
+
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
@@ -1232,6 +1294,8 @@ class Item_func_opt_neg : public Item_int_func {
     negated = !negated;
     return this;
   }
+  bool init_from(const Item *from, Item_clone_context *context) override;
+
   bool eq(const Item *item, bool binary_cmp) const override;
   bool subst_argument_checker(uchar **) override { return true; }
 };
@@ -1261,6 +1325,10 @@ class Item_func_between final : public Item_func_opt_neg {
   bool fix_fields(THD *, Item **) override;
   void fix_after_pullout(SELECT_LEX *parent_select,
                          SELECT_LEX *removed_select) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_between(POS(), args[0], args[1], args[2], negated);
+  }
+  bool init_from(const Item *item, Item_clone_context *context) override;
   bool resolve_type(THD *) override;
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
@@ -1301,6 +1369,9 @@ class Item_func_strcmp final : public Item_bool_func2 {
              enum_query_type query_type) const override {
     Item_func::print(thd, str, query_type);
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_strcmp(POS(), args[0], args[1]);
+  }
   bool resolve_type(THD *thd) override {
     if (Item_bool_func2::resolve_type(thd)) return true;
     fix_char_length(2);  // returns "1" or "0" or "-1"
@@ -1329,9 +1400,19 @@ class Item_func_interval final : public Item_int_func {
         intervals(nullptr) {
     allowed_arg_cols = 0;  // Fetch this value from first argument
   }
+  // For item clone
+  Item_func_interval(Item_row *item_row)
+      : super(POS(), item_row), row(down_cast<Item_row *>(args[0])),
+        intervals(nullptr) {
+    allowed_arg_cols = 0;
+  }
 
   bool itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_interval(row);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "interval"; }
   uint decimal_precision() const override { return 2; }
@@ -1374,6 +1455,9 @@ class Item_func_coalesce : public Item_func_numhybrid {
   bool date_op(MYSQL_TIME *ltime, my_time_flags_t fuzzydate) override;
   bool time_op(MYSQL_TIME *ltime) override;
   my_decimal *decimal_op(my_decimal *) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_coalesce(POS(), static_cast<PT_item_list *>(nullptr));
+  }
   bool resolve_type(THD *thd) override;
   bool resolve_type_inner(THD *thd) override;
   void set_numeric_type() override {}
@@ -1396,7 +1480,13 @@ class Item_func_ifnull final : public Item_func_coalesce {
   bool time_op(MYSQL_TIME *ltime) override;
   my_decimal *decimal_op(my_decimal *) override;
   bool val_json(Json_wrapper *result) override;
-  const char *func_name() const override { return "ifnull"; }
+  const char *func_name() const override { return is_nvl ? "nvl" : "ifnull"; }
+  Item *new_item(Item_clone_context *) const override {
+    auto *item = new Item_func_ifnull(POS(), args[0], args[1]);
+    // Seems used nowhere.
+    item->field_type_defined = field_type_defined;
+    return item;
+  }
   Field *tmp_table_field(TABLE *table) override;
   uint decimal_precision() const override;
 };
@@ -1412,6 +1502,9 @@ class Item_func_any_value final : public Item_func_coalesce {
   const char *func_name() const override { return "any_value"; }
   bool aggregate_check_group(uchar *arg) override;
   bool aggregate_check_distinct(uchar *arg) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_any_value(POS(), args[0]);
+  }
 };
 
 class Item_func_if final : public Item_func {
@@ -1438,6 +1531,11 @@ class Item_func_if final : public Item_func {
   bool fix_fields(THD *, Item **) override;
   enum_field_types default_data_type() const override {
     return MYSQL_TYPE_VARCHAR;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    auto *item = new Item_func_if(args[0], args[1], args[2]);
+    item->cached_result_type = cached_result_type;
+    return item;
   }
   bool resolve_type(THD *thd) override;
   bool resolve_type_inner(THD *thd) override;
@@ -1471,6 +1569,11 @@ class Item_func_nullif final : public Item_bool_func2 {
   Item_result result_type() const override { return cached_result_type; }
   enum_field_types default_data_type() const override {
     return MYSQL_TYPE_VARCHAR;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    auto *item = new Item_func_nullif(POS(), args[0], args[1]);
+    item->cached_result_type = cached_result_type;
+    return item;
   }
   bool resolve_type(THD *thd) override;
   bool resolve_type_inner(THD *thd) override;
@@ -1545,6 +1648,16 @@ class in_vector {
 
   virtual bool is_row_result() const { return false; }
 
+  virtual in_vector *new_in_vector(Item_clone_context *context) const = 0;
+  virtual bool init_from(const in_vector *, Item_clone_context *) {
+    return false;
+  }
+  in_vector *clone(Item_clone_context *context) const {
+    auto *vec = new_in_vector(context);
+    if (!vec || vec->init_from(this, context)) return nullptr;
+    return vec;
+  }
+
   /**
     Fill the vector by evaluating the items passed as arguments.
     Note that null values are skipped so the vector may end up containing
@@ -1587,6 +1700,9 @@ class in_string final : public in_vector {
   bool find_item(Item *item) override;
   bool compare_elems(uint pos1, uint pos2) const override;
 
+  in_vector *new_in_vector(Item_clone_context *context) const override;
+  bool init_from(const in_vector *from, Item_clone_context *context) override;
+
  private:
   void set(uint pos, Item *item) override;
   void resize_and_sort() override;
@@ -1619,6 +1735,9 @@ class in_longlong : public in_vector {
   bool find_item(Item *item) override;
   bool compare_elems(uint pos1, uint pos2) const override;
 
+  in_vector *new_in_vector(Item_clone_context *context) const override;
+  bool init_from(const in_vector *from, Item_clone_context *context) override;
+
  private:
   void set(uint pos, Item *item) override { val_item(item, &base[pos]); }
   void resize_and_sort() override;
@@ -1632,6 +1751,10 @@ class in_datetime_as_longlong final : public in_longlong {
   Item_basic_constant *create_item(MEM_ROOT *mem_root) const override {
     return new (mem_root) Item_temporal(MYSQL_TYPE_DATETIME, 0LL);
   }
+  in_vector *new_in_vector(Item_clone_context *context) const override {
+    auto *mem_root = context->mem_root();
+    return new (mem_root) in_datetime_as_longlong(mem_root, used_count);
+  }
 
  private:
   void val_item(Item *item, packed_longlong *result) override;
@@ -1643,6 +1766,10 @@ class in_time_as_longlong final : public in_longlong {
       : in_longlong(mem_root, elements) {}
   Item_basic_constant *create_item(MEM_ROOT *mem_root) const override {
     return new (mem_root) Item_temporal(MYSQL_TYPE_TIME, 0LL);
+  }
+  in_vector *new_in_vector(Item_clone_context *context) const override {
+    auto *mem_root = context->mem_root();
+    return new (mem_root) in_time_as_longlong(mem_root, used_count);
   }
 
  private:
@@ -1663,6 +1790,11 @@ class in_datetime final : public in_longlong {
   Item_basic_constant *create_item(MEM_ROOT *mem_root) const override {
     return new (mem_root) Item_temporal(MYSQL_TYPE_DATETIME, 0LL);
   }
+  in_vector *new_in_vector(Item_clone_context *context) const override {
+    auto *mem_root = context->mem_root();
+    return new (mem_root) in_datetime(mem_root, warn_item, used_count);
+  }
+  bool init_from(const in_vector *from, Item_clone_context *context) override;
 
  private:
   void set(uint pos, Item *item) override;
@@ -1704,6 +1836,12 @@ class in_decimal final : public in_vector {
   bool find_item(Item *item) override;
   bool compare_elems(uint pos1, uint pos2) const override;
 
+  in_vector *new_in_vector(Item_clone_context *context) const override {
+    auto *mem_root = context->mem_root();
+    return new (mem_root) in_decimal(mem_root, used_count);
+  }
+  bool init_from(const in_vector *from, Item_clone_context *context) override;
+
  private:
   void set(uint pos, Item *item) override;
   void resize_and_sort() override;
@@ -1742,6 +1880,15 @@ class cmp_item {
   virtual void store_value_by_template(cmp_item *, Item *item) {
     store_value(item);
   }
+  virtual cmp_item *new_cmp_item(Item_clone_context *context) const = 0;
+  virtual bool init_from(const cmp_item *, Item_clone_context *) {
+    return false;
+  }
+  cmp_item *clone(Item_clone_context *context) {
+    auto *cmp = new_cmp_item(context);
+    if (!cmp || cmp->init_from(this, context)) return nullptr;
+    return cmp;
+  }
 };
 
 /// cmp_item which stores a scalar (i.e. non-ROW).
@@ -1749,6 +1896,12 @@ class cmp_item_scalar : public cmp_item {
  protected:
   bool m_null_value;  ///< If stored value is NULL
   void set_null_value(bool nv) { m_null_value = nv; }
+  bool init_from(const cmp_item *from, Item_clone_context *context) override {
+    if (cmp_item::init_from(from, context)) return true;
+    auto *cmp = down_cast<const cmp_item_scalar *>(from);
+    m_null_value = cmp->m_null_value;
+    return false;
+  }
 };
 
 class cmp_item_string final : public cmp_item_scalar {
@@ -1786,6 +1939,21 @@ class cmp_item_string final : public cmp_item_scalar {
     else
       return true;
   }
+  cmp_item *new_cmp_item(Item_clone_context *context) const override {
+    return new (context->mem_root()) cmp_item_string(cmp_charset);
+  }
+  bool init_from(const cmp_item *from, Item_clone_context *context) override {
+    if (cmp_item_scalar::init_from(from, context)) return true;
+    auto *cmp = down_cast<const cmp_item_string *>(from);
+    // The value should be copied since it could be filled in resolve_type()
+    // e.g. IN
+    if (value.clone_from(cmp->value)) return true;
+    value_res = &value;
+
+    return false;
+  }
+
+  int cmp(Item *arg) override;
   cmp_item *make_same() override;
 };
 
@@ -1811,6 +1979,8 @@ class cmp_item_json final : public cmp_item_scalar {
 
   int compare(const cmp_item *ci) const override;
   void store_value(Item *item) override;
+  cmp_item *new_cmp_item(Item_clone_context *context) const override;
+  bool init_from(const cmp_item *from, Item_clone_context *context) override;
   int cmp(Item *arg) override;
   cmp_item *make_same() override;
 };
@@ -1822,6 +1992,15 @@ class cmp_item_int final : public cmp_item_scalar {
   void store_value(Item *item) override {
     value = item->val_int();
     set_null_value(item->null_value);
+  }
+  cmp_item *new_cmp_item(Item_clone_context *context) const override {
+    return new (context->mem_root()) cmp_item_int;
+  }
+  bool init_from(const cmp_item *from, Item_clone_context *context) override {
+    if (cmp_item_scalar::init_from(from, context)) return true;
+    auto *cmp = down_cast<const cmp_item_int *>(from);
+    value = cmp->value;
+    return false;
   }
   int cmp(Item *arg) override {
     const bool rc = value != arg->val_int();
@@ -1850,6 +2029,10 @@ class cmp_item_datetime : public cmp_item_scalar {
 
   cmp_item_datetime(const Item *warn_item_arg);
   void store_value(Item *item) override;
+  cmp_item *new_cmp_item(Item_clone_context *context) const override {
+    return new (context->mem_root()) cmp_item_datetime(warn_item);
+  }
+  bool init_from(const cmp_item *from, Item_clone_context *context) override;
   int cmp(Item *arg) override;
   int compare(const cmp_item *ci) const override;
   cmp_item *make_same() override;
@@ -1862,6 +2045,15 @@ class cmp_item_real : public cmp_item_scalar {
   void store_value(Item *item) override {
     value = item->val_real();
     set_null_value(item->null_value);
+  }
+  cmp_item *new_cmp_item(Item_clone_context *context) const override {
+    return new (context->mem_root()) cmp_item_real;
+  }
+  bool init_from(const cmp_item *from, Item_clone_context *context) override {
+    if (cmp_item_scalar::init_from(from, context)) return true;
+    auto *cmp = down_cast<const cmp_item_real *>(from);
+    value = cmp->value;
+    return false;
   }
   int cmp(Item *arg) override {
     const bool rc = value != arg->val_real();
@@ -1879,6 +2071,15 @@ class cmp_item_decimal : public cmp_item_scalar {
 
  public:
   void store_value(Item *item) override;
+  cmp_item *new_cmp_item(Item_clone_context *context) const override {
+    return new (context->mem_root()) cmp_item_decimal;
+  }
+  bool init_from(const cmp_item *from, Item_clone_context *context) override {
+    if (cmp_item_scalar::init_from(from, context)) return true;
+    auto *cmp = down_cast<const cmp_item_decimal *>(from);
+    value = cmp->value;
+    return false;
+  }
   int cmp(Item *arg) override;
   int compare(const cmp_item *c) const override;
   cmp_item *make_same() override;
@@ -1949,6 +2150,11 @@ class Item_func_case final : public Item_func {
   enum_field_types default_data_type() const override {
     return MYSQL_TYPE_VARCHAR;
   }
+  Item *new_item(Item_clone_context *context) const override {
+    mem_root_deque<Item *> empty(context->mem_root());
+    return new Item_func_case(POS(), &empty, nullptr, nullptr);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
   bool resolve_type(THD *thd) override;
   bool resolve_type_inner(THD *thd) override;
   uint decimal_precision() const override;
@@ -2015,6 +2221,10 @@ class Item_func_in final : public Item_func_opt_neg {
   bool fix_fields(THD *, Item **) override;
   void fix_after_pullout(SELECT_LEX *parent_select,
                          SELECT_LEX *removed_select) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_in(POS(), nullptr, negated);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
   bool resolve_type(THD *) override;
   void update_used_tables() override;
   uint decimal_precision() const override { return 1; }
@@ -2111,6 +2321,10 @@ class cmp_item_row : public cmp_item {
   }
 
   void store_value(Item *item) override;
+  cmp_item *new_cmp_item(Item_clone_context *context) const override {
+    return new (context->mem_root()) cmp_item_row;
+  }
+  bool init_from(const cmp_item *from, Item_clone_context *context) override;
   int cmp(Item *arg) override;
   int compare(const cmp_item *arg) const override;
   cmp_item *make_same() override;
@@ -2144,6 +2358,11 @@ class in_row final : public in_vector {
   void value_to_item(uint, Item_basic_constant *) const override {
     DBUG_ASSERT(false);
   }
+  in_vector *new_in_vector(Item_clone_context *context) const override {
+    auto *mem_root = context->mem_root();
+    return new (mem_root) in_row(mem_root, used_count, nullptr);
+  }
+  bool init_from(const in_vector *from, Item_clone_context *context) override;
 
  private:
   void set(uint pos, Item *item) override;
@@ -2166,6 +2385,16 @@ class Item_func_isnull : public Item_bool_func {
   }
   longlong val_int() override;
   enum Functype functype() const override { return ISNULL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_isnull(args[0]);
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (super::init_from(from, context)) return false;
+    auto *item = down_cast<const Item_func_isnull *>(from);
+    cache_used = item->cache_used;
+    cached_value = item->cached_value;
+    return false;
+  }
   bool resolve_type(THD *thd) override;
   const char *func_name() const override { return "isnull"; }
   /* Optimize case of not_null_column IS NULL */
@@ -2201,6 +2430,11 @@ class Item_is_not_null_test final : public Item_func_isnull {
   enum Functype functype() const override { return ISNOTNULLTEST_FUNC; }
   longlong val_int() override;
   const char *func_name() const override { return "<is_not_null_test>"; }
+
+  Item_parallel_safe parallel_safe() const override {
+    // Needs subquery support
+    return Item_parallel_safe::Unsafe;
+  }
   void update_used_tables() override;
   /**
     We add RAND_TABLE_BIT to prevent moving this item from HAVING to WHERE.
@@ -2225,6 +2459,9 @@ class Item_func_isnotnull final : public Item_bool_func {
 
   longlong val_int() override;
   enum Functype functype() const override { return ISNOTNULL_FUNC; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_isnotnull(args[0]);
+  }
   bool resolve_type(THD *thd) override {
     maybe_null = false;
     return Item_bool_func::resolve_type(thd);
@@ -2278,6 +2515,13 @@ class Item_func_like final : public Item_bool_func2 {
   cond_result eq_cmp_result() const override { return COND_TRUE; }
   const char *func_name() const override { return "like"; }
   bool fix_fields(THD *thd, Item **ref) override;
+  Item *new_item(Item_clone_context *) const override {
+    auto *item = new Item_func_like(args[0], args[1]);
+    item->escape_is_const = escape_is_const;
+    item->escape_evaluated = escape_evaluated;
+    item->m_escape = m_escape;
+    return item;
+  }
   bool resolve_type(THD *) override;
   void cleanup() override;
   Item *replace_scalar_subquery(uchar *) override;
@@ -2352,6 +2596,17 @@ class Item_cond : public Item_bool_func {
 
   bool itemize(Parse_context *pc, Item **res) override;
 
+  bool init_from(const Item *from, Item_clone_context *context) override;
+  Item_parallel_safe parallel_safe() const override {
+    auto res = Item_parallel_safe::Safe;
+    for (auto &item : list) {
+      if (item.parallel_safe() > res) {
+        res = item.parallel_safe();
+        if (res == Item_parallel_safe::Unsafe) return res;
+      }
+    }
+    return res;
+  }
   bool fix_fields(THD *, Item **ref) override;
   void fix_after_pullout(SELECT_LEX *parent_select,
                          SELECT_LEX *removed_select) override;
@@ -2534,6 +2789,12 @@ class Item_equal final : public Item_bool_func {
     fields.sort(compare);
   }
   friend class Item_equal_iterator;
+  Item_parallel_safe parallel_safe() const override {
+    // This class should exist in optimize stage, we should not see this class
+    // in parallel query.
+    assert(false);
+    return Item_parallel_safe::Unsafe;
+  }
   bool resolve_type(THD *) override;
   bool fix_fields(THD *thd, Item **ref) override;
   void update_used_tables() override;
@@ -2605,6 +2866,9 @@ class Item_cond_and final : public Item_cond {
   }
   Item *truth_transformer(THD *, Bool_test) override;
   bool gc_subst_analyzer(uchar **) override { return true; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_cond_and;
+  }
 
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,
@@ -2634,6 +2898,9 @@ class Item_cond_or final : public Item_cond {
   }
   Item *truth_transformer(THD *, Bool_test) override;
   bool gc_subst_analyzer(uchar **) override { return true; }
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_cond_or;
+  }
 
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,

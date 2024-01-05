@@ -161,6 +161,9 @@ class PTI_function_call_nonkeyword_now final : public Item_func_now_local {
       : super(pos, dec_arg) {}
 
   bool itemize(Parse_context *pc, Item **res) override;
+    Item *new_item(Item_clone_context *) const override {
+      return new PTI_function_call_nonkeyword_now(POS(), decimals);;
+  }
 };
 
 class PTI_function_call_nonkeyword_sysdate : public Parse_tree_item {
@@ -245,6 +248,11 @@ class PTI_text_literal : public Item_string {
   PTI_text_literal(const POS &pos, bool is_7bit_arg,
                    const LEX_STRING &literal_arg)
       : super(pos), is_7bit(is_7bit_arg), literal(literal_arg) {}
+  // Don't need init_from() because its derived classes constructor initialized
+  // all members.
+  Item *new_item(Item_clone_context *) const override {
+      return new PTI_text_literal(POS(), is_7bit, literal);
+  }
 };
 
 class PTI_text_literal_text_string : public PTI_text_literal {
@@ -256,6 +264,9 @@ class PTI_text_literal_text_string : public PTI_text_literal {
       : super(pos, is_7bit_arg, literal_arg) {}
 
   bool itemize(Parse_context *pc, Item **res) override;
+  Item *new_item(Item_clone_context *) const override {
+      return new PTI_text_literal_text_string(POS(), is_7bit, literal);
+  }
 };
 
 class PTI_text_literal_nchar_string : public PTI_text_literal {
@@ -267,6 +278,9 @@ class PTI_text_literal_nchar_string : public PTI_text_literal {
       : super(pos, is_7bit_arg, literal_arg) {}
 
   bool itemize(Parse_context *pc, Item **res) override;
+  Item *new_item(Item_clone_context *) const override {
+      return new PTI_text_literal_nchar_string(POS(), is_7bit, literal);
+  }
 };
 
 class PTI_text_literal_underscore_charset : public PTI_text_literal {
@@ -288,6 +302,9 @@ class PTI_text_literal_underscore_charset : public PTI_text_literal {
     set_repertoire_from_value();
     set_cs_specified(true);
     return false;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new PTI_text_literal_underscore_charset(POS(), is_7bit, cs, literal);
   }
 };
 
@@ -341,6 +358,9 @@ class PTI_literal_underscore_charset_hex_num : public Item_string {
     set_cs_specified(true);
     return check_well_formed_result(&str_value, true, true) == nullptr;
   }
+  Item *new_item(Item_clone_context *) const override {
+    return new PTI_literal_underscore_charset_hex_num;
+  }
 };
 
 class PTI_literal_underscore_charset_bin_num : public Item_string {
@@ -359,6 +379,9 @@ class PTI_literal_underscore_charset_bin_num : public Item_string {
 
     set_cs_specified(true);
     return check_well_formed_result(&str_value, true, true) == nullptr;
+  }
+  Item *new_item(Item_clone_context *) const override {
+    return new PTI_literal_underscore_charset_bin_num;
   }
 };
 
@@ -379,6 +402,10 @@ class PTI_user_variable final : public Item_func_get_user_var {
   PTI_user_variable(const POS &pos, const LEX_STRING &var) : super(pos, var) {}
 
   bool itemize(Parse_context *pc, Item **res) override;
+  Item *new_item(Item_clone_context *) const override {
+    LEX_STRING var = {const_cast<char *>(name.ptr()), name.length()};
+    return new PTI_user_variable(POS(), var);
+  }
 };
 
 /**

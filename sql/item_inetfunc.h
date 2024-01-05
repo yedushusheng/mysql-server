@@ -48,6 +48,9 @@ class Item_func_inet_aton : public Item_int_func {
 
   const char *func_name() const override { return "inet_aton"; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_inet_aton(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1)) return true;
     maybe_null = true;
@@ -70,6 +73,9 @@ class Item_func_inet_ntoa : public Item_str_func {
 
   const char *func_name() const override { return "inet_ntoa"; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_inet_ntoa(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_LONGLONG)) return true;
     set_data_type_string(3 * 8 + 7, default_charset());
@@ -126,6 +132,9 @@ class Item_func_inet6_aton : public Item_func_inet_str_base {
  public:
   const char *func_name() const override { return "inet6_aton"; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_inet6_aton(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1)) return true;
     set_data_type_string(16, &my_charset_bin);
@@ -149,6 +158,9 @@ class Item_func_inet6_ntoa : public Item_func_inet_str_base {
  public:
   const char *func_name() const override { return "inet6_ntoa"; }
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_inet6_ntoa(POS(), args[0]);
+  }
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1)) return true;
     // max length: IPv6-address -- 16 bytes
@@ -178,6 +190,9 @@ class Item_func_is_ipv4 : public Item_func_inet_bool_base {
 
  protected:
   bool calc_value(const String *arg) const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_is_ipv4(POS(), args[0]);
+  }
 };
 
 /*************************************************************************
@@ -194,6 +209,9 @@ class Item_func_is_ipv6 : public Item_func_inet_bool_base {
 
  protected:
   bool calc_value(const String *arg) const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_is_ipv6(POS(), args[0]);
+  }
 };
 
 /*************************************************************************
@@ -210,6 +228,9 @@ class Item_func_is_ipv4_compat : public Item_func_inet_bool_base {
 
  protected:
   bool calc_value(const String *arg) const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_is_ipv4_compat(POS(), args[0]);
+  }
 };
 
 /*************************************************************************
@@ -226,6 +247,9 @@ class Item_func_is_ipv4_mapped : public Item_func_inet_bool_base {
 
  protected:
   bool calc_value(const String *arg) const override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_is_ipv4_mapped(POS(), args[0]);
+  }
 };
 
 #endif  // ITEM_INETFUNC_INCLUDED

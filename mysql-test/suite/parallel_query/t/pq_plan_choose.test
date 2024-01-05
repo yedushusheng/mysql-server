@@ -1,0 +1,14 @@
+SET max_parallel_degree = 1;
+
+CREATE TABLE t1(a int primary key, b int, c text, index(b));
+INSERT INTO t1 VALUES(1, 1, '1'),(2, 2, '2');
+
+EXPLAIN FORMAT=tree SELECT * FROM t1;
+
+# parallel plan should be choosed because there is no blob in collector table.
+EXPLAIN FORMAT=tree SELECT b FROM t1 where c = 1;
+EXPLAIN FORMAT=tree SELECT a, b FROM t1 WHERE a = 1;
+EXPLAIN FORMAT=tree SELECT a, b FROM t1 WHERE b = 1;
+EXPLAIN FORMAT=tree SELECT b FROM t1 WHERE b between 1 and 2;
+
+DROP TABLE t1;
