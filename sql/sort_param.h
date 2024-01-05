@@ -58,7 +58,8 @@ enum class Addon_fields_status {
   row_not_packable,
   row_contains_blob,
   skip_heuristic,
-  using_priority_queue
+  using_priority_queue,
+  using_by_merge_sort
 };
 
 inline const char *addon_fields_text(Addon_fields_status afs) {
@@ -79,6 +80,8 @@ inline const char *addon_fields_text(Addon_fields_status afs) {
       return "skip_heuristic";
     case Addon_fields_status::using_priority_queue:
       return "using_priority_queue";
+    case Addon_fields_status::using_by_merge_sort:
+      return "using_by_merge_sort";      
   }
 }
 
@@ -331,8 +334,6 @@ class Sort_param {
   void decide_addon_fields(Filesort *file_sort,
                            const Mem_root_array<TABLE *> &tables,
                            bool sort_positions);
-  bool clone_from(Sort_param *other);
-  
   /// Reset the decision made in decide_addon_fields(). Only used in exceptional
   /// circumstances (see NewWeedoutAccessPathForTables()).
   void clear_addon_fields();

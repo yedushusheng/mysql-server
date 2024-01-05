@@ -228,14 +228,19 @@ void Sort_param::init_for_filesort(Filesort *file_sort,
   m_fixed_sort_length = sortlen;
   m_force_stable_sort = file_sort->m_force_stable_sort;
   m_remove_duplicates = remove_duplicates;
+  accepted_rows= file_sort->accepted_rows;
   sum_ref_length = 0;
-  for (TABLE *table : tables) {
-    if (table->is_nullable()) {
-      // TODO(sgunders): Allow variable-length ref, so that we don't
-      // have to store the row ID for NULL rows.
-      ++sum_ref_length;
+  // Merge sort buffered record, record just be used, so no res is saved when
+  // sorting
+  if (m_addon_fields_status != Addon_fields_status::using_by_merge_sort) {
+    for (TABLE *table : tables) {
+      if (table->is_nullable()) {
+        // TODO(sgunders): Allow variable-length ref, so that we don't
+        // have to store the row ID for NULL rows.
+        ++sum_ref_length;
+      }
+      sum_ref_length += table->file->ref_length;
     }
-    sum_ref_length += table->file->ref_length;
   }
 
   local_sortorder = sf_array;
@@ -1532,7 +1537,7 @@ uint Sort_param::make_sortkey(Bounds_checked_array<uchar> dst,
     *longest_addon_so_far = max<size_t>(*longest_addon_so_far, to - p_len);
     DBUG_PRINT("info", ("make_sortkey %p %u", orig_to,
                         static_cast<unsigned>(to - p_len)));
-  } else {
+   } else if (sum_ref_length > 0) {
     if (static_cast<size_t>(to_end - to) < sum_ref_length) {
       return UINT_MAX;
     }

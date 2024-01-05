@@ -401,6 +401,11 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
     CopyBasicProperties(*out_access_path, context.replacement_access_path);
     source_join->set_root_access_path(access_path);
   }
+
+  if (context.MergeSort() &&
+      m_collector->CreateMergeSort(source_join, context.MergeSort()))
+    return true;
+
   partial_join->set_root_access_path(out_access_path);
   return false;
 }

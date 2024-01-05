@@ -1,8 +1,13 @@
 #ifndef PARALLEL_QUERY_ROW_EXCHANGE_H
 #define PARALLEL_QUERY_ROW_EXCHANGE_H
-#include "sql/parallel_query/message_queue.h"
+
 #include <functional>
-class MEM_ROOT;
+#include "sql/parallel_query/message_queue.h"
+#include "sql/parallel_query/merge_sort.h"
+
+class Filesort;
+struct MY_BITMAP;
+
 namespace pq {
   using RowExchangeResult = MessageQueueResult;
 
@@ -31,10 +36,9 @@ class RowExchangeContainer {
   RowExchangeContainer(RowExchange *row_exchange)
       : m_row_exchange(row_exchange) {}
   RowExchangeContainer(const RowExchangeContainer &) = delete;
-  ~RowExchangeContainer();
+  virtual ~RowExchangeContainer();
 
-  bool Init(THD *thd);
-
+  virtual bool Init(THD *thd, MY_BITMAP *closed_queues);
  protected:
   bool IsQueueClosed(uint queue) {
     return m_message_queue_handles[queue]->IsClosed();
@@ -44,16 +48,25 @@ class RowExchangeContainer {
   MessageQueueHandle **m_message_queue_handles{nullptr};
 };
 
+/// Normal collect rows from multiple workers for normal gather operator.
 class RowExchangeReader : public RowExchangeContainer {
  public:
   RowExchangeReader(RowExchange *row_exchange)
       : RowExchangeContainer(row_exchange),
         m_left_queues(row_exchange->NumQueues()) {}
 
-  RowExchangeResult Read(THD *thd, uchar **buf, uint &detached);
+  virtual RowExchangeResult Read(THD *thd, uchar **buf);
+
+ protected:
+  uint m_left_queues;
 
  private:
-  uint m_left_queues;
+  void AdvanceQueue() {
+    uint queues = m_row_exchange->NumQueues();
+    do {
+      if (++m_next_queue >= queues) m_next_queue = 0;
+    } while (IsQueueClosed(m_next_queue));
+  }
   uint m_next_queue{0};
 };
 
@@ -69,5 +82,24 @@ class RowExchangeWriter : public RowExchangeContainer {
                                  bool nowait);
 };
 
+/// Collect rows for multiple workers for gather operator with merge sort
+class RowExchangeMergeSortReader : public RowExchangeReader, MergeSortSource {
+ public:
+  RowExchangeMergeSortReader(RowExchange *row_exchange, Filesort *filesort)
+      : RowExchangeReader(row_exchange),
+        m_filesort(filesort),
+        m_mergesort(this) {}
+  bool Init(THD *thd, MY_BITMAP *closed_queues) override;
+  RowExchangeResult Read(THD *thd, uchar **buf) override;
+
+  bool IsChannelFinished(uint i) override { return IsQueueClosed(i); }
+  void Wait(THD *thd) override { m_row_exchange->Wait(thd); }
+  MergeSort::Result ReadFromChannel(uint i, size_t *nbytes, void **data,
+                                    bool no_wait) override;
+
+ private:
+  Filesort *m_filesort;
+  MergeSort m_mergesort;
+};
 }
 #endif

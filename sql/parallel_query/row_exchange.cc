@@ -1,5 +1,8 @@
 #include "sql/parallel_query/row_exchange.h"
+
+#include "sql/filesort.h"
 #include "sql/sql_class.h"
+#include "sql/table.h"
 
 namespace pq {
 bool RowExchange::Init(MEM_ROOT *mem_root,
@@ -32,7 +35,7 @@ RowExchangeContainer::~RowExchangeContainer() {
     destroy(m_message_queue_handles[i]);
 }
 
-bool RowExchangeContainer::Init(THD *thd) {
+bool RowExchangeContainer::Init(THD *thd, MY_BITMAP *closed_queues) {
   uint queues = m_row_exchange->NumQueues();
 
   if (!(m_message_queue_handles =
@@ -43,15 +46,14 @@ bool RowExchangeContainer::Init(THD *thd) {
     if (!(m_message_queue_handles[i] = new (thd->mem_root)
               MemMessageQueueHandle(m_row_exchange->Queue(i), thd)))
       return true;
+    if (closed_queues && bitmap_is_set(closed_queues, i)) CloseQueue(i);
   }
   return false;
 }
 
-RowExchangeResult RowExchangeReader::Read(THD *thd, uchar **buf, uint &detached) {
-  DBUG_TRACE;
-  if (m_left_queues == 0) return RowExchangeResult::END;
+RowExchangeResult RowExchangeReader::Read(THD *thd, uchar **buf) {
+  assert(m_left_queues > 0);
   uint visited = 0;
-  uint queues = m_row_exchange->NumQueues();
   for (;;) {
     if (thd->killed) return RowExchangeResult::KILLED;
     size_t nbytes;
@@ -63,29 +65,22 @@ RowExchangeResult RowExchangeReader::Read(THD *thd, uchar **buf, uint &detached)
       return RowExchangeResult::SUCCESS;
     }
     if (result == RowExchangeResult::DETACHED) {
-      detached = m_next_queue;
       CloseQueue(m_next_queue);
       m_left_queues--;
 
-      if (m_left_queues > 0) {
-        do {
-          if (++m_next_queue >= queues) m_next_queue = 0;
-        } while (IsQueueClosed(m_next_queue));
-      }
+      if (unlikely(m_left_queues == 0)) break;
 
-      return RowExchangeResult::DETACHED;
+      AdvanceQueue();
+      continue;
     }
     // Could be OOM or END
     if (result != RowExchangeResult::WOULD_BLOCK) return result;
 
     /*
-     * Advance nextreader pointer in round-robin fashion.  Note that we
-     * only reach this code if we weren't able to get a tuple from the
-     * current worker.
+      Advance nextreader pointer in round-robin fashion. Note that we only reach
+      this code if we weren't able to get a tuple from the current worker.
      */
-    do {
-      if (++m_next_queue >= queues) m_next_queue = 0;
-    } while (IsQueueClosed(m_next_queue));
+    AdvanceQueue();
 
     visited++;
     if (visited >= m_left_queues) {
@@ -125,4 +120,60 @@ void RowExchangeWriter::WriteEOF() {
   m_message_queue_handles[0]->Detach();
 }
 
+bool RowExchangeMergeSortReader::Init(THD *thd, MY_BITMAP *closed_queues) {
+  if (RowExchangeContainer::Init(thd, closed_queues)) return true;
+
+  if (m_mergesort.Init(thd, m_filesort, m_row_exchange->NumQueues()) ||
+      m_mergesort.Populate(thd))
+    return true;
+
+  return false;
 }
+
+MergeSort::Result RowExchangeMergeSortReader::ReadFromChannel(
+    uint index, size_t *nbytes, void **data, bool no_wait) {
+  auto result = m_message_queue_handles[index]->Receive(nbytes, data, no_wait);
+  switch (result) {
+    case RowExchangeResult::SUCCESS:
+      break;
+    case RowExchangeResult::OOM:
+      return MergeSort::Result::OOM;
+    case RowExchangeResult::KILLED:
+      return MergeSort::Result::KILLED;
+    case RowExchangeResult::DETACHED:
+      CloseQueue(index);
+      return MergeSort::Result::NODATA;
+    case RowExchangeResult::WOULD_BLOCK:
+      // no wait , return now
+      return MergeSort::Result::NODATA;
+    case RowExchangeResult::END:
+    case RowExchangeResult::NONE:
+    case RowExchangeResult::ERROR:
+      assert(false);
+  }
+
+  assert(result == RowExchangeResult::SUCCESS);
+
+  return MergeSort::Result::SUCCESS;
+}
+
+RowExchangeResult RowExchangeMergeSortReader::Read(THD *, uchar **buf) {
+  auto result = m_mergesort.Read(buf);
+  switch (result) {
+    case MergeSort::Result::SUCCESS:
+      return RowExchangeResult::SUCCESS;
+    case MergeSort::Result::END:
+      return RowExchangeResult::END;
+    case MergeSort::Result::KILLED:
+      return RowExchangeResult::KILLED;
+    case MergeSort::Result::OOM:
+      return RowExchangeResult::OOM;
+    case MergeSort::Result::ERROR:
+      return RowExchangeResult::ERROR;
+    case MergeSort::Result::NODATA:
+      assert(false);
+  }
+  return RowExchangeResult::SUCCESS;
+}
+
+}  // namespace pq

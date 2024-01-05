@@ -510,12 +510,32 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join) {
       pq::Collector *collector = path->parallel_collector_scan().collector;
       snprintf(buff, sizeof(buff), "Gather (slice: 0, workers: %u)",
                collector->NumWorkers());
-      string str(buff);
-      description.push_back(move(str));
+      string ret(buff);
+      Filesort *merge_sort = collector->MergeSort();
 
+      if (merge_sort) {
+        ret += " with merge sort: ";
+
+        bool first = true;
+        for (unsigned i = 0; i < merge_sort->sort_order_length();
+             ++i) {
+          if (first) {
+            first = false;
+          } else {
+            ret += ", ";
+          }
+
+          const st_sort_field *order = &merge_sort->sortorder[i];
+          ret += ItemToString(order->item);
+          if (order->reverse) {
+            ret += " DESC";
+          }
+        }
+      }
+      description.push_back(move(ret));
       children.push_back({collector->PartialRootAccessPath()});
       break;
-    }    
+    }
     case AccessPath::TABLE_VALUE_CONSTRUCTOR:
     case AccessPath::FAKE_SINGLE_ROW:
       description.emplace_back("Rows fetched before execution");
