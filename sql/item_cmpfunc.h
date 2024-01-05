@@ -306,6 +306,12 @@ class Item_bool_func : public Item_int_func {
   Item_bool_func(THD *thd, Item_bool_func *item)
       : Item_int_func(thd, item),
         m_created_by_in2exists(item->m_created_by_in2exists) {}
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (Item_int_func::init_from(from, context)) return true;
+    m_created_by_in2exists =
+        down_cast<const Item_bool_func *>(from)->m_created_by_in2exists;
+    return false;
+  }  
   bool is_bool_func() const override { return true; }
   bool resolve_type(THD *thd) override {
     max_length = 1;
@@ -620,7 +626,14 @@ class Item_bool_func2 : public Item_bool_func { /* Bool with 2 string args */
       : Item_bool_func(pos, a, b),
         cmp(m_embedded_arguments, m_embedded_arguments + 1),
         abort_on_null(false) {}
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (Item_bool_func::init_from(from, context)) return true;
+    const Item_bool_func2 *item = down_cast<const Item_bool_func2 *>(from);
+    abort_on_null = item->abort_on_null;
+    set_cmp_func();
 
+    return false;
+  }
   bool resolve_type(THD *) override;
   bool set_cmp_func() {
     return cmp.set_cmp_func(this, m_embedded_arguments,
@@ -1009,7 +1022,9 @@ class Item_func_eq : public Item_func_comparison {
   /// @returns either the argument it was given, or the argument wrapped in a
   ///   typecast
   Item *create_cast_if_needed(MEM_ROOT *mem_root, Item *argument) const;
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_eq(args[0], args[1]);
+  }
   /// See if this is a condition where any of the arguments refers to a field
   /// that is outside the bits marked by 'left_side_tables' and
   /// 'right_side_tables'.
@@ -1066,7 +1081,9 @@ class Item_func_equal final : public Item_func_comparison {
   cond_result eq_cmp_result() const override { return COND_TRUE; }
   const char *func_name() const override { return "<=>"; }
   Item *truth_transformer(THD *, Bool_test) override { return nullptr; }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_equal(args[0], args[1]);
+  }
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
@@ -1086,7 +1103,9 @@ class Item_func_ge final : public Item_func_comparison {
   const char *func_name() const override { return ">="; }
   Item *negated_item() override;
   bool gc_subst_analyzer(uchar **) override { return true; }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_ge(args[0], args[1]);
+  }
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
@@ -1106,7 +1125,9 @@ class Item_func_gt final : public Item_func_comparison {
   const char *func_name() const override { return ">"; }
   Item *negated_item() override;
   bool gc_subst_analyzer(uchar **) override { return true; }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_gt(args[0], args[1]);
+  }
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
@@ -1126,7 +1147,9 @@ class Item_func_le final : public Item_func_comparison {
   const char *func_name() const override { return "<="; }
   Item *negated_item() override;
   bool gc_subst_analyzer(uchar **) override { return true; }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_le(args[0], args[1]);
+  }
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
@@ -1146,7 +1169,9 @@ class Item_func_lt final : public Item_func_comparison {
   const char *func_name() const override { return "<"; }
   Item *negated_item() override;
   bool gc_subst_analyzer(uchar **) override { return true; }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_lt(args[0], args[1]);
+  }
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
@@ -1166,7 +1191,9 @@ class Item_func_ne final : public Item_func_comparison {
   optimize_type select_optimize(const THD *) override { return OPTIMIZE_KEY; }
   const char *func_name() const override { return "<>"; }
   Item *negated_item() override;
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_ne(args[0], args[1]);
+  }
   float get_filtering_effect(THD *thd, table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,

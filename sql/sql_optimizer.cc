@@ -105,6 +105,7 @@
 #include "sql/timing_iterator.h"
 #include "sql/window.h"
 #include "sql_string.h"
+#include "sql/parallel_query/planner.h"
 #include "template_utils.h"
 
 using std::max;
@@ -932,6 +933,8 @@ bool JOIN::optimize() {
   if (make_join_readinfo(this, no_jbuf_after))
     return true; /* purecov: inspected */
 
+  tmp_fields[0] = *fields;
+
   //NOTE:初始化临时表
   if (make_tmp_tables_info()) return true;
 
@@ -961,6 +964,10 @@ bool JOIN::optimize() {
   // Creating iterators may evaluate a constant hash join condition, which may
   // fail:
   if (thd->is_error()) return true;
+  
+  pq::ChooseParallelPlan(this);
+
+  if (parallel_plan && (parallel_plan->Generate())) return true;
 
   // Make plan visible for EXPLAIN
   set_plan_state(PLAN_READY);

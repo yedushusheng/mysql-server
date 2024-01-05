@@ -1,0 +1,46 @@
+SET max_parallel_degree = 1;
+CREATE TABLE t1(a int, b int, c int);
+INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
+--echo ### basic queries ###
+let $query=SELECT * FROM t1;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT * FROM t1 where a > 1;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT sum(a) FROM t1;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT a FROM t1 GROUP BY a;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT sum(b) FROM t1 GROUP BY a;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT a, sum(b) FROM t1 GROUP BY a;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT a, sum(b) FROM t1 GROUP BY a order by 2;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT a, sum(b) + 1 FROM t1 GROUP BY a order by 2;
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo ### Aggregate access path ###
+let $query=SELECT SQL_BIG_RESULT a FROM t1 GROUP BY a;
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo ### Stream access path ###
+let $query=SELECT DISTINCT SQL_BIG_RESULT a FROM t1 GROUP BY a,b ORDER BY a DESC;
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo ### 2 temporary tables ###
+let $query=SELECT DISTINCT (COUNT(b) + 1) AS c FROM t1 WHERE b > 1 GROUP BY a;
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo ### offset limit ###
+let $query=SELECT * FROM t1 LIMIT 2 OFFSET 1;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT * FROM t1 ORDER BY a LIMIT 2 OFFSET 1;
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo ### having ###
+let $query=SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5;
+--source suite/parallel_query/include/explain_and_run.inc
+let $query=SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5 LIMIT 1 OFFSET 2;
+--source suite/parallel_query/include/explain_and_run.inc
+
+DROP TABLE t1;

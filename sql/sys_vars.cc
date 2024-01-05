@@ -105,6 +105,7 @@
 #include "sql/my_decimal.h"
 #include "sql/opt_trace_context.h"
 #include "sql/options_mysqld.h"
+#include "sql/parallel_query/planner.h"
 #include "sql/protocol_classic.h"
 #include "sql/psi_memory_key.h"
 #include "sql/query_options.h"
@@ -7060,3 +7061,11 @@ static Sys_var_bool Sys_replication_sender_observe_commit_only(
     GLOBAL_VAR(opt_replication_sender_observe_commit_only), CMD_LINE(OPT_ARG),
     DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr),
     ON_UPDATE(nullptr));
+
+static Sys_var_uint Sys_max_parallel_degree(
+    "max_parallel_degree",
+    "Define maximum active parallel degree for one query. "
+    "This variable is used to limit parallel execution cpu resources",
+    HINT_UPDATEABLE SESSION_VAR(max_parallel_degree), CMD_LINE(REQUIRED_ARG),
+    VALID_RANGE(0, pq::max_parallel_degree_limit),
+    DEFAULT(pq::default_max_parallel_degree), BLOCK_SIZE(1));

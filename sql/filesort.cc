@@ -699,6 +699,7 @@ uint Filesort::make_sortorder(ORDER *order, bool unwrap_rollup) {
   ORDER *ord;
   DBUG_TRACE;
 
+  src_order = order;
   count = 0;
   for (ord = order; ord; ord = ord->next) count++;
   DBUG_ASSERT(count > 0);

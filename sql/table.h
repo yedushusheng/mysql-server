@@ -3365,6 +3365,8 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
   }
 
   const Lock_descriptor &lock_descriptor() const { return m_lock_descriptor; }
+  TABLE_LIST *clone(MEM_ROOT *mem_root);
+  bool is_identical(const TABLE_LIST *tl) const { return m_id == tl->m_id; }
 
  private:
   /**
@@ -3448,6 +3450,7 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
   */
   Table_function *table_function{nullptr};
 
+  ulong m_id{(ulong)this};
  private:
   /**
      This field is set to non-null for derived tables and views. It points

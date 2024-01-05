@@ -17,14 +17,14 @@ void MessageQueueEvent::Wait(THD *thd, bool auto_reset) {
   thd->EXIT_COND(NULL);
 }
 
-MessageQueueHandle::MessageQueueHandle(MessageQueue *smq,
-                                                 THD *thd_arg)
-    : m_queue(smq), thd(thd_arg), m_closed(false), m_rows_sent(0) {}
+MessageQueueHandle::MessageQueueHandle(MessageQueue *smq, THD *thd)
+    : m_queue(smq), m_thd(thd), m_closed(false), m_rows_sent(0) {}
 
 /*
   Notify counterparty that we're detaching from shared message queue.
 */
 void MessageQueueHandle::Detach() {
+  if (m_closed) return;
   m_queue->Detach();
   SetClosed();
 }
@@ -247,8 +247,8 @@ MessageQueueResult MemMessageQueue::ReceiveBytes(
   }
 }
 
-MemMessageQueueHandle::MemMessageQueueHandle(MessageQueue *smq, THD *thd_arg)
-    : MessageQueueHandle(smq, thd_arg),
+MemMessageQueueHandle::MemMessageQueueHandle(MessageQueue *smq, THD *thd)
+    : MessageQueueHandle(smq, thd),
       m_buffer(NULL),
       m_buflen(0),
       m_pending_bytes(0),
@@ -263,14 +263,14 @@ MessageQueueResult MemMessageQueueHandle::Send(std::size_t nbytes,
                                                 const void *data, bool nowait) {
   MessageQueueResult res;
   size_t bytes_written;
-  MemMessageQueue *queue = (MemMessageQueue *) m_queue;
+  MemMessageQueue *queue = down_cast<MemMessageQueue *>(m_queue);
 
   while(!m_length_word_complete) {
     assert(m_partial_bytes < sizeof(size_t));
 
     res = queue->SendBytes(sizeof(size_t)  - m_partial_bytes,
                               ((char *) &nbytes) + m_partial_bytes,
-                              nowait, &bytes_written, thd);
+                              nowait, &bytes_written, m_thd);
 
     if (res != MessageQueueResult::SUCCESS && res != MessageQueueResult::WOULD_BLOCK) {
       /* Reset state in case caller tries to send another message. */
@@ -296,7 +296,7 @@ MessageQueueResult MemMessageQueueHandle::Send(std::size_t nbytes,
   do {
     res = queue->SendBytes(nbytes - m_partial_bytes,
                             static_cast<const char *>(data) + m_partial_bytes,
-                              nowait, &bytes_written, thd);
+                              nowait, &bytes_written, m_thd);
 
     if (res != MessageQueueResult::SUCCESS && res != MessageQueueResult::WOULD_BLOCK) {
       /* Reset state in case caller tries to send another message. */
@@ -352,7 +352,7 @@ MessageQueueResult MemMessageQueueHandle::Receive(
   void *rawdata;
   size_t nbytes;
   size_t rb = 0;
-  MemMessageQueue *queue = (MemMessageQueue *) m_queue;
+  MemMessageQueue *queue = down_cast<MemMessageQueue *>(m_queue);
   /*
     If we've consumed an amount of data greater than 1/4th of the ring
     size, mark it consumed in shared memory.  We try to avoid doing this
@@ -369,7 +369,7 @@ MessageQueueResult MemMessageQueueHandle::Receive(
   while (!m_length_word_complete) {
     assert(m_partial_bytes < sizeof(size_t));
     res = queue->ReceiveBytes(sizeof(size_t) - m_partial_bytes, nowait, &rb,
-                               &rawdata, &m_pending_bytes, thd);
+                               &rawdata, &m_pending_bytes, m_thd);
     if (res != MessageQueueResult::SUCCESS)
       return res;
 
@@ -401,7 +401,7 @@ MessageQueueResult MemMessageQueueHandle::Receive(
 
       /* Message word is split; need buffer to reassemble. */
       if (!m_buffer) {
-        if(!(m_buffer = (char *)thd->mem_root->Alloc(initial_buffer_size)))
+        if(!(m_buffer = (char *)m_thd->mem_root->Alloc(initial_buffer_size)))
            return MessageQueueResult::OOM;
 
         m_buflen = initial_buffer_size;
@@ -437,7 +437,7 @@ MessageQueueResult MemMessageQueueHandle::Receive(
       shared memory.
     */
     res = queue->ReceiveBytes(nbytes, nowait, &rb, &rawdata, &m_pending_bytes,
-                               thd);
+                               m_thd);
     if (res != MessageQueueResult::SUCCESS)
       return res;
 
@@ -466,7 +466,7 @@ MessageQueueResult MemMessageQueueHandle::Receive(
         m_buflen = 0;
       }
 
-      if (!(m_buffer = (char *)thd->mem_root->Alloc(newbuflen)))
+      if (!(m_buffer = (char *)m_thd->mem_root->Alloc(newbuflen)))
         return MessageQueueResult::OOM;
       m_buflen = newbuflen;
     }
@@ -496,7 +496,7 @@ MessageQueueResult MemMessageQueueHandle::Receive(
     /* Wait for some more data */
     still_needed = nbytes - m_partial_bytes;
     res = queue->ReceiveBytes(still_needed, nowait, &rb, &rawdata,
-                               &m_pending_bytes, thd);
+                               &m_pending_bytes, m_thd);
     if (res != MessageQueueResult::SUCCESS)
       return res;
     if (rb > still_needed)

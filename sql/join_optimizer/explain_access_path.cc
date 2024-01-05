@@ -29,6 +29,7 @@
 #include "sql/hash_join_iterator.h"
 #include "sql/item_sum.h"
 #include "sql/opt_range.h"
+#include "sql/parallel_query/executor.h"
 #include "sql/ref_row_iterators.h"
 #include "sql/sorting_iterator.h"
 #include "sql/sql_optimizer.h"
@@ -159,7 +160,9 @@ vector<ExplainData::Child> GetAccessPathsFromSelectList(JOIN *join) {
   for (Item *item : *join->get_current_fields()) {
     GetAccessPathsFromItem(item, "projection", &ret);
   }
-
+  if (join->qep_tab == nullptr) {
+    return ret;
+  }
   // Look for any Items that were materialized into fields during execution.
   for (uint table_idx = join->primary_tables; table_idx < join->tables;
        ++table_idx) {
@@ -502,6 +505,17 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join) {
       AddChildrenFromPushedCondition(table, &children);
       break;
     }
+    case AccessPath::PARALLEL_COLLECTOR_SCAN: {
+      char buff[64];
+      pq::Collector *collector = path->parallel_collector_scan().collector;
+      snprintf(buff, sizeof(buff), "Gather (slice: 0, workers: %u)",
+               collector->NumWorkers());
+      string str(buff);
+      description.push_back(move(str));
+
+      children.push_back({collector->PartialRootAccessPath()});
+      break;
+    }    
     case AccessPath::TABLE_VALUE_CONSTRUCTOR:
     case AccessPath::FAKE_SINGLE_ROW:
       description.emplace_back("Rows fetched before execution");
@@ -848,7 +862,11 @@ string PrintQueryPlan(int level, AccessPath *path, JOIN *join,
   }
   // Note:
   ExplainData explain = ExplainAccessPath(path, join);
-
+  
+  if (path->type == AccessPath::PARALLEL_COLLECTOR_SCAN) {
+    auto &collector_path = path->parallel_collector_scan();
+    join = collector_path.collector->PartialJoin();
+  }
   int top_level = level;
 
   for (const string &str : explain.description) {

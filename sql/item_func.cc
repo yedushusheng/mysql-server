@@ -1681,6 +1681,17 @@ bool Item_func_numhybrid::get_time(MYSQL_TIME *ltime) {
   }
 }
 
+bool Item_func_numhybrid::init_from(const Item *item,
+                                    Item_clone_context *context) {
+  if (Item_func::init_from(item, context)) return true;
+
+  const Item_func_numhybrid *from =
+      down_cast<const Item_func_numhybrid *>(item);
+  hybrid_type = from->hybrid_type;
+
+  return false;
+}
+
 void Item_typecast_signed::print(const THD *thd, String *str,
                                  enum_query_type query_type) const {
   str->append(STRING_WITH_LEN("cast("));
@@ -9747,6 +9758,27 @@ longlong Item_func_internal_is_enabled_role::val_int() {
   }
 
   return 0;
+}
+
+bool Item_func::init_from(const Item *from_item, Item_clone_context *context) {
+  if (Item_result_field::init_from(from_item, context)) return true;
+  const Item_func *item = down_cast<const Item_func *>(from_item);
+  null_on_null = item->null_on_null;
+  allowed_arg_cols = item->allowed_arg_cols;
+  used_tables_cache = item->used_tables_cache;
+  not_null_tables_cache = item->not_null_tables_cache;
+  arg_count = item->arg_count;
+
+  for (uint i = 0; i < arg_count; i++) {
+    Item_clone_context::Func_set_arg func_set_arg{i, false};
+    if (context->set_cloned_func_arg(this,
+                                     pointer_cast<uchar *>(&func_set_arg)))
+      return true;
+    if (!func_set_arg.is_set && !(args[i] = item->args[i]->clone(context)))
+      return true;
+    used_tables_cache |= args[i]->used_tables();
+  }
+  return false;
 }
 
 bool Item_func::ensure_multi_equality_fields_are_available_walker(uchar *arg) {

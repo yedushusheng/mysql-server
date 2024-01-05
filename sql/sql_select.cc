@@ -57,6 +57,7 @@
 #include "mysql/udf_registration_types.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
+#include "scope_guard.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"  // *_ACL
 #include "sql/auth/sql_security_ctx.h"
@@ -118,6 +119,7 @@
 #include "sql_string.h"
 #include "template_utils.h"
 #include "thr_lock.h"
+#include "sql/parallel_query/planner.h"
 
 using std::max;
 using std::min;
@@ -1810,6 +1812,23 @@ void JOIN::destroy() {
     temp_tables.clear();
     sorting_paths.clear();
   }
+  // The parallel query also depends on this cleanup because we recreate
+  // temporary table on leader furthermore there is no qep_tab in partial plan.
+  for (JOIN::TemporaryTableToCleanup cleanup : temp_tables) {
+    if (cleanup.table != nullptr) {
+      cleanup.table->sorting_iterator = nullptr;
+      cleanup.table->duplicate_removal_iterator = nullptr;
+    }
+    close_tmp_table(cleanup.table);
+    free_tmp_table(cleanup.table);
+    ::destroy(cleanup.temp_table_param);
+  }
+  for (Filesort *filesort : filesorts_to_cleanup) {
+    ::destroy(filesort);
+  }
+  temp_tables.clear();
+  filesorts_to_cleanup.clear();
+  
   if (join_tab || best_ref) {
     for (uint i = 0; i < tables; i++) {
       JOIN_TAB *const tab = join_tab ? &join_tab[i] : best_ref[i];
@@ -3741,14 +3760,22 @@ void JOIN::cleanup() {
       if (!table) continue;
       cleanup_table(table);
     }
-  } else if (thd->lex->using_hypergraph_optimizer) {
-    for (TABLE_LIST *tl = select_lex->leaf_tables; tl; tl = tl->next_leaf) {
+  } else if (thd->lex->using_hypergraph_optimizer || thd->lex->is_partial_plan) {
+    for (TABLE_LIST *tl = query_block->leaf_tables; tl; tl = tl->next_leaf) {
       cleanup_table(tl->table);
     }
-    for (JOIN::TemporaryTableToCleanup cleanup : temp_tables) {
-      cleanup_table(cleanup.table);
-    }
   }
+  // The parallel query also depends on this cleanup because we recreate
+  // temporary table on leader and there is no qep_tab in partial plan.
+  for (JOIN::TemporaryTableToCleanup cleanup : temp_tables) {
+      cleanup_table(cleanup.table);
+  }
+
+  if (parallel_plan) parallel_plan->DestroyCollector();
+
+  /* Restore ref array to original state */
+  set_ref_item_slice(REF_SLICE_SAVED_BASE);
+}
 
   /* Restore ref array to original state */
   set_ref_item_slice(REF_SLICE_SAVED_BASE);
@@ -4024,10 +4051,18 @@ bool test_if_subpart(ORDER *a, ORDER *b) {
 */
 
 void calc_group_buffer(JOIN *join, ORDER *group) {
+  calc_group_buffer(join->grouped, join->tmp_table_param, group);
+}
+/**
+  calc how big buffer we need for comparing group entries.
+*/
+
+void calc_group_buffer(bool &grouped, Temp_table_param &tmp_table_param,
+                       ORDER *group) {
   DBUG_TRACE;
   uint key_length = 0, parts = 0, null_parts = 0;
 
-  if (group) join->grouped = true;
+  if (group) grouped = true;
   for (; group; group = group->next) {
     Item *group_item = *group->item;
     Field *field = group_item->get_tmp_table_field();
@@ -4084,9 +4119,9 @@ void calc_group_buffer(JOIN *join, ORDER *group) {
     parts++;
     if (group_item->maybe_null) null_parts++;
   }
-  join->tmp_table_param.group_length = key_length + null_parts;
-  join->tmp_table_param.group_parts = parts;
-  join->tmp_table_param.group_null_parts = null_parts;
+  tmp_table_param.group_length = key_length + null_parts;
+  tmp_table_param.group_parts = parts;
+  tmp_table_param.group_null_parts = null_parts;
 }
 
 /**
@@ -4518,9 +4553,17 @@ bool JOIN::make_tmp_tables_info() {
       DBUG_PRINT("info", ("Creating group table"));
 
       calc_group_buffer(this, group_list.order);
-      count_field_types(select_lex, &tmp_table_param,
-                        tmp_fields[REF_SLICE_TMP1],
-                        select_distinct && group_list.empty(), false);
+      bool reset_with_sum_funcs = select_distinct && group_list.empty();
+      auto restore_sum_funcs = create_scope_guard([reset_with_sum_funcs, this] {
+        if (!reset_with_sum_funcs) return;
+        // count_field_types could reset aggregation of item, parallel plan
+        // depends it, so here store it.
+        for (auto *field : tmp_fields[REF_SLICE_TMP1])
+          field->restore_aggregation();
+      });
+      count_field_types(query_block, &tmp_table_param,
+                        tmp_fields[REF_SLICE_TMP1], reset_with_sum_funcs,
+                        false);
       tmp_table_param.hidden_field_count =
           CountHiddenFields(tmp_fields[REF_SLICE_TMP1]);
       streaming_aggregation = false;
@@ -4925,6 +4968,7 @@ bool JOIN::make_tmp_tables_info() {
 }
 
 void JOIN::unplug_join_tabs() {
+  if (!best_ref) return;
   ASSERT_BEST_REF_IN_JOIN_ORDER(this);
 
   /*

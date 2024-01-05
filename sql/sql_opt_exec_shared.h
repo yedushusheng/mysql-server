@@ -283,6 +283,7 @@ class QEP_shared {
   plan_idx last_inner() { return m_last_inner; }
   plan_idx first_upper() { return m_first_upper; }
   TABLE_REF &ref() { return m_ref; }
+  void set_ref(TABLE_REF &ref) {  m_ref = ref; }
   uint index() const { return m_index; }
   void set_index(uint i) { m_index = i; }
   enum join_type type() const { return m_type; }
@@ -296,6 +297,7 @@ class QEP_shared {
     m_condition_is_pushed_to_sort = true;
   }
   Key_map &keys() { return m_keys; }
+  void set_keys(Key_map k) { m_keys = k; }
   ha_rows records() const { return m_records; }
   void set_records(ha_rows r) { m_records = r; }
   QUICK_SELECT_I *quick() const { return m_quick; }
@@ -477,7 +479,7 @@ class QEP_shared_owner {
     DBUG_ASSERT(!m_qs);
     m_qs = q;
   }
-
+  QEP_shared *qs() const { return m_qs; }
   // Getters/setters forwarding to QEP_shared:
 
   JOIN *join() const { return m_qs ? m_qs->join() : nullptr; }
@@ -508,6 +510,7 @@ class QEP_shared_owner {
   void set_last_sj_inner(plan_idx i) { return m_qs->set_last_sj_inner(i); }
   void set_first_upper(plan_idx i) { return m_qs->set_first_upper(i); }
   TABLE_REF &ref() const { return m_qs->ref(); }
+  void set_ref(TABLE_REF &ref) {  m_qs->set_ref(ref); }
   uint index() const { return m_qs->index(); }
   void set_index(uint i) { return m_qs->set_index(i); }
   enum join_type type() const { return m_qs->type(); }
@@ -521,6 +524,7 @@ class QEP_shared_owner {
     m_qs->mark_condition_as_pushed_to_sort();
   }
   Key_map &keys() const { return m_qs->keys(); }
+  void set_keys(Key_map k) { m_qs->set_keys(k); }
   ha_rows records() const { return m_qs->records(); }
   void set_records(ha_rows r) { return m_qs->set_records(r); }
   QUICK_SELECT_I *quick() const { return m_qs->quick(); }

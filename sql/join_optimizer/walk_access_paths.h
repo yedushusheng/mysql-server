@@ -81,6 +81,7 @@ void WalkAccessPaths(AccessPath *path, const JOIN *join,
     case AccessPath::FOLLOW_TAIL:
     case AccessPath::INDEX_RANGE_SCAN:
     case AccessPath::DYNAMIC_INDEX_RANGE_SCAN:
+    case AccessPath::PARALLEL_COLLECTOR_SCAN:
     case AccessPath::TABLE_VALUE_CONSTRUCTOR:
     case AccessPath::FAKE_SINGLE_ROW:
     case AccessPath::ZERO_ROWS:

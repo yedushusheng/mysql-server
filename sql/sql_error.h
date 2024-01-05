@@ -294,8 +294,10 @@ class Diagnostics_area {
   Diagnostics_area(bool allow_unlimited_conditions);
   ~Diagnostics_area();
 
-  void set_overwrite_status(bool can_overwrite_status) {
+  bool set_overwrite_status(bool can_overwrite_status) {
+    bool old_value = m_can_overwrite_status;
     m_can_overwrite_status = can_overwrite_status;
+    return old_value;
   }
 
   bool is_sent() const { return m_is_sent; }

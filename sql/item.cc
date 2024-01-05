@@ -124,6 +124,10 @@ void item_init(void) {
   uuid_short_init();
 }
 
+MEM_ROOT *Item_clone_context::mem_root() const {
+  return m_thd->mem_root;
+}
+
 Item::Item()
     : next_free(nullptr),
       str_value(),
@@ -201,6 +205,60 @@ Item::Item(const POS &)
       m_is_window_function(false),
       derived_used(false),
       m_accum_properties(0) {}
+
+bool Item::init_from(const Item *item, Item_clone_context *context) {
+  collation = item->collation;
+  max_length = item->max_length;
+  marker = item->marker;
+  cmp_context = item->cmp_context;
+  is_expensive_cache = item->is_expensive_cache;
+  m_data_type = item->m_data_type;
+  fixed = item->fixed;
+  decimals = item->decimals;
+  m_nullable = item->m_nullable;
+  null_value = item->null_value;
+  unsigned_flag = item->unsigned_flag;
+  m_is_window_function = item->m_is_window_function;
+  derived_used = item->derived_used;
+  m_accum_properties = item->m_accum_properties;
+  hidden = item->hidden;
+  m_id = item->m_id;
+
+  /*
+    The pointer location may be used for comparison in some cases, like
+    comparison with antijoin_null_cond.
+  */
+  item_name.set(item->item_name.ptr(), item->item_name.length());
+  orig_name.set(item->orig_name.ptr(), item->orig_name.length());
+  if (str_value.copy(item->str_value)) return true;
+
+#ifndef NDEBUG
+  /*
+    Parse-time context-independent constructor may be used before to construct
+    the object.
+  */
+  contextualized = true;
+#endif
+
+  assert(current_thd == context->thd());
+
+  // Constructed by parse-time context-independent constructor.
+  if (context->thd()->item_list() != this) {
+    next_free = context->thd()->item_list();  // Put in free list
+    context->thd()->set_item_list(this);
+  }
+  return false;
+}
+
+Item *Item::clone(Item_clone_context *context) const {
+  Item *item;
+  if (!(item = new_item(context))) return nullptr;
+  assert(typeid(*item) == typeid(*this));
+
+  if (item->init_from(this, context)) return nullptr;
+
+  return item;
+}
 
 /**
   @todo
@@ -816,6 +874,28 @@ bool Item_field::collect_item_field_processor(uchar *arg) {
     if (curr_item->eq(this, true)) return false; /* Already in the set. */
   }
   item_list->push_back(this);
+  return false;
+}
+
+bool Item_field::init_from(const Item *from, Item_clone_context *context) {
+  if (super::init_from(from, context)) return true;
+  const Item_field *item = down_cast<const Item_field *>(from);
+
+  have_privileges = item->have_privileges;
+  any_privileges = item->any_privileges;
+  can_use_prefix_key = item->can_use_prefix_key;
+
+  assert(item->table_ref && item->field);
+  field_index = item->field_index;
+  table_ref = item->table_ref;
+
+  if (context->fix_cloned_field(this, nullptr)) return true;
+  assert(field && table_ref != item->table_ref);
+
+  field->table->mark_column_used(field, context->thd()->mark_used_columns);
+
+  item_equal = nullptr;
+
   return false;
 }
 
@@ -1984,7 +2064,10 @@ class Item_aggregate_ref : public Item_ref {
       Item_ident::print(thd, str, query_type);
   }
   Ref_Type ref_type() const override { return AGGREGATE_REF; }
-
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_aggregate_ref(context, ref, db_name, table_name, field_name,
+                                  depended_from);
+  }
   /**
     Walker processor used by SELECT_LEX::transform_grouped_to_derived to replace
     an aggregate's reference to one in the new derived table's (hidden) select
@@ -8024,6 +8107,14 @@ void Item_ref::fix_after_pullout(SELECT_LEX *parent_select,
   Item_ident::fix_after_pullout(parent_select, removed_select);
 }
 
+bool Item_ref::init_from(const Item *from, Item_clone_context *context) {
+  if (Item_ident::init_from(from, context)) return true;
+
+  const Item_ref *from_ref = down_cast<const Item_ref *>(from);
+  assert(from_ref->ref);
+  return context->fix_cloned_ref(this, pointer_cast<uchar *>(*from_ref->ref));
+}
+
 /**
   Compare two view column references for equality.
 
@@ -10081,6 +10172,35 @@ bool Item_ident::is_strong_side_column_not_in_fd(uchar *arg) {
   // p->first is Group_check, p->second is map of strong tables.
   return p->first->do_ident_check(this, p->second,
                                   Group_check::CHECK_STRONG_SIDE_COLUMN);
+}
+
+bool Item_ident::init_from(const Item *from, Item_clone_context *context) {
+  if (super::init_from(from, context)) return true;
+
+  const Item_ident *item = down_cast<const Item_ident *>(from);
+  m_alias_of_expr = item->m_alias_of_expr;
+
+  MEM_ROOT *root = context->mem_root();
+  m_orig_db_name = safe_strdup_root(root, item->m_orig_db_name);
+  m_orig_table_name = safe_strdup_root(root, item->m_orig_table_name);
+  m_orig_field_name = safe_strdup_root(root, item->m_orig_field_name);
+  db_name = safe_strdup_root(root, item->db_name);
+  table_name = safe_strdup_root(root, item->table_name);
+  field_name = safe_strdup_root(root, item->field_name);
+  if ((!m_orig_db_name && item->m_orig_db_name) ||
+      (!m_orig_table_name && item->m_orig_table_name) ||
+      (!m_orig_field_name && item->m_orig_field_name) ||
+      (!db_name && item->db_name) || (!table_name && item->table_name) ||
+      (!field_name && item->field_name))
+    return true;
+
+  // Don't spread cached values because table is changed.
+  cached_table = nullptr;
+
+  // Item_ref::contains_alias_of_expr relies on this.
+  depended_from = item->depended_from;
+
+  return false;
 }
 
 bool Item_ident::is_column_not_in_fd(uchar *arg) {

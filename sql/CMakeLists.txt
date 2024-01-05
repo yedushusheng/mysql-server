@@ -577,6 +577,11 @@ SET(SQL_SHARED_SOURCES
   uniques.cc
   xa.cc
   parallel_query/message_queue.cc
+  parallel_query/row_exchange.cc
+  parallel_query/planner.cc
+  parallel_query/executor.cc
+  parallel_query/worker.cc
+  parallel_query/rewrite_access_path.cc  
 )
 
 # BISON_TARGET(<Name> <YaccInput> <CodeOutput>

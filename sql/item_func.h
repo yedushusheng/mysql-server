@@ -606,6 +606,7 @@ class Item_func : public Item_result_field, public Func_args_handle {
   /// for hash join (join conditions in hash join must be equi-join conditions),
   /// or if it should be placed as a filter after the join.
   virtual bool contains_only_equi_join_condition() const { return false; }
+  bool init_from(const Item *item, Item_clone_context *context) override;
 
   bool ensure_multi_equality_fields_are_available_walker(uchar *) override;
 
@@ -828,6 +829,7 @@ class Item_func_numhybrid : public Item_func {
   virtual bool date_op(MYSQL_TIME *ltime, my_time_flags_t fuzzydate) = 0;
   virtual bool time_op(MYSQL_TIME *ltime) = 0;
   bool is_null() override { return update_null_value() || null_value; }
+  bool init_from(const Item *item, Item_clone_context *context) override;
 };
 
 /* function where type of result detected by first argument */
@@ -1078,6 +1080,9 @@ class Item_func_plus final : public Item_func_additive_op {
   // SUPPRESS_UBSAN: signed integer overflow
   longlong int_op() override SUPPRESS_UBSAN;
 
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_plus(args[0], args[1]);
+  }
   double real_op() override;
   my_decimal *decimal_op(my_decimal *) override;
   enum Functype functype() const override { return PLUS_FUNC; }

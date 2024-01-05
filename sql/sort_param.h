@@ -331,7 +331,8 @@ class Sort_param {
   void decide_addon_fields(Filesort *file_sort,
                            const Mem_root_array<TABLE *> &tables,
                            bool sort_positions);
-
+  bool clone_from(Sort_param *other);
+  
   /// Reset the decision made in decide_addon_fields(). Only used in exceptional
   /// circumstances (see NewWeedoutAccessPathForTables()).
   void clear_addon_fields();

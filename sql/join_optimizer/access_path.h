@@ -52,6 +52,9 @@ struct ORDER;
 struct POSITION;
 struct TABLE;
 struct TABLE_REF;
+namespace pq {
+class Collector;
+}
 
 /**
   Represents an expression tree in the relational algebra of joins.
@@ -168,6 +171,7 @@ struct AccessPath {
     FOLLOW_TAIL,
     INDEX_RANGE_SCAN,
     DYNAMIC_INDEX_RANGE_SCAN,
+    PARALLEL_COLLECTOR_SCAN,
 
     // Basic access paths that don't correspond to a specific table.
     TABLE_VALUE_CONSTRUCTOR,
@@ -346,6 +350,14 @@ struct AccessPath {
   const auto &dynamic_index_range_scan() const {
     assert(type == DYNAMIC_INDEX_RANGE_SCAN);
     return u.dynamic_index_range_scan;
+  }
+  auto &parallel_collector_scan() {
+    assert(type == PARALLEL_COLLECTOR_SCAN);
+    return u.parallel_collector_scan;
+  }
+  const auto &parallel_collector_scan() const {
+    assert(type == PARALLEL_COLLECTOR_SCAN);
+    return u.parallel_collector_scan;
   }
   auto &materialized_table_function() {
     assert(type == MATERIALIZED_TABLE_FUNCTION);
@@ -607,6 +619,10 @@ struct AccessPath {
       TABLE *table;
       QEP_TAB *qep_tab;  // Used only for buffering.
     } dynamic_index_range_scan;
+    struct {
+      TABLE *table;
+      pq::Collector *collector;
+    } parallel_collector_scan;
     struct {
       TABLE *table;
       Table_function *table_function;
@@ -903,6 +919,18 @@ inline AccessPath *NewDynamicIndexRangeScanAccessPath(
   path->count_examined_rows = count_examined_rows;
   path->dynamic_index_range_scan().table = table;
   path->dynamic_index_range_scan().qep_tab = qep_tab;
+  return path;
+}
+
+inline AccessPath *NewParallelCollectorAccessPath(THD *thd,
+                                                  pq::Collector *collector,
+                                                  TABLE *table,
+                                                  bool count_examined_rows) {
+  AccessPath *path = new (thd->mem_root) AccessPath;
+  path->type = AccessPath::PARALLEL_COLLECTOR_SCAN;
+  path->count_examined_rows = count_examined_rows;
+  path->parallel_collector_scan().table = table;
+  path->parallel_collector_scan().collector = collector;
   return path;
 }
 

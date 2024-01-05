@@ -92,11 +92,64 @@ typedef Mem_root_array<Key_use> Key_use_array;
 
 class Cost_model_server;
 
+namespace pq {
+class ParallelPlan;
+}
+
 struct SARGABLE_PARAM {
   Field *field;     /* field against which to check sargability */
   Item **arg_value; /* values of potential keys for lookups     */
   uint num_values;  /* number of values in the above array      */
 };
+
+struct ORDER_clone_desc {
+  MEM_ROOT *mem_root;
+  Ref_item_array *ref_item_array;
+  size_t ref_item_array_len;
+  // When clone ORDER in worker plan, don't need find matched item because plan
+  // must be same.
+  Item **orig_ref_item_base;
+};
+
+static ORDER *clone_order_list(ORDER *order, ORDER_clone_desc desc) {
+  ORDER *cloned_order = nullptr;
+  ORDER **next = &cloned_order;
+  for (ORDER *ord = order; ord; ord = ord->next) {
+    // XXX don't support rollup yet.
+    assert(!ord->rollup_item);
+    ORDER *new_ord =
+        pointer_cast<ORDER *>(memdup_root(desc.mem_root, ord, sizeof(*ord)));
+    // We can not report error in this function
+    assert(new_ord);
+
+    // Invalidate pointers
+    new_ord->item_initial = nullptr;
+    new_ord->field_in_tmp_table = nullptr;
+    new_ord->buff = nullptr;
+    new_ord->item = nullptr;
+    Ref_item_array &ref_items = *desc.ref_item_array;
+    // resolve **item
+    if (desc.orig_ref_item_base) {
+      uint pos = ord->item - desc.orig_ref_item_base;
+      assert(pos < desc.ref_item_array_len);
+      new_ord->item = &ref_items[pos];
+    } else {
+      for (size_t i = 0; i < desc.ref_item_array_len; i++) {
+        Item *item = ref_items[i];
+        assert(item);
+        if (item->is_identical(*ord->item)) {
+          new_ord->item = &ref_items[i];
+          break;
+        }
+      }
+    }
+    assert(new_ord->item && *new_ord->item);
+
+    *next = new_ord;
+    next = &new_ord->next;
+  }
+  return cloned_order;
+}
 
 /**
   Wrapper for ORDER* pointer to trace origins of ORDER list
@@ -122,6 +175,12 @@ class ORDER_with_src {
         flags(order_arg ? ESP_EXISTS : ESP_none) {}
 
   bool empty() const { return order == nullptr; }
+
+  ORDER_with_src clone(ORDER_clone_desc desc) const {
+    ORDER_with_src other = *this;
+    other.order = clone_order_list(order, std::move(desc));
+    return other;
+  }
 
   void clean() {
     order = nullptr;
@@ -473,6 +532,10 @@ class JOIN {
   ORDER_with_src order, group_list;
   //NOTE:order/group子句 MySQL5.6:ORDER* order/ORDER* group_list
 
+  // group_list could be clear if the group_list step is arranged. this is used
+  // for save original group_list.
+  ORDER_with_src group_list_planned;
+
   // Used so that AggregateIterator knows which items to signal when the rollup
   // level changes. Obviously only used in the presence of rollup.
   Prealloced_array<Item_rollup_group_item *, 4> rollup_group_items{
@@ -644,6 +707,8 @@ class JOIN {
   */
   bool with_json_agg;
 
+  pq::ParallelPlan *parallel_plan{nullptr};
+
   /// True if plan is const, ie it will return zero or one rows.
   bool plan_is_const() const { return const_tables == primary_tables; }
 
@@ -809,7 +874,9 @@ class JOIN {
   bool push_to_engines();
 
   AccessPath *root_access_path() const { return m_root_access_path; }
-
+  void set_root_access_path(AccessPath *path) { m_root_access_path = path; }
+  bool clone_from(JOIN *from, Item_clone_context *context);
+  
  private:
   bool optimized{false};  ///< flag to avoid double optimization in EXPLAIN
 
