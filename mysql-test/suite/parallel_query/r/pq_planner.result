@@ -164,3 +164,50 @@ cN
 N
 N
 DROP TABLE t1;
+CREATE TABLE t1 (ckey  VARCHAR(8), grp VARCHAR(8), val VARCHAR(8));
+INSERT INTO t1 VALUES ("key1", "g1", "v1"), ("key2", "g1", "v2"), ("key3", "g2", "v3");
+EXPLAIN format=tree SELECT JSON_ARRAYAGG(ckey) AS ckeys FROM t1;
+EXPLAIN
+-> Aggregate: json_arrayagg(ckey)  (cost=N.NNN rows=NNN)
+    -> Gather (slice: 1, workers: 4)
+        -> Aggregate: json_arrayagg(t1.ckey)  (cost=N.NNN rows=NNN)
+            -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+
+SELECT JSON_ARRAYAGG(ckey) AS ckeys FROM t1;
+ckeys
+["key1", "key2", "key3"]
+EXPLAIN format=tree SELECT grp, JSON_ARRAYAGG(ckey) AS keys_grouped FROM t1 GROUP BY grp;
+EXPLAIN
+-> Group aggregate: json_arrayagg(ckey)  (cost=N.NNN rows=NNN)
+    -> Gather (slice: 1, workers: 4) with merge sort: t1.grp
+        -> Group aggregate: json_arrayagg(t1.ckey)  (cost=N.NNN rows=NNN)
+            -> Sort: t1.grp  (cost=N.NNN rows=NNN)
+                -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+
+SELECT grp, JSON_ARRAYAGG(ckey) AS keys_grouped FROM t1 GROUP BY grp;
+grp	keys_grouped
+g1	["key2", "key1"]
+g2	["key3"]
+EXPLAIN format=tree SELECT JSON_OBJECTAGG(ckey, val) AS key_val FROM t1;
+EXPLAIN
+-> Aggregate: json_objectagg(ckey,ckey)  (cost=N.NNN rows=NNN)
+    -> Gather (slice: 1, workers: 4)
+        -> Aggregate: json_objectagg(t1.ckey,t1.val)  (cost=N.NNN rows=NNN)
+            -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+
+SELECT JSON_OBJECTAGG(ckey, val) AS key_val FROM t1;
+key_val
+{"key1": "v1", "key2": "v2", "key3": "v3"}
+EXPLAIN format=tree SELECT grp, JSON_OBJECTAGG(ckey, val) AS key_val_grouped FROM t1 GROUP BY grp;
+EXPLAIN
+-> Group aggregate: json_objectagg(ckey,ckey)  (cost=N.NNN rows=NNN)
+    -> Gather (slice: 1, workers: 4) with merge sort: t1.grp
+        -> Group aggregate: json_objectagg(t1.ckey,t1.val)  (cost=N.NNN rows=NNN)
+            -> Sort: t1.grp  (cost=N.NNN rows=NNN)
+                -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+
+SELECT grp, JSON_OBJECTAGG(ckey, val) AS key_val_grouped FROM t1 GROUP BY grp;
+grp	key_val_grouped
+g1	{"key1": "v1", "key2": "v2"}
+g2	{"key3": "v3"}
+DROP TABLE t1;

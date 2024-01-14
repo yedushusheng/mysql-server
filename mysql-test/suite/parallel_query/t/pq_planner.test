@@ -91,3 +91,18 @@ INSERT INTO t1 VALUES(1),(2),(3);
 --replace_regex /\d+/N/
 --eval $query
 DROP TABLE t1;
+
+# Json sum functions support
+CREATE TABLE t1 (ckey  VARCHAR(8), grp VARCHAR(8), val VARCHAR(8));
+
+INSERT INTO t1 VALUES ("key1", "g1", "v1"), ("key2", "g1", "v2"), ("key3", "g2", "v3");
+--let $query = SELECT JSON_ARRAYAGG(ckey) AS ckeys FROM t1
+--source suite/parallel_query/include/explain_and_run.inc
+--let $query = SELECT grp, JSON_ARRAYAGG(ckey) AS keys_grouped FROM t1 GROUP BY grp
+--source suite/parallel_query/include/explain_and_run.inc
+--let $query = SELECT JSON_OBJECTAGG(ckey, val) AS key_val FROM t1
+--source suite/parallel_query/include/explain_and_run.inc
+--let $query = SELECT grp, JSON_OBJECTAGG(ckey, val) AS key_val_grouped FROM t1 GROUP BY grp
+--source suite/parallel_query/include/explain_and_run.inc
+
+DROP TABLE t1;
