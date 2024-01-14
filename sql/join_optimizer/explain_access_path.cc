@@ -528,7 +528,10 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
 
       if (merge_sort) {
         string str;
-        str += "Merge sort: ";
+        if (merge_sort->m_remove_duplicates)
+          str += "Merge sort with duplicate removal: ";
+        else
+          str += "Merge sort: ";
 
         bool first = true;
         for (unsigned i = 0; i < merge_sort->sort_order_length();

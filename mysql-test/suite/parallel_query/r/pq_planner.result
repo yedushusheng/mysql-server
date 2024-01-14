@@ -18,15 +18,15 @@ CREATE TABLE t1(id int primary key auto_increment, a INT, b INT, c INT) ENGINE=I
 create table for master
 CREATE TABLE t1(id int primary key auto_increment, a INT, b INT, c INT) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 EXPLAIN format=tree SELECT a FROM t1 HAVING a = 1;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
-   Statement: select `t1`.`a` AS `a` from `t1` where (`t1`.`a` = 1)
+   Statement: select `t1`.`a` AS `a` from `auto_test`.`t1` where (`t1`.`a` = 1)
    Execution datasets: s_2_1, s_2_2
 
 SELECT a FROM t1 HAVING a = 1;
@@ -49,8 +49,8 @@ CREATE TABLE t1(id int primary key auto_increment, f1 INT) ENGINE=InnoDB DEFAULT
 create table for master
 CREATE TABLE t1(id int primary key auto_increment, f1 INT) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 EXPLAIN format=tree SELECT (SELECT COUNT(*) + (SELECT COUNT(*) FROM t1 WHERE f1 = c.f2) FROM t1) FROM (SELECT 555 AS f2) AS c;
@@ -87,16 +87,16 @@ CREATE TABLE t1(a INT NOT NULL, PRIMARY KEY(a)) ENGINE=InnoDB DEFAULT CHARSET=ut
 create table for master
 CREATE TABLE t1(a INT NOT NULL, PRIMARY KEY(a)) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (a % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "a"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "a"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "a"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "a"'
     );
 "Create spider tables successfully."
 INSERT INTO t1 VALUES(1),(2);
 EXPLAIN format=tree SELECT max(a), max(concat("*", a, "*")) FROM t1;;
 EXPLAIN
--> Aggregate: max(`max(concat('*',t1.a,'*'))`)  (cost=N.NNN rows=NNN)
+-> Aggregate: max(a), max(`max(concat('*',``t1``.``a``,'*'))`)  (cost=N.NNN rows=NNN)
     -> Gather (slice: 1, workers: 2)
-       Statement: select max(`t1`.`a`) AS `a`,max(concat('*',`t1`.`a`,'*')),count(0) from `t1`
+       Statement: select max(`t1`.`a`) AS `a`,max(concat('*',`t1`.`a`,'*')),count(0) from `auto_test`.`t1`
        Execution datasets: s_2_1, s_2_2
 
 SELECT max(a), max(concat("*", a, "*")) FROM t1;;
@@ -127,8 +127,8 @@ id int primary key auto_increment,
 `a` varbinary(10) DEFAULT NULL
 ) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 INSERT INTO t (a) VALUES(0xFF00F0F0), (NULL), (0xF0F0FF00);
@@ -136,7 +136,7 @@ EXPLAIN format=tree SELECT SQL_BUFFER_RESULT HEX(BIT_AND(a)), HEX(BIT_OR(a)), HE
 EXPLAIN
 -> Aggregate: bit_xor(a), bit_or(a), bit_and(a)  (cost=2.54..4.75 rows=4)
     -> Gather (slice: 1, workers: 2)
-       Statement: select bit_xor(`t`.`a`) AS `a`,bit_or(`t`.`a`) AS `a`,bit_and(`t`.`a`) AS `a`,count(0) from `t`
+       Statement: select bit_xor(`t`.`a`) AS `a`,bit_or(`t`.`a`) AS `a`,bit_and(`t`.`a`) AS `a`,count(0) from `auto_test`.`t`
        Execution datasets: s_2_1, s_2_2
 
 SELECT SQL_BUFFER_RESULT HEX(BIT_AND(a)), HEX(BIT_OR(a)), HEX(BIT_XOR(a)) FROM t;
@@ -170,8 +170,8 @@ id int primary key auto_increment,
 `d` date DEFAULT NULL
 ) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 INSERT INTO t1 (i, d) VALUES (1, '2008-01-01'), (2, '2008-01-02'), (3, '2008-01-03');
@@ -180,7 +180,7 @@ EXPLAIN
 
    Execution datasets: s_2_1, s_2_2
    Merge sort: `rand()`
-   Statement: select rand(),coalesce(`t1`.`d`,`t1`.`d`) AS `COALESCE(d, d)`,ifnull(`t1`.`d`,`t1`.`d`) AS `IFNULL(d, d)`,if(`t1`.`i`,`t1`.`d`,`t1`.`d`) AS `IF(i, d, d)`,(case `t1`.`i` when `t1`.`i` then `t1`.`d` else `t1`.`d` end) AS `CASE i WHEN i THEN d ELSE d END`,greatest(`t1`.`d`,`t1`.`d`) AS `GREATEST(d, d)`,least(`t1`.`d`,`t1`.`d`) AS `LEAST(d, d)` from `t1` order by rand()
+   Statement: select rand(),coalesce(`t1`.`d`,`t1`.`d`) AS `COALESCE(d, d)`,ifnull(`t1`.`d`,`t1`.`d`) AS `IFNULL(d, d)`,if(`t1`.`i`,`t1`.`d`,`t1`.`d`) AS `IF(i, d, d)`,(case `t1`.`i` when `t1`.`i` then `t1`.`d` else `t1`.`d` end) AS `CASE i WHEN i THEN d ELSE d END`,greatest(`t1`.`d`,`t1`.`d`) AS `GREATEST(d, d)`,least(`t1`.`d`,`t1`.`d`) AS `LEAST(d, d)` from `auto_test`.`t1` order by rand()
 -> Gather (slice: 1, workers: 2)
 SELECT COALESCE(d, d), IFNULL(d, d), IF(i, d, d), CASE i WHEN i THEN d ELSE d END, GREATEST(d, d), LEAST(d, d) FROM t1 ORDER BY RAND();
 COALESCE(d, d)	IFNULL(d, d)	IF(i, d, d)	CASE i WHEN i THEN d ELSE d END	GREATEST(d, d)	LEAST(d, d)
@@ -203,8 +203,8 @@ CREATE TABLE t1(id int primary key auto_increment, c1 INT) ENGINE=InnoDB DEFAULT
 create table for master
 CREATE TABLE t1(id int primary key auto_increment, c1 INT) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 INSERT INTO t1 (c1) VALUES(1),(2),(3);
@@ -232,20 +232,21 @@ CREATE TABLE t1(id int primary key auto_increment, a INT, b TEXT) ENGINE=InnoDB 
 create table for master
 CREATE TABLE t1(id int primary key auto_increment, a INT, b TEXT) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 INSERT INTO t1 (a, b) VALUES (1, 'hello'), (2, 'world');
-EXPLAIN format=tree SELECT 1 FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1;
+EXPLAIN format=tree SELECT 1 AS result FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1;
 EXPLAIN
 -> Limit: 1 row(s)
     -> Gather (slice: 1, workers: 2)
-       Merge sort: `concat(uuid(),t1.b)` DESC
-       Statement: select concat(uuid(),`t1`.`b`) from `t1` order by concat(uuid(),`t1`.`b`) desc limit 1
+       Merge sort: `concat(uuid(),``t1``.``b``)` DESC
+       Statement: select concat(uuid(),`t1`.`b`) from `auto_test`.`t1` order by concat(uuid(),`t1`.`b`) desc limit 1
        Execution datasets: s_2_1, s_2_2
 
-SELECT 1 FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1;
+SELECT 1 AS result FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1;
+result
 1
 "Start to drop spider tables"
 create table for child
@@ -263,8 +264,8 @@ CREATE TABLE t1(id int primary key auto_increment, a INT, b VARCHAR(20)) ENGINE=
 create table for master
 CREATE TABLE t1(id int primary key auto_increment, a INT, b VARCHAR(20)) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 INSERT INTO t1 (a, b) VALUES(1, 'a'), (2, 'b'), (3, 'c'), (3, 'c'), (4, 'c');
@@ -290,8 +291,8 @@ CREATE TABLE t1(id int primary key auto_increment, track varchar(15)) ENGINE=Inn
 create table for master
 CREATE TABLE t1(id int primary key auto_increment, track varchar(15)) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 INSERT INTO t1(track) VALUES ('CAD'), ('CAD');
@@ -326,14 +327,14 @@ CREATE TABLE t2 (id int primary key auto_increment, date_col datetime NOT NULL, 
 create table for master
 CREATE TABLE t2 (id int primary key auto_increment, date_col datetime NOT NULL, col1 int, filler varchar(255), KEY date_col (date_col, col1)) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 EXPLAIN FORMAT=tree select * from t2 force index(date_col) where    col1 + 10000000 > (@cnt:=@cnt+1) and date_col >= date('2014-04-01');
 EXPLAIN
--> Filter: (((t2.col1 + 10000000) > (@cnt:=((@cnt) + 1))) and (t2.date_col >= <cache>(cast('2014-04-01' as date))))  (cost=0.90 rows=1)
-    -> Table scan on t2  (cost=0.90 rows=4)
+-> Filter: ((t2.col1 + 10000000) > (@cnt:=((@cnt) + 1)))  (cost=0.90 rows=1)
+    -> Table scan on t2, with pushed condition: (t2.date_col >= cast('2014-04-01' as date))  (cost=0.90 rows=4)
 
 "Start to drop spider tables"
 create table for child
@@ -351,8 +352,8 @@ CREATE TABLE t1(id INT PRIMARY KEY AUTO_INCREMENT, b INT) ENGINE=InnoDB DEFAULT 
 create table for master
 CREATE TABLE t1(id INT PRIMARY KEY AUTO_INCREMENT, b INT) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 SELECT
@@ -368,6 +369,167 @@ t1 AS ref_0
 WHERE 21 DIV ref_0.b
 ORDER BY 1, 2;
 c2	c3
+"Start to drop spider tables"
+create table for child
+"drop table on child2_1"
+"drop table on child2_2"
+create table for master
+"drop table on master"
+"Drop spider tables successfully."
+"Start to create spider tables"
+create table for child
+"create table on child2_1"
+CREATE TABLE t1(a INT PRIMARY KEY, b INT, c INT, d varchar(16)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+"create table on child2_2"
+CREATE TABLE t1(a INT PRIMARY KEY, b INT, c INT, d varchar(16)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+create table for master
+CREATE TABLE t1(a INT PRIMARY KEY, b INT, c INT, d varchar(16)) ENGINE=Spider DEFAULT CHARSET=utf8
+PARTITION BY LIST (a % 2)
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "a"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "a"'
+    );
+"Create spider tables successfully."
+INSERT INTO t1 VALUES(1,1,1,'a'),(2,1,1,'a'),(3,1,1,'a'),(4,2,2,'b'),(5,2,2,'b'),(6,2,2,'b'),(7,2,2,'b'),(8,3,3,'c'),(9,3,3,'c'),(10,3,3,'c');
+EXPLAIN format=tree SELECT DISTINCT b FROM t1 ORDER BY b;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)
+   Merge sort with duplicate removal: t1.b
+   Statement: select `t1`.`b` AS `b` from `t1` group by `t1`.`b` order by `t1`.`b`
+   Execution datasets: s_2_1, s_2_2
+
+SELECT DISTINCT b FROM t1 ORDER BY b;
+b
+1
+2
+3
+EXPLAIN format=tree SELECT b FROM t1 GROUP BY b ORDER BY b;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)
+   Merge sort with duplicate removal: t1.b
+   Statement: select `t1`.`b` AS `b` from `t1` group by `t1`.`b` order by `t1`.`b`
+   Execution datasets: s_2_1, s_2_2
+
+SELECT b FROM t1 GROUP BY b ORDER BY b;
+b
+1
+2
+3
+EXPLAIN format=tree SELECT d FROM t1 GROUP BY d ORDER BY d;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)
+   Merge sort with duplicate removal: t1.d
+   Statement: select `t1`.`d` AS `d` from `t1` group by `t1`.`d` order by `t1`.`d`
+   Execution datasets: s_2_1, s_2_2
+
+SELECT d FROM t1 GROUP BY d ORDER BY d;
+d
+a
+b
+c
+EXPLAIN format=tree SELECT DISTINCT b, c FROM t1 ORDER BY b, c;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)
+   Merge sort with duplicate removal: t1.b, t1.c
+   Statement: select `t1`.`b` AS `b`,`t1`.`c` AS `c` from `t1` group by `t1`.`b`,`t1`.`c` order by `t1`.`b`,`t1`.`c`
+   Execution datasets: s_2_1, s_2_2
+
+SELECT DISTINCT b, c FROM t1 ORDER BY b, c;
+b	c
+1	1
+2	2
+3	3
+EXPLAIN format=tree SELECT c, SUM(c) FROM t1 GROUP BY c ORDER BY c;
+EXPLAIN
+-> Sort: t1.c
+    -> Table scan on <temporary>
+        -> Aggregate using temporary table
+            -> Gather (slice: 1, workers: 2)
+               Statement: select `t1`.`c` AS `c`,sum(`t1`.`c`) AS `c` from `t1` group by `t1`.`c`
+               Execution datasets: s_2_1, s_2_2
+
+SELECT c, SUM(c) FROM t1 GROUP BY c ORDER BY c;
+c	SUM(c)
+1	3
+2	8
+3	9
+EXPLAIN format=tree SELECT b,c FROM t1 GROUP BY b,c ORDER BY c;
+EXPLAIN
+-> Sort: t1.c
+    -> Table scan on <temporary>  (cost=0.64..2.55 rows=4)
+        -> Temporary table with deduplication  (cost=2.44..4.35 rows=4)
+            -> Gather (slice: 1, workers: 2)
+               Statement: select `t1`.`b` AS `b`,`t1`.`c` AS `c` from `t1` group by `t1`.`b`,`t1`.`c`
+               Execution datasets: s_2_1, s_2_2
+
+SELECT b,c FROM t1 GROUP BY b,c ORDER BY c;
+b	c
+1	1
+2	2
+3	3
+"Start to drop spider tables"
+create table for child
+"drop table on child2_1"
+"drop table on child2_2"
+create table for master
+"drop table on master"
+"Drop spider tables successfully."
+"Start to create spider tables"
+create table for child
+"create table on child2_1"
+CREATE TABLE t1(id int primary key auto_increment, b VARCHAR(128)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+"create table on child2_2"
+CREATE TABLE t1(id int primary key auto_increment, b VARCHAR(128)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+create table for master
+CREATE TABLE t1(id int primary key auto_increment, b VARCHAR(128)) ENGINE=Spider DEFAULT CHARSET=utf8
+PARTITION BY LIST (id % 2)
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+    );
+"Create spider tables successfully."
+INSERT INTO t1 (b) VALUES (REPEAT('a', 100)), (REPEAT('a', 100)), (REPEAT('a', 100)), (REPEAT('a', 100)), (REPEAT('b', 100)), (REPEAT('b', 100)), (REPEAT('b', 100)), (REPEAT('b', 100));
+EXPLAIN format=tree SELECT b FROM t1 GROUP BY b ORDER BY b;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)
+   Merge sort with duplicate removal: t1.b
+   Statement: select `t1`.`b` AS `b` from `t1` group by `t1`.`b` order by `t1`.`b`
+   Execution datasets: s_2_1, s_2_2
+
+SELECT b FROM t1 GROUP BY b ORDER BY b;
+b
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+"Start to drop spider tables"
+create table for child
+"drop table on child2_1"
+"drop table on child2_2"
+create table for master
+"drop table on master"
+"Drop spider tables successfully."
+"Start to create spider tables"
+create table for child
+"create table on child2_1"
+CREATE TABLE t1(id int primary key auto_increment, a text) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+"create table on child2_2"
+CREATE TABLE t1(id int primary key auto_increment, a text) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+create table for master
+CREATE TABLE t1(id int primary key auto_increment, a text) ENGINE=Spider DEFAULT CHARSET=utf8
+PARTITION BY LIST (id % 2)
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+    );
+"Create spider tables successfully."
+INSERT INTO t1 (a) VALUES('aaaa'),('aaaa'), ('bbbb'),('bbbb');
+EXPLAIN format=tree SELECT DISTINCT a FROM t1 ORDER BY a;;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)
+   Merge sort with duplicate removal: t1.a
+   Statement: select `t1`.`a` AS `a` from `t1` group by `t1`.`a` order by `t1`.`a`
+   Execution datasets: s_2_1, s_2_2
+
+SELECT DISTINCT a FROM t1 ORDER BY a;;
+a
+aaaa
+bbbb
 "Start to drop spider tables"
 create table for child
 "drop table on child2_1"

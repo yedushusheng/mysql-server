@@ -33,6 +33,9 @@ Collector::~Collector() {
     close_tmp_table(m_table);
     free_tmp_table(m_table);
   }
+
+  // Used by duplicates removal
+  if (m_merge_sort) my_free(m_merge_sort->m_sort_param.m_last_key_seen);
   // tmp_buffer in Sort_param needs to destroy because it may contain alloced
   // memory.
   destroy(m_merge_sort);
@@ -42,12 +45,19 @@ Collector::~Collector() {
 
 bool Collector::CreateCollectorTable() {
   Query_block *block = partial_plan()->QueryBlock();
+  assert(block != nullptr);
   JOIN *join = block->join;
   THD *thd = join->thd;
   Temp_table_param *tmp_table_param;
   if (!(tmp_table_param =
             new (thd->mem_root) Temp_table_param(join->tmp_table_param)))
     return true;
+
+  DBUG_EXECUTE_IF("pq_create_tmp_table_oom", {
+    my_error(ER_DA_OOM, MYF(0));
+    DBUG_SET("-d,pq_create_tmp_table_oom");
+    return true;
+  });
   tmp_table_param->skip_create_table = true;
   tmp_table_param->func_count = join->tmp_table_param.func_count;
   tmp_table_param->sum_func_count = join->tmp_table_param.sum_func_count;
@@ -61,6 +71,7 @@ bool Collector::CreateCollectorTable() {
 
   bitmap_set_all(m_table->read_set);
 
+  LogPQDebug("collect create temporary table for workers success");
   return false;
 }
 
@@ -72,21 +83,34 @@ void Collector::PrepareExecution(THD *thd) {
 
 void Collector::Destroy(THD *thd) { thd->mdl_context.deinit_lock_group(); }
 
-bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order) {
+bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order,
+                                bool remove_duplicates) {
   THD *thd = join->thd;
+
+  // for testing during Merge-Sort OOM
+  DBUG_EXECUTE_IF("pq_simulate_merge_sort_out_of_memory", {
+    my_error(ER_DA_OOM, MYF(0));
+    DBUG_SET("-d,pq_simulate_merge_sort_out_of_memory");
+    return true;
+  });
+
   // Merge sort always reads collector table.
   assert(join->current_ref_item_slice == REF_SLICE_SAVED_BASE);
-  if (!(m_merge_sort = new (thd->mem_root)
-            Filesort(thd, {m_table}, /*keep_buffers=*/false, merge_order,
-                     HA_POS_ERROR, /*force_stable_sort=*/false,
-                     /*remove_duplicates=*/false,
-                     /*force_sort_positions=*/true, /*unwrap_rollup=*/false)))
+  if (!(m_merge_sort = new (thd->mem_root) Filesort(
+            thd, {m_table}, /*keep_buffers=*/false, merge_order, HA_POS_ERROR,
+            /*force_stable_sort=*/false, remove_duplicates,
+            /*force_sort_positions=*/true, /*unwrap_rollup=*/false)))
     return true;
 
   return false;
 }
 
 bool Collector::Init(THD *thd) {
+  DBUG_EXECUTE_IF("pq_simulate_collector_out_of_memory", {
+    my_error(ER_DA_OOM, MYF(0));
+    DBUG_SET("-d,pq_simulate_collector_out_of_memory");
+    return true;
+  });
   // Do initialize parallel scan for the plan with parallel scan before workers
   // are created and started. For 3.0, remote workers assign parallel scan jobs
   // in this function and parallel workers are created based on that.
@@ -120,6 +144,7 @@ bool Collector::Init(THD *thd) {
   // merge sort do a block read in Init().
   if (m_row_exchange_reader->Init(thd)) return true;
 
+  LogPQDebug("collect init success");
   return false;
 }
 
@@ -194,6 +219,11 @@ Diagnostics_area *Collector::combine_workers_stmt_da(THD *thd,
     Diagnostics_area *da =
         worker->stmt_da(true, &cur_found_rows, &cur_examined_rows);
 
+#ifndef NDEBUG
+    worker->m_db_exec_state.SetCurFoundRow(cur_found_rows);
+    worker->m_db_exec_state.SetCurExaminedRow(cur_examined_rows);
+#endif
+
     if (found_rows) *found_rows += cur_found_rows;
 
     thd->inc_examined_row_count(cur_examined_rows);
@@ -214,7 +244,22 @@ Diagnostics_area *Collector::combine_workers_stmt_da(THD *thd,
 
 void Collector::CollectStatusFromWorkers(THD *thd) {
   for (auto *worker : m_workers) {
-    if (worker) worker->CollectStatusVars(thd);
+    if (worker) {
+      worker->CollectStatusVars(thd);
+#ifndef NDEBUG      
+      worker->CollectExecState();
+#endif      
+    }
+  }
+}
+
+void Collector::PrintAllErrorInfo() {
+  for (auto *worker : m_workers) {
+    if (!worker) continue;
+    // print when exec error
+    if (worker->m_db_exec_state.GetErrNo()) {
+      worker->PrintErrorAndWarnings();
+    }
   }
 }
 
@@ -242,6 +287,10 @@ void Collector::End(THD *thd, ha_rows *found_rows) {
   // reset XA state error according to new THD error.
   XID_STATE *xid_state = thd->get_transaction()->xid_state();
   if (xid_state) xid_state->set_error(thd);
+
+#ifndef NDEBUG
+  PrintAllErrorInfo();
+#endif  
 }
 
 JOIN *Collector::PartialJoin() const { return partial_plan()->Join(); }
@@ -276,7 +325,7 @@ static std::pair<std::string *, std::string *> GetOutputWorkersTimingData(
       *max_worker_timing_data{nullptr};
   duration_type min_total_rows_spent{duration_type::max()},
       max_total_rows_spent{duration_type::zero()};
-
+  assert(collector != nullptr);
   collector->ForEachWorker([&](Worker *worker) {
     auto *timing_data = worker->QueryPlanTimingData();
     if (!timing_data) return;
@@ -638,7 +687,9 @@ bool PartialExecutor::PrepareQueryPlan(PartialExecutorContext *context) {
 bool PartialExecutor::AttachTablesParallelScan() {
   auto &psinfo = m_query_plan->GetParallelScanInfo();
   THD *thd = m_thd;
+  assert(thd != nullptr);
   auto *query_block = thd->lex->query_block;
+  assert(query_block != nullptr);
   auto *leaf_tables = query_block->leaf_tables;
 
   assert(leaf_tables);

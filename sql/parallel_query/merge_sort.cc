@@ -11,14 +11,18 @@ namespace pq {
 constexpr uint wider_sortkey_threshold{255};
 constexpr uint max_records_buffered{10};
 
-bool Mem_compare_queue_key::operator()(const MergeSortElement *e1,
-                                       const MergeSortElement *e2) const {
-  if (m_param->using_varlen_keys())
-    return cmp_varlen_keys(m_param->local_sortorder, m_param->use_hash,
-                           e2->m_key, e1->m_key);
+static bool key_is_greater_than(Sort_param *param, uchar *key1, uchar *key2,
+                                size_t len) {
+  if (param->using_varlen_keys())
+    return cmp_varlen_keys(param->local_sortorder, param->use_hash, key2, key1);
   else
     // memcmp(s1, s2, 0) is guaranteed to return zero.
-    return memcmp(e2->m_key, e1->m_key, e2->m_key_length) < 0;
+    return memcmp(key1, key2, len) > 0;
+}
+
+bool Mem_compare_queue_key::operator()(const MergeSortElement *e1,
+                                       const MergeSortElement *e2) const {
+  return key_is_greater_than(m_param, e1->m_key, e2->m_key, m_compare_length);
 }
 
 MergeSortElement::~MergeSortElement() {
@@ -89,10 +93,10 @@ bool MergeSort::Init(THD *thd, Filesort *filesort, uint nelements) {
   uint sortlen = filesort->sort_order_length();
 
   m_sort_param.m_addon_fields_status = Addon_fields_status::using_by_merge_sort;
-  m_sort_param.init_for_filesort(filesort,
-                                 make_array(filesort->sortorder, sortlen),
-                                 sortlength(thd, filesort->sortorder, sortlen),
-                                 {m_table}, filesort->limit, false);
+  m_sort_param.init_for_filesort(
+      filesort, make_array(filesort->sortorder, sortlen),
+      sortlength(thd, filesort->sortorder, sortlen), {m_table}, filesort->limit,
+      filesort->m_remove_duplicates);
   // No need to carry addon_fields for merge sort because we buffered records
   assert(m_sort_param.addon_fields == nullptr);
 
@@ -257,6 +261,20 @@ MergeSort::Result MergeSort::FillElementBuffer(MergeSortElement *elem,
 }
 
 MergeSort::Result MergeSort::Read(uchar **buf) {
+  MergeSort::Result res;
+  bool duplicated_with_last;
+
+  do {
+    duplicated_with_last = false;
+    res =
+        ReadOneRow(buf, m_sort_param.m_remove_duplicates ? &duplicated_with_last
+                                                         : nullptr);
+  } while (res == Result::SUCCESS && duplicated_with_last);
+
+  return res;
+}
+
+MergeSort::Result MergeSort::ReadOneRow(uchar **buf, bool *duplicated_with_last) {
   // Return end if nothing is pushed in Populate().
   if (m_priority_queue->size() == 0) return Result::END;
 
@@ -289,6 +307,25 @@ MergeSort::Result MergeSort::Read(uchar **buf) {
   }
 
   *buf = elem->CurrentRecord();
+
+  if (duplicated_with_last) {
+    // Copy length of duplicates removal, please see merge_buffers() in
+    // filesort.cc. Cache every key except one key that equals to cached key
+    // and comes from a different channel.
+    if (m_last_key_seen_element != elem && m_sort_param.m_last_key_seen &&
+        !key_is_greater_than(&m_sort_param, elem->CurrentKey(),
+                             m_sort_param.m_last_key_seen,
+                             m_last_key_seen_length))
+      *duplicated_with_last = true;
+    else {
+      uint row_length, payload_length;
+      m_sort_param.get_rec_and_res_len(elem->CurrentKey(), &row_length,
+                                       &payload_length);
+      elem->CopyKey(&m_sort_param.m_last_key_seen, row_length - payload_length,
+                    &m_last_key_seen_length);
+      m_last_key_seen_element = elem;
+    }
+  }
 
   // One record is returned, advance read cursor and decrease num_record, fill
   // PQ for next read.

@@ -161,7 +161,7 @@ let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, a INT, b
 let shardkey=id;
 --source include/create_spider_table.inc
 INSERT INTO t1 (a, b) VALUES (1, 'hello'), (2, 'world');
---let $query = SELECT 1 FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1
+--let $query = SELECT 1 AS result FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1
 --source ../include/explain_and_run.inc
 let drop_table_name=t1;
 --source include/drop_spider_table.inc
@@ -356,6 +356,53 @@ FROM
   t1 AS ref_0
 WHERE 21 DIV ref_0.b
 ORDER BY 1, 2;
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
+
+#
+# merge sort with duplicate removal
+#
+let create_table_sql=
+  CREATE TABLE t1(a INT PRIMARY KEY, b INT, c INT, d varchar(16));
+let shardkey=a;
+--source include/create_spider_table.inc
+INSERT INTO t1 VALUES(1,1,1,'a'),(2,1,1,'a'),(3,1,1,'a'),(4,2,2,'b'),(5,2,2,'b'),(6,2,2,'b'),(7,2,2,'b'),(8,3,3,'c'),(9,3,3,'c'),(10,3,3,'c');
+# sysbench query
+--let query=SELECT DISTINCT b FROM t1 ORDER BY b
+--source ../include/explain_and_run.inc
+# same with previous one
+--let query=SELECT b FROM t1 GROUP BY b ORDER BY b
+--source ../include/explain_and_run.inc
+--let query=SELECT d FROM t1 GROUP BY d ORDER BY d
+--source ../include/explain_and_run.inc
+# multiple columns
+--let query=SELECT DISTINCT b, c FROM t1 ORDER BY b, c
+--source ../include/explain_and_run.inc
+
+# Don't use merge sort with duplicate removal
+--let query=SELECT c, SUM(c) FROM t1 GROUP BY c ORDER BY c
+--source ../include/explain_and_run.inc
+--let query=SELECT b,c FROM t1 GROUP BY b,c ORDER BY c
+--source ../include/explain_and_run.inc
+
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
+
+let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, b VARCHAR(128));
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1 (b) VALUES (REPEAT('a', 100)), (REPEAT('a', 100)), (REPEAT('a', 100)), (REPEAT('a', 100)), (REPEAT('b', 100)), (REPEAT('b', 100)), (REPEAT('b', 100)), (REPEAT('b', 100));
+--let query=SELECT b FROM t1 GROUP BY b ORDER BY b
+--source ../include/explain_and_run.inc
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
+
+let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, a text);
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1 (a) VALUES('aaaa'),('aaaa'), ('bbbb'),('bbbb');
+--let query=SELECT DISTINCT a FROM t1 ORDER BY a;
+--source ../include/explain_and_run.inc
 let drop_table_name=t1;
 --source include/drop_spider_table.inc
 

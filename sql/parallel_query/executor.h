@@ -10,6 +10,7 @@
 #include "sql/parallel_query/row_exchange.h"
 #include "sql/row_iterator.h"
 #include "sql/xa.h"
+#include "sql/tdsql/common/log/td_logger.h"  // print PQ Log
 
 class Diagnostics_area;
 class Filesort;
@@ -44,7 +45,7 @@ class Collector {
   PartialPlan *partial_plan() const { return m_partial_plan; }
   JOIN *PartialJoin() const;
   uint NumWorkers() const { return m_workers.size(); }
-  bool CreateMergeSort(JOIN *join, ORDER *merge_order);
+  bool CreateMergeSort(JOIN *join, ORDER *merge_order, bool remove_duplicates);
   Filesort *MergeSort() const { return m_merge_sort; }
   template <class Func>
   void ForEachWorker(Func &&func) {
@@ -55,6 +56,7 @@ class Collector {
   bool LaunchWorkers();
   void TerminateWorkers();
   void CollectStatusFromWorkers(THD *thd);
+  void PrintAllErrorInfo();
   Diagnostics_area *combine_workers_stmt_da(THD *thd, ha_rows *found_rows);
   dist::Adapter *m_dist_adapter;
   dist::NodeArray *m_exec_nodes;

@@ -402,13 +402,6 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  // We just support single table
-  // TODO: remove this block when deparser supports JOIN.
-  if (join->primary_tables != 1) {
-    cause = "not_single_table";
-    return;
-  }
-
   if (join->const_tables > 0) {
     cause = "plan_with_const_tables";
     return;
@@ -462,13 +455,17 @@ static void ChooseParallelPlan(JOIN *join) {
     // in a sharding system and currently 3.0 does not enable parallel query to
     // system table.
     if ((cause = dist_adapter->TableRefuseParallel(table))) return;
-
+#if 0
     // Weed out plan execution depends on QEP_TAB, so block it.
     if (qt->get_sj_strategy() == SJ_OPT_DUPS_WEEDOUT) {
       cause = "duplicateweedout_semijoin_plan_is_not_supported";
       return;
     }
-
+#endif
+    if (qt->get_sj_strategy() != SJ_OPT_NONE) {
+      cause = "semijoin_plan_is_not_supported";
+      return;
+    }
     if ((cause = TableAccessTypeRefuseParallel(qt))) return;
   }
 
@@ -835,7 +832,7 @@ class OriginItemRewriteContext : public Item_clone_context {
       if (item_func->is_identical(pitem)) {
         Item_field *item_field = new Item_field(m_collector_table->field[i]);
         // Arg could be nullptr, e.g. PTI_count_sym
-        if (arg) item_field->set_id(arg->id());
+        if (arg && item_field) item_field->set_id(arg->id());
         return item_field;
       }
     }
@@ -975,10 +972,6 @@ bool ParallelPlan::GeneratePartialPlan(
 
   join->implicit_grouping = source_join->implicit_grouping;
 
-  // XXX Don't need where_cond, Explain need this?
-  // Temporary solution for deparser
-  join->where_cond = source_query_block->where_cond();
-
   // XXX group by and order by generating
   if (setup_partial_base_ref_items()) return true;
 
@@ -1081,8 +1074,10 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   if (source_join->root_access_path() != parallelized_path)
     source_join->set_root_access_path(parallelized_path);
 
-  if (rewriter.MergeSort() &&
-      m_collector->CreateMergeSort(source_join, rewriter.MergeSort()))
+  bool merge_sort_remove_duplicates;
+  auto *merge_sort = rewriter.MergeSort(&merge_sort_remove_duplicates);
+  if (merge_sort && m_collector->CreateMergeSort(source_join, merge_sort,
+                                                 merge_sort_remove_duplicates))
     return true;
 
   if (rewriter.has_pushed_limit_offset()) m_need_collect_found_rows = true;
@@ -1299,5 +1294,6 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
 
   set_plan_state(PLAN_READY);
 
+  LogPQDebug("Partial Plan clone Item and do rewrite success");
   return false;
 }

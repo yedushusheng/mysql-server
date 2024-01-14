@@ -534,39 +534,72 @@ static bool recreate_materialized_table(THD *thd, JOIN *join, ORDER *group,
 
 bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
                                                  AccessPath *out) {
-  if (out && super::rewrite_materialize(in, out)) return true;
   auto *src = in->materialize().param;
   auto &query_block = src->query_blocks[0];
-  // If MATERIALIZE is a child of AGGREGATE, we should create it on leader.
-  if (out && !MaterializeIsDoingDeduplication(src->table)) {
-#ifndef NDEBUG
-    // This should be SQL_BUFFER_RESULT or do DISTINCT by LIMIT 1, We just push
-    // down this to worker and leader do nothing. see ConnectJoins()
-    // QEP_TAB::needs_duplicate_removal processing.
-    if (!(m_join_in->query_block->active_options() & OPTION_BUFFER_RESULT)) {
-      uint i = 0;
-      for (; i < m_join_in->tables; i++) {
-        if (m_join_in->qep_tab[i].table() == src->table) break;
-      }
-      // See (5) of need_tmp_before_win setting, a complicated sorting could
-      // create a tmp table.
-      assert(m_join_in->qep_tab[i].needs_duplicate_removal ||
-             m_join_in->qep_tab[i].filesort);
+
+  if (out) {
+    // Clone access path itself for workers
+    if (super::rewrite_materialize(in, out)) return true;
+    if (src->table->group) {
+      assert(m_join_out->group_list.empty());
+      // Uses JOIN::group_list to save TABLE::group of this access path to avoid
+      // overwrite original group of temporary table.
+      m_join_out->group_list = ORDER_with_src(
+          clone_order_list(
+              src->table->group,
+              {mem_root(), &m_join_out->query_block->base_ref_items,
+               m_join_out->fields->size(), nullptr}),
+          ESC_GROUP_BY);
     }
+
+    out->materialize().table_path =
+        accesspath_dup(in->materialize().table_path);
+    post_rewrite_out_path(out->materialize().table_path);
+
+    // Following scenario is for full push down, that is leader do not do
+    // this materialization any more.
+
+    if (!MaterializeIsDoingDeduplication(src->table)) {
+#ifndef NDEBUG
+      // This should be SQL_BUFFER_RESULT or do DISTINCT by LIMIT 1, We just
+      // push down this to worker and leader do nothing. see ConnectJoins()
+      // QEP_TAB::needs_duplicate_removal processing.
+      if (!(m_join_in->query_block->active_options() & OPTION_BUFFER_RESULT)) {
+        uint i = 0;
+        for (; i < m_join_in->tables; i++) {
+          if (m_join_in->qep_tab[i].table() == src->table) break;
+        }
+        // See (5) of need_tmp_before_win setting, a complicated sorting could
+        // create a tmp table.
+        assert(m_join_in->qep_tab[i].needs_duplicate_removal ||
+               m_join_in->qep_tab[i].filesort);
+      }
 #endif
-    return false;
-  }
-  if (out && src->table->group) {
-    assert(m_join_out->group_list.empty());
-    // Uses JOIN::group_list to save TABLE::group of this access path to avoid
-    // overwrite original group of temporary table.
-    m_join_out->group_list = ORDER_with_src(
-        clone_order_list(src->table->group,
-                         {mem_root(), &m_join_out->query_block->base_ref_items,
-                          m_join_out->fields->size(), nullptr}),
-        ESC_GROUP_BY);
+      return false;
+    }
+    // We can push down GROUP BY and ORDER BY if they have same fields and no
+    // aggregation functions.
+    if (*m_join_in->sum_funcs == nullptr && src->table->group &&
+        !m_join_in->order.empty()) {
+      bool full_pushdown = true;
+      ORDER *grp, *ord;
+      for (grp = src->table->group, ord = m_join_in->order.order; grp && ord;
+           grp = grp->next, ord = ord->next) {
+        if (grp->item != ord->item) {
+          full_pushdown = false;
+          break;
+        }
+      }
+      full_pushdown &= (grp == ord);
+      if (full_pushdown) {
+        merge_sort_remove_duplicates = true;
+        return false;
+      }
+    }
   }
 
+  // We need recreate materialize table due to underlying table change (base
+  // table to collector table).
   TABLE *orig_table [[maybe_unused]] = src->table;
   if (recreate_materialized_table(
           m_join_in->thd, m_join_in, src->table->group,
@@ -599,12 +632,6 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
   // at the end of execution.
   m_join_in->temp_tables.push_back(
       JOIN::TemporaryTableToCleanup{table, temp_table_param});
-
-  if (out) {
-    out->materialize().table_path =
-        accesspath_dup(in->materialize().table_path);
-    post_rewrite_out_path(out->materialize().table_path);
-  }
 
   rewrite_temptable_scan_path(in->materialize().table_path, table);
 
@@ -700,8 +727,6 @@ bool AccessPathParallelizer::rewrite_filter(AccessPath *in, AccessPath *out) {
             in->filter().condition->clone(m_item_clone_context)))
     return true;
 
-  if (out) m_join_out->where_cond = in->filter().condition;
-
   return false;
 }
 
@@ -736,6 +761,7 @@ bool AccessPathParallelizer::rewrite_aggregate(AccessPath *in, AccessPath *) {
   m_join_out->group_list =
       group_list.clone({mem_root(), &m_join_out->query_block->base_ref_items,
                         m_join_out->fields->size(), nullptr});
+ if (make_group_fields(m_join_out, m_join_out)) return true;
 
   // Recreate group fields original join since underlying table changed
   if (!m_join_in->merge_sort.empty()) {

@@ -40,7 +40,9 @@ class MergeSort {
   bool Init(THD *thd, Filesort *filesort, uint nelements);
   /// For first time fetch, populate PQ with one record from each channel.
   bool Populate(THD *thd);
-  /// Read one row of sorted data
+  /// Read one row of sorted data, it may removes row if its sort key
+  /// duplicated with last sort key when m_sort_param.m_remove_duplicates is
+  /// set.
   Result Read(uchar **buf);
 
  private:
@@ -50,6 +52,9 @@ class MergeSort {
   */
   Result FillElementBuffer(MergeSortElement *elem,
                            bool block_for_first);
+  /// Read one row of sorted data, @param duplicated_with_last will set to
+  /// true if it valid and current sort key duplicated with last saved key.
+  Result ReadOneRow(uchar **buf, bool *duplicated_with_last);
 
   MergeSortSource *m_source;
   TABLE *m_table;
@@ -57,6 +62,11 @@ class MergeSort {
   MergeSortElement *m_elements;
   uint m_num_elements{0};
   PriorityQueue *m_priority_queue{nullptr};
+
+  // Used by duplicates removal, sort key data is saved in
+  // Sort_param::m_last_key_seen
+  size_t m_last_key_seen_length{0};
+  MergeSortElement *m_last_key_seen_element{nullptr};
 
   template <bool Push>
   friend bool FillToPriorityQueue(MergeSort *, MergeSortElement *);
@@ -91,6 +101,17 @@ class MergeSortElement {
     return num_recs == (std::uint64_t)m_allocated_records;
   }
   uchar *CurrentRecord() const;
+  uchar *CurrentKey() const { return m_key; }
+  bool CopyKey(uchar **key, uint copylen, size_t *buflen) {
+    if (copylen > *buflen) {
+      if (!(*key = (uchar *)my_realloc(PSI_NOT_INSTRUMENTED, *key, copylen,
+                                       MYF(MY_WME))))
+        return true;
+      *buflen = copylen;
+    }
+    memcpy(*key, m_key, copylen);
+    return false;
+  }
 
   /// Pop a record for next read. The top record is ready to read. @return false
   /// if no record left.
