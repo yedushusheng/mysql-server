@@ -198,6 +198,8 @@ static bool GetTableParallelScanInfo(QEP_TAB *tab, ulong parallel_degree,
 static uint32 ChooseParallelDegreeByScanRange(THD *thd, uint32 parallel_degree,
                                              ulong ranges) {
   // Choosing disabled by system variables
+  if (ranges > 0) return ranges;
+
   if (thd->variables.parallel_scan_ranges_threshold == 0 ||
       parallel_degree == 1)
     return parallel_degree;
@@ -316,6 +318,7 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
+#if 0
   if (!specified_by_hint) {
     // These "soft" limits are applied when user doesn't hint to use parallel
 
@@ -331,6 +334,7 @@ static void ChooseParallelPlan(JOIN *join) {
       return;
     }
   }
+#endif
 
   auto *table = qt->table();
   if (!(table->file->ha_table_flags() & HA_CAN_PARALLEL_SCAN)) {
