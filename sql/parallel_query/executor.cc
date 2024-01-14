@@ -80,7 +80,7 @@ bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order) {
 }
 
 bool Collector::InitParallelScan() {
-  auto &psinfo = m_partial_plan->ParallelScan();
+  auto &psinfo = m_partial_plan->GetParallelScanInfo();
   auto *table = psinfo.table;
   int res;
 
@@ -103,9 +103,8 @@ bool Collector::Init(THD *thd) {
     auto *worker =
         CreateLocalWorker(widx + 1, &m_worker_state_event, thd, partial_plan());
 #endif
-    auto *worker =
-        CreateMySQLClientWorker(widx + 1, &m_worker_state_event, thd,
-                                partial_plan(), &m_worker_share_state, m_table);
+    auto *worker = CreateMySQLClientWorker(widx + 1, &m_worker_state_event, thd,
+                                           partial_plan(), m_table);
 
     m_workers[widx] = worker;
     if (!worker || worker->Init(m_receiver_exchange.event())) return true;
@@ -434,8 +433,10 @@ std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   // For the union temporary scan, join is nullptr
   if (!join || !join->partial_plan) return str;
 
-  auto &scaninfo = join->partial_plan->ParallelScan();
-  if (table != scaninfo.table) return str;
+  auto *partial_plan = join->partial_plan;
+  if (!partial_plan->IsParallelScanTable(table)) return str;
+
+  auto scaninfo = join->partial_plan->GetParallelScanInfo();
 
   str = ", with parallel scan ranges: " +
         std::to_string(scaninfo.suggested_ranges);
@@ -672,7 +673,7 @@ bool PartialExecutor::PrepareQueryPlan(PartialExecutorContext *context) {
 }
 
 bool PartialExecutor::AttachTablesParallelScan() {
-  auto &psinfo = m_query_plan->ParallelScan();
+  auto &psinfo = m_query_plan->GetParallelScanInfo();
   THD *thd = m_thd;
   auto *query_block = thd->lex->query_block;
   auto *leaf_tables = query_block->leaf_tables;

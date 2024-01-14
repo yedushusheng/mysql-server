@@ -48,7 +48,7 @@ void MySQLClient::free_result() {
 
 MySQLClientSync::~MySQLClientSync() { close(); }
 
-bool MySQLClientSync::connect(THD *, WorkerShareState *, TABLE *) {
+bool MySQLClientSync::connect(THD *) {
   if (!(m_mysql = mysql_init(nullptr))) {
     report_error();
     return true;
@@ -108,13 +108,6 @@ bool MySQLClientSync::fetch_row(bool *fetch_complete) {
   // fetch_complete is null means it's in wait mode
   assert(!fetch_complete || !(*fetch_complete));
 
-  // Row can be fetched in Worker::Start() then this function is called
-  // again in ReadNextRow(), so just return that row.
-  if (m_row) {
-    if (fetch_complete) *fetch_complete = true;
-    return false;
-  }
-
   if (fetch_complete && !is_readable()) return false;
 
 
@@ -136,7 +129,7 @@ MySQLClientAsync::~MySQLClientAsync() {
   mysql_close(m_mysql);
 }
 
-bool MySQLClientAsync::connect(THD *,WorkerShareState *, TABLE *) {
+bool MySQLClientAsync::connect(THD *) {
   if (!(m_mysql = mysql_init(nullptr))) {
     report_error();
     return true;
@@ -173,6 +166,7 @@ bool MySQLClientAsync::send_query(const char *query, ulong length,
 }
 
 bool MySQLClientAsync::fetch_row(bool *fetch_complete) {
+  assert(!fetch_complete || !(*fetch_complete));
   auto status = mysql_fetch_row_nonblocking(m_result, &m_row);
   while (!fetch_complete && status == NET_ASYNC_NOT_READY)
     status = mysql_fetch_row_nonblocking(m_result, &m_row);
@@ -191,18 +185,21 @@ bool MySQLClientAsync::fetch_row(bool *fetch_complete) {
   return false;
 }
 
-MySQLClientQueryExec::MySQLClientQueryExec(PlanDeparser *deparser, TABLE *table)
-    : m_table(table), m_deparser(deparser) {
-    mysql = new MySQLClientSpider;
- }
+MySQLClientQueryExec::MySQLClientQueryExec(PlanDeparser *deparser,
+                                           TABLE *collector_table)
+    : m_table(collector_table), m_deparser(deparser) {}
 
 MySQLClientQueryExec::~MySQLClientQueryExec() {
   if (added_to_event_service) RemoveSocketFromEventService();
-  delete mysql;
+  destroy(mysql);
 }
 
-bool MySQLClientQueryExec::Init(THD *thd, TABLE *spider_table, WorkerShareState *share_state) {
-  if (mysql->connect(thd, share_state, spider_table)) {
+bool MySQLClientQueryExec::Init(THD *thd,
+                                TABLE *parallel_table [[maybe_unused]],
+                                uint worker_id [[maybe_unused]]) {
+  if (!(mysql = new (thd->mem_root)
+            MySQLClientSpider(parallel_table, worker_id - 1)) ||
+      mysql->connect(thd)) {
     m_error = true;
     return true;
   }
@@ -264,6 +261,10 @@ bool MySQLClientQueryExec::SendQuery(bool nowait) {
 
 bool MySQLClientQueryExec::ReadRow(bool nowait) {
   assert(m_stage == Stage::RowReading);
+  // Row can be fetched in Worker::Start() then this function is called
+  // again in ReadNextRow(), so just return that row.
+  if (mysql->row()) return false;
+
   bool fetch_complete = !nowait;
 
   if (mysql->fetch_row(nowait ? &fetch_complete : nullptr)) {
@@ -446,11 +447,9 @@ class MySQLClientChannel : public RowChannel {
 class MySQLClientWorker : public Worker {
  public:
   MySQLClientWorker(uint id, comm::Event *state_event, THD *thd,
-                    PartialPlan *partial_plan, WorkerShareState *share_state,
-                    TABLE *m_collector_table)
+                    PartialPlan *partial_plan, TABLE *collector_table)
       : Worker(id, state_event),
-        m_query_executor(partial_plan->Deparser(), m_collector_table),
-        m_share_state(share_state),
+        m_query_executor(partial_plan->Deparser(), collector_table),
         m_parallel_table(partial_plan->GetParallelScanInfo().table),
         m_thd(thd) {}
 
@@ -468,15 +467,17 @@ class MySQLClientWorker : public Worker {
   std::string *QueryPlanTimingData() override { return nullptr; }
   void CollectStatusVars(THD *) override {}
 
+ protected:
+  TABLE *ParallelTable() const { return m_parallel_table; }
+
  private:
   MySQLClientQueryExec m_query_executor;
-  WorkerShareState *m_share_state;
   TABLE *m_parallel_table;
   THD *m_thd;
 };
 
 bool MySQLClientWorker::Init(comm::Event *comm_event) {
-  if (m_query_executor.Init(m_thd, m_parallel_table, m_share_state)) return true;
+  if (m_query_executor.Init(m_thd, m_parallel_table, m_id)) return true;
 
   if (!(m_receiver_channel = new (m_thd->mem_root)
             comm::MySQLClientChannel(&m_query_executor)) ||
@@ -500,7 +501,7 @@ bool MySQLClientWorker::IsRunning() {
   while (true) {
     if (m_query_executor.Exec(true) || m_query_executor.IsFinished())
       return false;
-    // The socket would be block if it is not finished and ResetRow() return
+    // The socket would be blocked if it is not finished and ResetRow() return
     // false.
     if (!m_query_executor.ResetRow()) return true;
   }
@@ -510,9 +511,8 @@ bool MySQLClientWorker::IsRunning() {
 
 Worker *CreateMySQLClientWorker(uint id, comm::Event *state_event, THD *thd,
                                 PartialPlan *partial_plan,
-                                WorkerShareState *worker_share_state,
                                 TABLE *collector_table) {
-  return new (thd->mem_root) MySQLClientWorker(
-      id, state_event, thd, partial_plan, worker_share_state, collector_table);
+  return new (thd->mem_root)
+      MySQLClientWorker(id, state_event, thd, partial_plan, collector_table);
 }
 }  // namespace pq

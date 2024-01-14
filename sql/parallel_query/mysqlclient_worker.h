@@ -13,13 +13,11 @@ namespace comm {
 class Event;
 }
 class PlanDeparser;
-class WorkerShareState;
 
 class MySQLClient {
  public:
   virtual ~MySQLClient() {}
-  virtual bool connect(THD *thd, WorkerShareState *share_state,
-                       TABLE *table) = 0;
+  virtual bool connect(THD *thd) = 0;
   virtual bool send_query(const char *query, ulong length,
                           bool *send_complete) = 0;
   virtual bool fetch_row(bool *fetch_complete) = 0;
@@ -43,7 +41,7 @@ class MySQLClient {
 class MySQLClientSync : public MySQLClient {
  public:
   ~MySQLClientSync();
-  bool connect(THD *thd, WorkerShareState *share_state, TABLE *table) override;
+  bool connect(THD *thd) override;
   bool send_query(const char *query, ulong length,
                   bool *send_complete) override;
   bool fetch_row(bool *fetch_complete) override;
@@ -71,7 +69,7 @@ class MySQLClientSync : public MySQLClient {
 class MySQLClientAsync : public MySQLClient {
  public:
   ~MySQLClientAsync();
-  bool connect(THD *thd, WorkerShareState *share_state, TABLE *table) override;
+  bool connect(THD *thd) override;
   bool send_query(const char *query, ulong length,
                   bool *send_complete) override;
   bool fetch_row(bool *fetch_complete) override;
@@ -83,9 +81,9 @@ class MySQLClientAsync : public MySQLClient {
 class MySQLClientQueryExec {
  public:
   enum class Stage { None, Connected, QuerySending, RowReading, Done };
-  MySQLClientQueryExec(PlanDeparser *deparser, TABLE *table);
+  MySQLClientQueryExec(PlanDeparser *deparser, TABLE *collector_table);
   ~MySQLClientQueryExec();
-  bool Init(THD *thd, TABLE *spider_table, WorkerShareState *m_share_state);
+  bool Init(THD *thd, TABLE *parallel_table, uint worker_id);
   bool SendQuery(bool nowait);
   bool ReadRow(bool nowait);
   /// Return true if current row is not nullptr (that means it is actually
@@ -101,10 +99,12 @@ class MySQLClientQueryExec {
   bool AddSocketToEventService(comm::Event *event);
   void RemoveSocketFromEventService();
 
-private:
-  MySQLClient* mysql;
+ private:
+  MySQLClient *mysql{nullptr};
   Stage m_stage{Stage::None};
 
+  // This is collector table, Data that read from mysql client will be
+  // filled to its record[0].
   TABLE *m_table;
   bool m_error{false};
 
