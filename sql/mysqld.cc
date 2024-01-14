@@ -760,6 +760,7 @@
 #include "sql/opt_costconstantcache.h"           // delete_optimizer_cost_module
 #include "sql/opt_range.h"                       // range_optimizer_init
 #include "sql/options_mysqld.h"                  // OPT_THREAD_CACHE_SIZE
+#include "sql/parallel_query/event_service.h"    // StopEventService
 #include "sql/partitioning/partition_handler.h"  // partitioning_init
 #include "sql/persisted_variable.h"              // Persisted_variables_cache
 #include "sql/plugin_table.h"
@@ -2405,7 +2406,8 @@ static void free_connection_acceptors() {
 static void clean_up(bool print_message) {
   DBUG_PRINT("exit", ("clean_up"));
   if (cleanup_done++) return; /* purecov: inspected */
-
+  // For the parallel frameworker.
+  pq::comm::StopEventService();
   ha_pre_dd_shutdown();
   dd::shutdown();
 

@@ -9532,6 +9532,9 @@ ER_WARN_UNSUPPORTED_PARALLEL
 ER_PARALLEL_ROW_CHANNEL_MESSAGE_TOO_LARGE
   eng "Parallel query operator failed to send or receive row because it is too large."
 
+ER_OPERATION_PARALLEL_EVENT_SERVICE_ERROR
+  eng "Event service can not add or remove an event. (errno: %d - %s)"
+
 #
 #  End of 8.0 error messages (server-to-client).
 #  Do NOT add messages intended for the error log above!
