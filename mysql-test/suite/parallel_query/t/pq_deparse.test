@@ -1,0 +1,117 @@
+--disable_warnings
+--disable_query_log
+--disable_result_log
+--source  suite/tdsql_proxy/include/connect_master_1.inc
+--source ../include/pq_default.inc
+--enable_result_log
+--enable_query_log
+--enable_warnings
+
+set tdsql_parallel_query_switch='join=on';
+# case 1 order by, group by subquery 
+CREATE TABLE t1(id INT PRIMARY KEY, b INT) shardkey=id;
+CREATE TABLE t2(id INT PRIMARY KEY, b INT, c INT) shardkey=noshardkey_allset;
+insert into t1 values(1,1),(2,2),(3,3);
+insert into t2 values(1,1,0),(2,2,0),(3,2,1),(4,3,0),(5,3,1),(6,3,2);
+--let $query = select t1.b, (select count(*) from t2 where t2.b = t1.b) as count from t1 order by count
+--source suite/parallel_query/include/explain_and_run.inc
+insert into t2 values(7,4,0),(8,5,1),(9,5,2);
+--let $query = select (select count(*) from t2 where t2.b = t1.b) as count, count(t1.b) from t1 group by count
+--source suite/parallel_query/include/explain_and_run.inc
+
+#case 2 join with no condition
+--let $query = select * from t1 join t2
+--source suite/parallel_query/include/explain_and_run.inc
+
+#case 3 count multi tables
+--let $query = select count(*) from t1,t2
+--source suite/parallel_query/include/explain_and_run.inc
+
+#issue#481 crash of String append
+create table t4(a int primary key, b enum('a','b','c')) shardkey=a;
+--let $query = select * from t4 where b = 'd'
+--source suite/parallel_query/include/explain_and_run.inc
+
+#issue #483 no visible select items
+--let $query = select 1 from t1;
+--source suite/parallel_query/include/explain_and_run.inc
+--let $query = select 101, 102 from t1;
+--source suite/parallel_query/include/explain_and_run.inc
+--let $query = select 11, id, 15 from t1;
+--source suite/parallel_query/include/explain_and_run.inc
+
+#issue#470 tdsql_pushdown_condition off
+set tdsql_pushdown_condition=off;
+set optimizer_switch='subquery_to_derived=on';
+--let $query = select * from t2 where id = 1
+--source suite/parallel_query/include/explain_and_run.inc
+
+#case 4 const table with limit
+set optimizer_switch='subquery_to_derived=on';
+--let $query = select * from t1 where id=1 limit 1
+--source suite/parallel_query/include/explain_and_run.inc
+
+#issue#488 crash of tmp hash group
+create table t9(id int primary key, a blob, b int) shardkey=id;
+insert into t9 values(1,'1',2),(2,'1',2),(3,'2',3),(4,'2',3);
+set sql_mode='STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION';
+#access path MATERIALIZE
+--let $query = select b from t9 group by a order by b;
+--source suite/parallel_query/include/explain_and_run.inc
+
+create table t6(id int primary key, a blob, b int) shardkey=id;
+insert into t6 values(1,'1',1),(2,'1',2),(3,'2',1),(4,'2',2);
+set sql_mode='STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION';
+#access path MATERIALIZE
+--let $query = select a from t6 group by a order by a
+--source suite/parallel_query/include/explain_and_run.inc
+#access path TEMPTABLE_AGGREGATE
+--let $query = select sum(b) from t6 group by a
+--source suite/parallel_query/include/explain_and_run.inc
+#group field has alia
+--let $query = select a as c, sum(b) from t6 group by a
+--source suite/parallel_query/include/explain_and_run.inc
+#group table has alias
+--let $query = select t.a, sum(t.b) from t6 t group by t.a
+--source suite/parallel_query/include/explain_and_run.inc
+#issue#526 special field
+let $query=select count(*), b + 1 as c from t6 group by c;
+--source suite/parallel_query/include/explain_and_run.inc
+create table t7(a int primary key, b int) shardkey=a;
+--let $query = select rand() as c0, ref_0.b as c1, 36 as c2 from t7 as ref_0 where ref_0.b is NULL group by 1, 2, 3
+--source suite/parallel_query/include/explain_and_run.inc
+CREATE TABLE `t8` (
+  `a` int NOT NULL,
+  `b` tinyint DEFAULT NULL,
+  `c` smallint DEFAULT NULL,
+  `d` bigint DEFAULT NULL,
+  `e` decimal(10,0) DEFAULT NULL,
+  `f` double DEFAULT NULL,
+  `g` float DEFAULT NULL,
+  PRIMARY KEY (`a`)
+) shardkey=a;
+--let $query = select distinct  ref_0.d as c0,  ref_0.b as c1,  ref_0.b as c2, case when case when ref_0.g is not NULL then ref_0.d else ref_0.d end  > ref_0.d then ref_0.b else ref_0.b end as c3 from  t8 as ref_0 where ref_0.b >= ref_0.b order by 1, 2, 3, 4 limit 136
+--source suite/parallel_query/include/explain_and_run.inc
+
+DROP TABLE t1, t2, t4, t6, t7, t8, t9;
+
+#issue#466 fix select table name with db
+create database s1;
+use s1;
+create table t1 (a int primary key) shardkey=a;
+
+create database s2;
+use s2;
+create table t2 (a int primary key) shardkey=a;
+
+#without fix this will report error
+select * from s1.t1;
+use s1;
+select * from s2.t2;
+
+drop database s1;
+drop database s2;
+
+# clean env.
+--enable_warnings
+

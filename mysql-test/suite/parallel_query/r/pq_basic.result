@@ -1,40 +1,4 @@
-for master_1
-for child2
-child2_1
-child2_2
-child2_3
-for child3
-child3_1
-child3_2
-child3_3
-
-create databases
-create spider tables
-"Start to create spider tables"
-create table for child
-"create table on child2_1"
-CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int) ENGINE=InnoDB DEFAULT CHARSET=utf8;
-"create table on child2_2"
-CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int) ENGINE=InnoDB DEFAULT CHARSET=utf8;
-create table for master
-CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int) ENGINE=Spider DEFAULT CHARSET=utf8
-PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
-    );
-"Create spider tables successfully."
-show create table t1;
-Table	Create Table
-t1	CREATE TABLE `t1` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `a` int DEFAULT NULL,
-  `b` int DEFAULT NULL,
-  `c` int DEFAULT NULL,
-  PRIMARY KEY (`id`)
-) ENGINE=SPIDER DEFAULT CHARSET=utf8mb3
-/*!50100 PARTITION BY LIST ((`id` % 2))
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"' ENGINE = SPIDER,
- PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"' ENGINE = SPIDER) */
+CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int) shardkey=id;
 INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 ###
 ### some basic queries
@@ -42,8 +6,8 @@ INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(
 EXPLAIN format=tree SELECT * FROM t1;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
-   Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a`,`t1`.`b` AS `b`,`t1`.`c` AS `c` from `t1`
-   Execution datasets: s_2_1, s_2_2
+   Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a`,`t1`.`b` AS `b`,`t1`.`c` AS `c` from `test`.`t1`
+   Execution datasets: s1, s2
 
 SELECT * FROM t1;
 id	a	b	c
@@ -60,8 +24,8 @@ id	a	b	c
 EXPLAIN format=tree SELECT * FROM t1 where a > 1;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
-   Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a`,`t1`.`b` AS `b`,`t1`.`c` AS `c` from `t1` where (`t1`.`a` > 1)
-   Execution datasets: s_2_1, s_2_2
+   Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a`,`t1`.`b` AS `b`,`t1`.`c` AS `c` from `test`.`t1` where (`t1`.`a` > 1)
+   Execution datasets: s1, s2
 
 SELECT * FROM t1 where a > 1;
 id	a	b	c
@@ -77,8 +41,8 @@ EXPLAIN format=tree SELECT sum(a) FROM t1;
 EXPLAIN
 -> Aggregate: sum(a)  (cost=N.NNN rows=NNN)
     -> Gather (slice: 1, workers: 2)
-       Statement: select sum(`t1`.`a`) AS `a`,count(0) from `t1`
-       Execution datasets: s_2_1, s_2_2
+       Statement: select sum(`t1`.`a`) AS `a`,count(0) from `test`.`t1`
+       Execution datasets: s1, s2
 
 SELECT sum(a) FROM t1;
 sum(a)
@@ -88,8 +52,8 @@ EXPLAIN
 -> Table scan on <temporary>  (cost=0.64..2.55 rows=4)
     -> Temporary table with deduplication  (cost=2.44..4.35 rows=4)
         -> Gather (slice: 1, workers: 2)
-           Statement: select `t1`.`a` AS `a` from `t1` group by `t1`.`a`
-           Execution datasets: s_2_1, s_2_2
+           Statement: select `t1`.`a` AS `a` from `test`.`t1` group by `t1`.`a`
+           Execution datasets: s1, s2
 
 SELECT a FROM t1 GROUP BY a;
 a
@@ -103,8 +67,8 @@ EXPLAIN
 -> Table scan on <temporary>
     -> Aggregate using temporary table
         -> Gather (slice: 1, workers: 2)
-           Statement: select `t1`.`a` AS `a`,sum(`t1`.`b`) AS `b` from `t1` group by `t1`.`a`
-           Execution datasets: s_2_1, s_2_2
+           Statement: select `t1`.`a` AS `a`,sum(`t1`.`b`) AS `b` from `test`.`t1` group by `t1`.`a`
+           Execution datasets: s1, s2
 
 SELECT sum(b) FROM t1 GROUP BY a;
 sum(b)
@@ -118,8 +82,8 @@ EXPLAIN
 -> Table scan on <temporary>
     -> Aggregate using temporary table
         -> Gather (slice: 1, workers: 2)
-           Statement: select `t1`.`a` AS `a`,sum(`t1`.`b`) AS `b` from `t1` group by `t1`.`a`
-           Execution datasets: s_2_1, s_2_2
+           Statement: select `t1`.`a` AS `a`,sum(`t1`.`b`) AS `b` from `test`.`t1` group by `t1`.`a`
+           Execution datasets: s1, s2
 
 SELECT a, sum(b) FROM t1 GROUP BY a;
 a	sum(b)
@@ -134,8 +98,8 @@ EXPLAIN
     -> Table scan on <temporary>
         -> Aggregate using temporary table
             -> Gather (slice: 1, workers: 2)
-               Statement: select `t1`.`a` AS `a`,sum(`t1`.`b`) AS `b` from `t1` group by `t1`.`a`
-               Execution datasets: s_2_1, s_2_2
+               Statement: select `t1`.`a` AS `a`,sum(`t1`.`b`) AS `b` from `test`.`t1` group by `t1`.`a`
+               Execution datasets: s1, s2
 
 SELECT a, sum(b) FROM t1 GROUP BY a order by 2;
 a	sum(b)
@@ -150,8 +114,8 @@ EXPLAIN
     -> Table scan on <temporary>
         -> Aggregate using temporary table
             -> Gather (slice: 1, workers: 2)
-               Statement: select sum(`t1`.`b`) AS `b`,`t1`.`a` AS `a` from `t1` group by `t1`.`a`
-               Execution datasets: s_2_1, s_2_2
+               Statement: select sum(`t1`.`b`) AS `b`,`t1`.`a` AS `a` from `test`.`t1` group by `t1`.`a`
+               Execution datasets: s1, s2
 
 SELECT a, sum(b) + 1 FROM t1 GROUP BY a order by 2;
 a	sum(b) + 1
@@ -160,6 +124,50 @@ a	sum(b) + 1
 3	7
 4	9
 5	11
+EXPLAIN format=tree SELECT id, a FROM t1 WHERE id = 2;
+EXPLAIN
+-> Rows fetched before execution  (cost=0.00..0.00 rows=1)
+
+SELECT id, a FROM t1 WHERE id = 2;
+id	a
+2	2
+SET tdsql_disable_const_tables_for_pq=ON;
+EXPLAIN format=tree SELECT id, a FROM t1 WHERE id = 2;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=0.35..0.35 rows=1)
+   Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a` from `test`.`t1` where (`t1`.`id` = 2)
+   Execution datasets: s2
+
+SELECT id, a FROM t1 WHERE id = 2;
+id	a
+2	2
+EXPLAIN format=tree SELECT id, a FROM t1 WHERE id = 2 and a < 5;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=0.30..0.30 rows=1)
+   Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a` from `test`.`t1` where ((`t1`.`id` = 2) and (`t1`.`a` < 5))
+   Execution datasets: s2
+
+SELECT id, a FROM t1 WHERE id = 2 and a < 5;
+id	a
+2	2
+EXPLAIN format=tree SELECT id, a FROM t1 WHERE id = 2 UNION
+SELECT id, a FROM t1 WHERE id = 5;
+EXPLAIN
+-> Table scan on <union temporary>  (cost=1.26..2.52 rows=2)
+    -> Union materialize with deduplication  (cost=2.16..3.42 rows=2)
+        -> Gather (slice: 1, workers: 1)  (cost=0.35..0.35 rows=1)
+           Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a` from `test`.`t1` where (`t1`.`id` = 2)
+           Execution datasets: s2
+        -> Gather (slice: 1, workers: 1)  (cost=0.35..0.35 rows=1)
+           Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a` from `test`.`t1` where (`t1`.`id` = 5)
+           Execution datasets: s1
+
+SELECT id, a FROM t1 WHERE id = 2 UNION
+SELECT id, a FROM t1 WHERE id = 5;
+id	a
+2	2
+5	5
+SET tdsql_disable_const_tables_for_pq=OFF;
 ###
 ### access path coverage
 ###
@@ -169,8 +177,8 @@ EXPLAIN
 -> Group (no aggregates)  (cost=N.NNN rows=NNN)
     -> Gather (slice: 1, workers: 2)
        Merge sort: t1.a
-       Statement: select `t1`.`a` AS `a` from `t1` group by `t1`.`a` order by `t1`.`a`
-       Execution datasets: s_2_1, s_2_2
+       Statement: select `t1`.`a` AS `a` from `test`.`t1` group by `t1`.`a` order by `t1`.`a`
+       Execution datasets: s1, s2
 
 SELECT SQL_BIG_RESULT a FROM t1 GROUP BY a;
 a
@@ -187,42 +195,24 @@ EXPLAIN
         -> Table scan on <temporary>
             -> Aggregate using temporary table
                 -> Gather (slice: 1, workers: 2)
-                   Statement: select `t1`.`a` AS `a`,count(`t1`.`b`) AS `b` from `t1` where (`t1`.`b` > 1) group by `t1`.`a`
-                   Execution datasets: s_2_1, s_2_2
+                   Statement: select `t1`.`a` AS `a`,count(`t1`.`b`) AS `b` from `test`.`t1` where (`t1`.`b` > 1) group by `t1`.`a`
+                   Execution datasets: s1, s2
 
 SELECT DISTINCT (COUNT(b) + 1) AS c FROM t1 WHERE b > 1 GROUP BY a;
 c
 3
-"Start to drop spider tables"
-create table for child
-"drop table on child2_1"
-"drop table on child2_2"
-create table for master
-"drop table on master"
-"Drop spider tables successfully."
+DROP TABLE t1;
 ###
 ### bottom access path type coverage
 ###
 ### index scan ###
-"Start to create spider tables"
-create table for child
-"create table on child2_1"
-CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int, index(b)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
-"create table on child2_2"
-CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int, index(b)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
-create table for master
-CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int, index(b)) ENGINE=Spider DEFAULT CHARSET=utf8
-PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
-    );
-"Create spider tables successfully."
+CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int, index(b)) shardkey=id;
 INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 EXPLAIN format=tree SELECT b FROM t1;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
-   Statement: select `t1`.`b` AS `b` from `t1`
-   Execution datasets: s_2_1, s_2_2
+   Statement: select `t1`.`b` AS `b` from `test`.`t1`
+   Execution datasets: s1, s2
 
 SELECT b FROM t1;
 b
@@ -240,8 +230,8 @@ b
 EXPLAIN format=tree SELECT a FROM t1 WHERE b BETWEEN 2 AND 5;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
-   Statement: select `t1`.`a` AS `a` from `t1` where (`t1`.`b` between 2 and 5)
-   Execution datasets: s_2_1, s_2_2
+   Statement: select `t1`.`a` AS `a` from `test`.`t1` where (`t1`.`b` between 2 and 5)
+   Execution datasets: s1, s2
 
 SELECT a FROM t1 WHERE b BETWEEN 2 AND 5;
 a
@@ -253,48 +243,86 @@ a
 4
 5
 5
+### prepare
+prepare stmt from 'explain format=tree SELECT a FROM t1 WHERE b BETWEEN ? AND ?';
+set @a=2;
+set @b=5;
+execute stmt using @a,@b;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=1.10 rows=1)
+   Statement: select `t1`.`a` AS `a` from `test`.`t1` where (`t1`.`b` between 2 and 5)
+   Execution datasets: s1, s2
+
+drop prepare stmt;
+prepare stmt from 'SELECT a FROM t1 WHERE b BETWEEN ? AND ?';
+set @a=2;
+set @b=5;
+execute stmt using @a,@b;
+a
+2
+2
+3
+3
+4
+4
+5
+5
+drop prepare stmt;
 ### ref scan ###
 EXPLAIN format=tree SELECT a FROM t1 WHERE b = 2;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
-   Statement: select `t1`.`a` AS `a` from `t1` where (`t1`.`b` = 2)
-   Execution datasets: s_2_1, s_2_2
+   Statement: select `t1`.`a` AS `a` from `test`.`t1` where (`t1`.`b` = 2)
+   Execution datasets: s1, s2
 
 SELECT a FROM t1 WHERE b = 2;
 a
 2
 2
+### prepare
+prepare stmt from 'SELECT a FROM t1 WHERE b = ?';
+set @a=2;
+execute stmt using @a;
+a
+2
+2
+drop prepare stmt;
+### prepare with func
+prepare stmt from 'explain format=tree SELECT a FROM t1 WHERE b = ?';
+execute stmt using abs(-2);
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=0.35 rows=1)
+   Statement: select `t1`.`a` AS `a` from `test`.`t1` where (`t1`.`b` = 2)
+   Execution datasets: s1, s2
+
+drop prepare stmt;
+prepare stmt from 'SELECT a FROM t1 WHERE b = ?';
+execute stmt using abs(-2);
+a
+2
+2
+drop prepare stmt;
 ### ref or null scan ###
 EXPLAIN format=tree SELECT a FROM t1 WHERE b = 2 or b is NULL;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
-   Statement: select `t1`.`a` AS `a` from `t1` where ((`t1`.`b` = 2) or (`t1`.`b` is null))
-   Execution datasets: s_2_1, s_2_2
+   Statement: select `t1`.`a` AS `a` from `test`.`t1` where (`t1`.`b` = 2 or `t1`.`b` is null) and ((`t1`.`b` = 2) or (`t1`.`b` is null))
+   Execution datasets: s1, s2
 
 SELECT a FROM t1 WHERE b = 2 or b is NULL;
 a
 2
 2
-"Start to drop spider tables"
-create table for child
-"drop table on child2_1"
-"drop table on child2_2"
-create table for master
-"drop table on master"
-"Drop spider tables successfully."
-"Start to create spider tables"
-create table for child
-"create table on child2_1"
-CREATE TABLE t1(c1 int primary key, c2 char(10)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
-"create table on child2_2"
-CREATE TABLE t1(c1 int primary key, c2 char(10)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
-create table for master
-CREATE TABLE t1(c1 int primary key, c2 char(10)) ENGINE=Spider DEFAULT CHARSET=utf8
-PARTITION BY LIST (c1 % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "c1"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "c1"'
-    );
-"Create spider tables successfully."
+### prepare
+prepare stmt from 'SELECT a FROM t1 WHERE b = ? or b is NULL';
+set @a=2;
+execute stmt using @a;
+a
+2
+2
+drop prepare stmt;
+DROP TABLE t1;
+CREATE TABLE t1(c1 int primary key, c2 char(10)) shardkey=c1;
 insert into t1 (c1, c2) values(1, 'sss'), (3, 'sss'), (4, 'rrr'), (6, 'rrr');
 EXPLAIN format=tree SELECT sum(c1), count(c1), avg(c1), c2 FROM t1 GROUP BY c2 order by c2;;
 EXPLAIN
@@ -302,94 +330,98 @@ EXPLAIN
     -> Table scan on <temporary>
         -> Aggregate using temporary table
             -> Gather (slice: 1, workers: 2)
-               Statement: select sum(`t1`.`c1`) AS `c1`,count(`t1`.`c1`) AS `c1`,sum(`t1`.`c1`),count(`t1`.`c1`),`t1`.`c2` AS `c2` from `t1` group by `t1`.`c2`
-               Execution datasets: s_2_1, s_2_2
+               Statement: select sum(`t1`.`c1`) AS `c1`,count(`t1`.`c1`) AS `c1`,sum(`t1`.`c1`),count(`t1`.`c1`),`t1`.`c2` AS `c2` from `test`.`t1` group by `t1`.`c2`
+               Execution datasets: s1, s2
 
 SELECT sum(c1), count(c1), avg(c1), c2 FROM t1 GROUP BY c2 order by c2;;
 sum(c1)	count(c1)	avg(c1)	c2
 10	2	5.0000	rrr
 4	2	2.0000	sss
-"Start to drop spider tables"
-create table for child
-"drop table on child2_1"
-"drop table on child2_2"
-create table for master
-"drop table on master"
-"Drop spider tables successfully."
+DROP TABLE t1;
 ### const table scan ###
-"Start to create spider tables"
-create table for child
-"create table on child2_1"
-CREATE TABLE t1(a INT PRIMARY KEY, b INT) ENGINE=InnoDB DEFAULT CHARSET=utf8;
-"create table on child2_2"
-CREATE TABLE t1(a INT PRIMARY KEY, b INT) ENGINE=InnoDB DEFAULT CHARSET=utf8;
-create table for master
-CREATE TABLE t1(a INT PRIMARY KEY, b INT) ENGINE=Spider DEFAULT CHARSET=utf8
-PARTITION BY LIST (a % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "a"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "a"'
-    );
-"Create spider tables successfully."
+CREATE TABLE t1(a INT PRIMARY KEY, b INT) shardkey=a;
 INSERT INTO t1 VALUES(1,1),(2,2);
-set optimizer_switch='subquery_to_derived=on';
+set tdsql_disable_const_tables_for_pq=ON;
 EXPLAIN format=tree SELECT a FROM t1 WHERE a = 1;;
 EXPLAIN
 -> Gather (slice: 1, workers: 1)  (cost=0.35..0.35 rows=1)
-   Statement: select `t1`.`a` AS `a` from `t1` where (`t1`.`a` = 1)
-   Execution datasets: s_2_2
+   Statement: select `t1`.`a` AS `a` from `test`.`t1` where (`t1`.`a` = 1)
+   Execution datasets: s1
 
 SELECT a FROM t1 WHERE a = 1;;
 a
 1
-set optimizer_switch=default;
-"Start to drop spider tables"
-create table for child
-"drop table on child2_1"
-"drop table on child2_2"
-create table for master
-"drop table on master"
-"Drop spider tables successfully."
+set tdsql_disable_const_tables_for_pq=OFF;
+prepare stmt from "EXPLAIN format=tree SELECT a FROM t1 WHERE a = 1";
+execute stmt;
+EXPLAIN
+-> Rows fetched before execution  (cost=0.00..0.00 rows=1)
+
+set @saved_switch=@@optimizer_switch;
+set optimizer_switch='subquery_to_derived=on';
+prepare stmt from "EXPLAIN format=tree SELECT a FROM t1 WHERE a = 1";
+execute stmt;
+EXPLAIN
+-> Rows fetched before execution  (cost=0.00..0.00 rows=1)
+
+set @@optimizer_switch=@saved_switch;
+set tdsql_enable_parallel_query=OFF;
+set tdsql_disable_const_tables_for_pq=ON;
+ERROR 42000: Variable 'tdsql_disable_const_tables_for_pq' can't be set to the value of 'tdsql_enable_parallel_query is disabled, enable it first.'
+set tdsql_enable_parallel_query=ON;
+set tdsql_disable_const_tables_for_pq=ON;
+prepare stmt from "EXPLAIN format=tree SELECT a FROM t1 WHERE a = 1";
+execute stmt;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=0.35..0.35 rows=1)
+   Statement: select `t1`.`a` AS `a` from `test`.`t1` where (`t1`.`a` = 1)
+   Execution datasets: s1
+
+set tdsql_disable_const_tables_for_pq=OFF;
+execute stmt;
+EXPLAIN
+-> Rows fetched before execution  (cost=0.00..0.00 rows=1)
+
+prepare stmt from "EXPLAIN format=tree SELECT a FROM t1 WHERE a = 1";
+execute stmt;
+EXPLAIN
+-> Rows fetched before execution  (cost=0.00..0.00 rows=1)
+
+set tdsql_disable_const_tables_for_pq=ON;
+execute stmt;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=0.35..0.35 rows=1)
+   Statement: select `t1`.`a` AS `a` from `test`.`t1` where (`t1`.`a` = 1)
+   Execution datasets: s1
+
+### prepare
+prepare stmt from 'SELECT a FROM t1 WHERE a = ?';
+set @a=1;
+execute stmt using @a;
+a
+1
+drop prepare stmt;
+set tdsql_disable_const_tables_for_pq=OFF;
+DROP TABLE t1;
 ### group min max scan ###
-"Start to create spider tables"
-create table for child
-"create table on child2_1"
 CREATE TABLE t1 (id int primary key auto_increment, a1 CHAR(64), a2 CHAR(64),
 b CHAR(16), c CHAR(16) not null, d CHAR(16),
-dummy CHAR(248) default ' ') ENGINE=InnoDB DEFAULT CHARSET=utf8;
-"create table on child2_2"
-CREATE TABLE t1 (id int primary key auto_increment, a1 CHAR(64), a2 CHAR(64),
-b CHAR(16), c CHAR(16) not null, d CHAR(16),
-dummy CHAR(248) default ' ') ENGINE=InnoDB DEFAULT CHARSET=utf8;
-create table for master
-CREATE TABLE t1 (id int primary key auto_increment, a1 CHAR(64), a2 CHAR(64),
-b CHAR(16), c CHAR(16) not null, d CHAR(16),
-dummy CHAR(248) default ' ') ENGINE=Spider DEFAULT CHARSET=utf8
-PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
-    );
-"Create spider tables successfully."
+dummy CHAR(248) default ' ') shardkey=id;
 INSERT INTO t1 (a1, a2, b, c, d) VALUES
 ('a','a','a','a111','xy1'),('a','a','a','b111','xy2'),('a','a','a','c111','xy3'),('a','a','a','d111','xy4'),
 ('a','a','b','e112','xy1'),('a','a','b','f112','xy2'),('a','a','b','g112','xy3'),('a','a','b','h112','xy4');
 create index for child
 "sql: CREATE INDEX idx_t1_0 ON t1 (a1)"
-CREATE INDEX idx_t1_0 ON t1 (a1);
-CREATE INDEX idx_t1_0 ON t1 (a1);
 create table for master
 CREATE INDEX idx_t1_0 ON t1 (a1);
 "Create index for the spider tables successfully."
 create index for child
 "sql: CREATE INDEX idx_t1_1 ON t1 (a1,a2,b,c)"
-CREATE INDEX idx_t1_1 ON t1 (a1,a2,b,c);
-CREATE INDEX idx_t1_1 ON t1 (a1,a2,b,c);
 create table for master
 CREATE INDEX idx_t1_1 ON t1 (a1,a2,b,c);
 "Create index for the spider tables successfully."
 create index for child
 "sql: CREATE INDEX idx_t1_2 ON t1 (a1,a2,b)"
-CREATE INDEX idx_t1_2 ON t1 (a1,a2,b);
-CREATE INDEX idx_t1_2 ON t1 (a1,a2,b);
 create table for master
 CREATE INDEX idx_t1_2 ON t1 (a1,a2,b);
 "Create index for the spider tables successfully."
@@ -398,25 +430,179 @@ EXPLAIN
 -> Group aggregate: min(a2), max(a2)  (cost=N.NNN rows=NNN)
     -> Gather (slice: 1, workers: 2)
        Merge sort: t1.a1
-       Statement: select `t1`.`a1` AS `a1`,min(`t1`.`a2`) AS `a2`,max(`t1`.`a2`) AS `a2` from `t1` group by `t1`.`a1`
-       Execution datasets: s_2_1, s_2_2
+       Statement: select `t1`.`a1` AS `a1`,min(`t1`.`a2`) AS `a2`,max(`t1`.`a2`) AS `a2` from `test`.`t1` group by `t1`.`a1`
+       Execution datasets: s1, s2
 
 SELECT a1, MIN(a2),MAX(a2) FROM t1 GROUP BY a1;
 a1	MIN(a2)	MAX(a2)
 a	a	a
-"Start to drop spider tables"
-create table for child
-"drop table on child2_1"
-"drop table on child2_2"
-create table for master
-"drop table on master"
-"Drop spider tables successfully."
-for master_1
-for child2
-child2_1
-child2_2
-child2_3
-for child3
-child3_1
-child3_2
-child3_3
+DROP TABLE t1;
+### index skip scan ###
+CREATE TABLE t1(id int primary key auto_increment, a INT, b INT, c INT, d INT, KEY(a, b, c, d), KEY(b, d)) shardkey=id;
+INSERT INTO t1 (a, b, c, d) VALUES(1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5),(1,1,1,6),(2,2,2,6),(3,3,3,6),(4,4,4,6),(5,5,5,6);
+EXPLAIN format=tree SELECT /*+ SKIP_SCAN(t1) */ a, b, c, d FROM t1 WHERE a IN (1, 2, 3, 4, 5) AND b IN (1, 2, 3) AND d >= 4;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`a` AS `a`,`t1`.`b` AS `b`,`t1`.`c` AS `c`,`t1`.`d` AS `d` from `test`.`t1` where ((`t1`.`a` in (1,2,3,4,5)) and (`t1`.`b` in (1,2,3)) and (`t1`.`d` >= 4))
+   Execution datasets: s1, s2
+
+SELECT /*+ SKIP_SCAN(t1) */ a, b, c, d FROM t1 WHERE a IN (1, 2, 3, 4, 5) AND b IN (1, 2, 3) AND d >= 4;
+a	b	c	d
+1	1	1	6
+2	2	2	6
+3	3	3	6
+DROP TABLE t1;
+### BLOB type ###
+CREATE TABLE t1(id int primary key auto_increment, a INT, b TEXT, c TEXT, d TEXT) shardkey=id;
+insert into t1 (a, b, c, d) values (1, 'MySQL1', 'Ten1', '3cent');
+insert into t1 (a, b, c, d) values (2, 'MySQL2', 'Ten2', '4cent');
+insert into t1 (a, b, c, d) values (1, 'MySQLa', 'Tenx', 'ycent');
+insert into t1 (a, b, c, d) values (2, 'MySQLa', 'Tenx', 'zcent');
+EXPLAIN format=tree SELECT c, d FROM t1;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`c` AS `c`,`t1`.`d` AS `d` from `test`.`t1`
+   Execution datasets: s1, s2
+
+SELECT c, d FROM t1;
+c	d
+Ten1	3cent
+Ten2	4cent
+Tenx	ycent
+Tenx	zcent
+EXPLAIN format=tree SELECT d FROM t1 ORDER BY b, c, d DESC;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Merge sort: t1.b, t1.c, t1.d DESC
+   Statement: select `t1`.`c` AS `c`,`t1`.`b` AS `b`,`t1`.`d` AS `d` from `test`.`t1` order by `t1`.`b`, `t1`.`c`, `t1`.`d` desc
+   Execution datasets: s1, s2
+
+SELECT d FROM t1 ORDER BY b, c, d DESC;
+d
+3cent
+4cent
+ycent
+zcent
+DROP TABLE t1;
+### nested loop join ###
+CREATE TABLE t1(a INT PRIMARY KEY, b INT) shardkey=a;
+CREATE TABLE t2(a INT PRIMARY KEY, b INT) shardkey=noshardkey_allset;
+INSERT INTO t1 VALUES(1,1),(2,2),(3,3);
+INSERT INTO t2 VALUES(1,1),(2,2),(3,3);
+EXPLAIN format=tree SELECT * FROM t1,t2 WHERE t1.a = t2.a;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`a` AS `a`,`t1`.`b` AS `b`,`t2`.`a` AS `a`,`t2`.`b` AS `b` from `test`.`t2` inner join `test`.`t1` on (`t1`.`a` = `t2`.`a`)
+   Execution datasets: s1, s2
+
+SELECT * FROM t1,t2 WHERE t1.a = t2.a;
+a	b	a	b
+1	1	1	1
+2	2	2	2
+3	3	3	3
+DROP TABLE t1, t2;
+### batched key access join ###
+CREATE TABLE t1 (id int primary key auto_increment, t1a int, t1b int) shardkey=id;
+INSERT INTO t1 (t1a, t1b) VALUES (99, NULL),(99, 3),(99,0);
+CREATE TABLE t2 (id int primary key auto_increment, t2a int, t2b int, KEY idx (t2b)) shardkey=noshardkey_allset;
+INSERT INTO t2 (t2a, t2b) VALUES (100,0),(150,200),(999, 0),(999, NULL);
+ANALYZE TABLE t1, t2;
+Table	Op	Msg_type	Msg_text
+test.t1	analyze	status	OK
+test.t2	analyze	status	OK
+set optimizer_switch='batched_key_access=on,mrr_cost_based=off';
+EXPLAIN format=tree SELECT * FROM t1 LEFT JOIN t2 force index (idx) ON t2.t2b = t1.t1b;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)
+   Statement: select `t1`.`id` AS `id`,`t1`.`t1a` AS `t1a`,`t1`.`t1b` AS `t1b`,`t2`.`id` AS `id`,`t2`.`t2a` AS `t2a`,`t2`.`t2b` AS `t2b` from `test`.`t1` left join `test`.`t2` on (`t2`.`t2b` = `t1`.`t1b`)
+   Execution datasets: s1, s2
+
+SELECT * FROM t1 LEFT JOIN t2 force index (idx) ON t2.t2b = t1.t1b;
+id	t1a	t1b	id	t2a	t2b
+1	99	NULL	NULL	NULL	NULL
+2	99	3	NULL	NULL	NULL
+3	99	0	1	100	0
+3	99	0	3	999	0
+set optimizer_switch = default;
+### hash join ###
+EXPLAIN format=tree SELECT * FROM t1,t2 WHERE t1a = t2a;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`t1a` AS `t1a`,`t1`.`t1b` AS `t1b`,`t2`.`id` AS `id`,`t2`.`t2a` AS `t2a`,`t2`.`t2b` AS `t2b` from `test`.`t1` inner join `test`.`t2` on true  where (`t1`.`t1a` = `t2`.`t2a`)
+   Execution datasets: s1, s2
+
+SELECT * FROM t1,t2 WHERE t1a = t2a;
+id	t1a	t1b	id	t2a	t2b
+EXPLAIN format=tree SELECT * FROM t1,t2 WHERE t1a < t2a;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`t1a` AS `t1a`,`t1`.`t1b` AS `t1b`,`t2`.`id` AS `id`,`t2`.`t2a` AS `t2a`,`t2`.`t2b` AS `t2b` from `test`.`t1` inner join `test`.`t2` on true  where (`t1`.`t1a` < `t2`.`t2a`)
+   Execution datasets: s1, s2
+
+SELECT * FROM t1,t2 WHERE t1a < t2a;
+id	t1a	t1b	id	t2a	t2b
+1	99	NULL	1	100	0
+1	99	NULL	2	150	200
+1	99	NULL	3	999	0
+1	99	NULL	4	999	NULL
+2	99	3	1	100	0
+2	99	3	2	150	200
+2	99	3	3	999	0
+2	99	3	4	999	NULL
+3	99	0	1	100	0
+3	99	0	2	150	200
+3	99	0	3	999	0
+3	99	0	4	999	NULL
+DROP TABLE t1, t2;
+### nested loop semijoin with duplicate removal (loose scan) ###
+CREATE TABLE t1 (id int primary key auto_increment, a INTEGER NOT NULL) shardkey=id;
+INSERT INTO t1(a) VALUES (2),(2);
+CREATE TABLE t2 (id int primary key auto_increment, b INTEGER) shardkey=id;
+INSERT INTO t2 (b) VALUES (2),(11),(11);
+CREATE TABLE t3 (b INTEGER, pk INTEGER, KEY b_key (b)) shardkey=b;
+INSERT INTO t3 VALUES (2,5);
+CREATE TABLE t4 (pk INTEGER PRIMARY KEY NOT NULL) shardkey=pk;
+INSERT INTO t4 VALUES (5),(7);
+ANALYZE TABLE t1,t2,t3,t4;
+Table	Op	Msg_type	Msg_text
+test.t1	analyze	status	OK
+test.t2	analyze	status	OK
+test.t3	analyze	status	OK
+test.t4	analyze	status	OK
+EXPLAIN format=tree SELECT * FROM t1 JOIN t2 ON t1.a = t2.b WHERE /*+ semijoin(loosescan) */ t2.b IN (SELECT t3.b FROM t3 JOIN t4 ON t3.pk = t4.pk);
+EXPLAIN
+-> Nested loop semijoin  (cost=N.NNN rows=NNN)
+    -> Inner hash join (t2.b = t1.a)  (cost=N.NNN rows=NNN)
+        -> Table scan on t2  (cost=N.NNN rows=NNN)
+        -> Hash
+            -> Table scan on t1  (cost=N.NNN rows=NNN)
+    -> Nested loop inner join  (cost=N.NNN rows=NNN)
+        -> Filter: (t3.pk is not null)  (cost=N.NNN rows=NNN)
+            -> Index lookup on t3 using b_key (b=t1.a)  (cost=N.NNN rows=NNN)
+        -> Single-row index lookup on t4 using PRIMARY (pk=t3.pk)  (cost=N.NNN rows=NNN)
+
+SELECT * FROM t1 JOIN t2 ON t1.a = t2.b WHERE /*+ semijoin(loosescan) */ t2.b IN (SELECT t3.b FROM t3 JOIN t4 ON t3.pk = t4.pk);
+id	a	id	b
+1	2	1	2
+2	2	1	2
+DROP TABLE t1,t2,t3,t4;
+### semijoin firstmatch ###
+CREATE TABLE t1(id int primary key auto_increment, a INT) shardkey=id;
+CREATE TABLE t2(id int primary key auto_increment, a INT) shardkey=id;
+CREATE TABLE t6(id int primary key auto_increment, a INT) shardkey=id;
+INSERT INTO t1 (a) VALUES(1);
+INSERT INTO t2 (a) VALUES(5), (8);
+INSERT INTO t6 (a) VALUES (7),(1),(0),(5),(1),(4);
+EXPLAIN format=tree SELECT /*+ JOIN_PREFIX(nt2) */ * FROM t2 AS nt2 WHERE 1 IN (SELECT /*+ semijoin(firstmatch) */ it1.a FROM t1 AS it1 JOIN t6 AS it3 ON it1.a=it3.a);
+EXPLAIN
+-> Nested loop semijoin  (cost=N.NNN rows=NNN)
+    -> Table scan on nt2  (cost=N.NNN rows=NNN)
+    -> Nested loop inner join  (cost=N.NNN rows=NNN)
+        -> Table scan on it1, with pushed condition: (it1.a = 1)  (cost=N.NNN rows=NNN)
+        -> Table scan on it3, with pushed condition: (it3.a = 1)  (cost=N.NNN rows=NNN)
+
+SELECT /*+ JOIN_PREFIX(nt2) */ * FROM t2 AS nt2 WHERE 1 IN (SELECT /*+ semijoin(firstmatch) */ it1.a FROM t1 AS it1 JOIN t6 AS it3 ON it1.a=it3.a);
+id	a
+1	5
+2	8
+DROP TABLE t1, t2, t6;

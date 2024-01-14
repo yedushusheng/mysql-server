@@ -4,6 +4,7 @@
 #include "my_base.h"
 #include "sql/item.h"
 #include "sql/parallel_query/distribution.h"
+#include "sql/tdsql/common/log/td_logger.h"
 
 class QEP_TAB;
 struct AccessPath;
@@ -43,6 +44,7 @@ struct ParallelScanInfo {
 */
 class PartialPlan {
  public:
+  ~PartialPlan() { destroy(m_dist_plan); }
   Query_block *QueryBlock() const { return m_query_block; }
   void SetQueryBlock(Query_block *query_block) { m_query_block = query_block; }
   Query_expression *QueryExpression() const;
@@ -140,6 +142,10 @@ class ParallelPlan {
     m_table_dists = std::move(table_dists);
     return &m_table_dists;
   }
+  bool AddTableDist(dist::TableDist *table_dist) {
+    return m_table_dists.push_back(table_dist);
+  }
+  dist::TableDistArray *TableDists() { return &m_table_dists; }
   void SetExecNodes(dist::NodeArray *exec_nodes) { m_exec_nodes = exec_nodes; }
 
  private:

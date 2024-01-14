@@ -289,8 +289,6 @@ static bool ChooseExecNodes(ParallelPlan *parallel_plan,
   THD *thd = join->thd;
   auto *dist_adapter = parallel_plan->DistAdapter();
   bool need_pscan = dist_adapter->NeedParallelScan();
-  dist::TableDistArray table_dists(thd->mem_root);
-  table_dists.reserve(join->primary_tables);
 
   assert((parallel_degree != parallel_disabled &&
           parallel_degree != degree_unspecified) ||
@@ -307,26 +305,30 @@ static bool ChooseExecNodes(ParallelPlan *parallel_plan,
                        &key_used);
     auto *table_dist_desc = dist_adapter->GetTableDist(
         thd, table, keynr, min_key, max_key, is_ref_or_null);
-    if (!table_dist_desc || table_dists.push_back(table_dist_desc)) return true;
+    if (!table_dist_desc || parallel_plan->AddTableDist(table_dist_desc)) return true;
   }
-  auto *saved_table_dists = parallel_plan->SetTableDists(table_dists);
+  auto *table_dists = parallel_plan->TableDists();
 
-  // For sharding, currently we only support single partition push down and we
-  // handle it in IsCompatibleWith()
+  dist::TableDist *exec_dist = nullptr;
   if (!need_pscan && join->primary_tables > 1) {
-    dist::TableDist *prev_desc = nullptr;
-    for (auto *dist_desc : table_dists) {
-      if (!prev_desc) continue;
-      if (!dist_desc->IsCompatibleWith(prev_desc)) {
-        *cause = "could_not_push_to_single_partition";
+    for (uint i = 0; i < join->primary_tables; ++i) {
+      auto *dist_desc = table_dists->at(i);
+      auto *qep_tab = &join->qep_tab[i];
+      if (dist_desc->ReduceForExecNodes(
+              exec_dist, qep_tab->is_inner_table_of_outer_join())) {
+        *cause = "incompatible_join_table_sets";
         return true;
       }
     }
+    // Here exec_dist could be nullptr if all tables are replicated in a sharding
+    // system.
   }
 
-  // Currently, we just use parallel scan table to determine execution nodes.
-  auto *dist_desc = saved_table_dists->at(parallel_table_index);
-  auto *store_nodes = dist_desc->GetStoreNodes();
+  // Currently, we just use parallel scan table to determine execution
+  // nodes.
+  if (!exec_dist) exec_dist = table_dists->at(parallel_table_index);
+
+  auto *store_nodes = exec_dist->GetStoreNodes();
   dist::NodeArray *exec_nodes = store_nodes;
   // TODO: should we make sure current node is in exec_nodes?
   if (need_pscan && exec_nodes->size() > parallel_degree) {
@@ -557,7 +559,7 @@ ItemRefCloneResolver::ItemRefCloneResolver(MEM_ROOT *mem_root,
     : m_refs_to_resolve(mem_root), m_query_block(query_block) {}
 
 bool ItemRefCloneResolver::resolve(Item_ref *item, const Item_ref *from) {
-  assert(from->ref);
+  assert(from->ref_pointer());
   item->context = &m_query_block->context;
   return m_refs_to_resolve.push_back({item, from});
 }
@@ -569,13 +571,13 @@ void ItemRefCloneResolver::final_resolve() {
     auto *from = ref.second;
     for (uint i = 0; i < m_query_block->fields.size(); i++) {
       auto *item = base_ref_items[i];
-      if (item->is_identical(*from->ref)) {
-        item_ref->ref = &base_ref_items[i];
+      if (item->is_identical(from->ref_item())) {
+        item_ref->set_ref_pointer(&base_ref_items[i]);
         break;
       }
     }
 
-    assert(item_ref->ref);
+    assert(item_ref->ref_item());
   }
 }
 
@@ -604,7 +606,9 @@ ParallelDegreeHolder::~ParallelDegreeHolder() {
 }
 
 ParallelPlan::ParallelPlan(JOIN *join)
-    : m_join(join), m_fields(join->thd->mem_root) {}
+    : m_join(join),
+      m_fields(join->thd->mem_root),
+      m_table_dists(join->thd->mem_root) {}
 
 ParallelPlan::~ParallelPlan() {
   for (auto *table_dist : m_table_dists) destroy(table_dist);
@@ -667,8 +671,9 @@ class PartialItemGenContext : public Item_clone_context {
   }
   bool resolve_view_ref(Item_view_ref *item,
                         const Item_view_ref *from) override {
+
     // The ref point to another query lex, so it's safe
-    item->ref = from->ref;
+    item->set_ref_pointer(from->ref_pointer());
     if (from->get_first_inner_table())
       item->set_first_inner_table(from->get_first_inner_table());
 
@@ -842,7 +847,11 @@ class OriginItemRewriteContext : public Item_clone_context {
 
   bool resolve_view_ref(Item_view_ref *item,
                         const Item_view_ref *from) override {
-    item->ref = from->ref;
+    Item **ref_item;
+    if (!( ref_item = (Item **) new (mem_root()) Item **) ||
+        !(*ref_item = from->ref_item()->clone(this)))
+       return true;
+    item->set_ref_pointer(ref_item);
     if (from->get_first_inner_table())
       item->set_first_inner_table(from->get_first_inner_table());
     return false;

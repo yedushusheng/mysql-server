@@ -1,16 +1,15 @@
-
-# support spceify shard_key in comment for spider
+# Testcases for basic queries to be executed in parallel mode.
 --disable_warnings
---source ../include/init_spider.inc
+--disable_query_log
+--disable_result_log
+--source  suite/tdsql_proxy/include/connect_master_1.inc
 --source ../include/pq_default.inc
+--enable_result_log
+--enable_query_log
+--enable_warnings
 
 # create spider table
---echo create spider tables
-let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int);
-let shardkey=id;
---source include/create_spider_table.inc
-show create table t1;
-
+CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int) shardkey=id;
 INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 
 --echo ###
@@ -32,6 +31,19 @@ INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(
 --source ../include/explain_and_run.inc
 --let $query=SELECT a, sum(b) + 1 FROM t1 GROUP BY a order by 2
 --source ../include/explain_and_run.inc
+
+# const table
+let $query=SELECT id, a FROM t1 WHERE id = 2;
+--source ../include/explain_and_run.inc
+SET tdsql_disable_const_tables_for_pq=ON;
+let $query=SELECT id, a FROM t1 WHERE id = 2;
+--source ../include/explain_and_run.inc
+let $query=SELECT id, a FROM t1 WHERE id = 2 and a < 5;
+--source ../include/explain_and_run.inc
+let $query=SELECT id, a FROM t1 WHERE id = 2 UNION
+    SELECT id, a FROM t1 WHERE id = 5;
+--source ../include/explain_and_run.inc
+SET tdsql_disable_const_tables_for_pq=OFF;
 
 --echo ###
 --echo ### access path coverage
@@ -78,17 +90,14 @@ INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(
 --enable_testcase
 
 # drop table t1
-let drop_table_name=t1;
---source include/drop_spider_table.inc
+DROP TABLE t1;
 
 --echo ###
 --echo ### bottom access path type coverage
 --echo ###
 
 --echo ### index scan ###
-let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int, index(b));
-let shardkey=id;
---source include/create_spider_table.inc
+CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int, index(b)) shardkey=id;
 INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 --let $query=SELECT b FROM t1
 --source ../include/explain_and_run.inc
@@ -113,54 +122,109 @@ INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(
 --let $query=SELECT a FROM t1 WHERE b BETWEEN 2 AND 5
 --source ../include/explain_and_run.inc
 
+--echo ### prepare
+prepare stmt from 'explain format=tree SELECT a FROM t1 WHERE b BETWEEN ? AND ?';
+set @a=2;
+set @b=5;
+execute stmt using @a,@b;
+drop prepare stmt;
+prepare stmt from 'SELECT a FROM t1 WHERE b BETWEEN ? AND ?';
+set @a=2;
+set @b=5;
+--sorted_result
+execute stmt using @a,@b;
+drop prepare stmt;
+
 --echo ### ref scan ###
 --let $query=SELECT a FROM t1 WHERE b = 2
 --source ../include/explain_and_run.inc
+
+--echo ### prepare
+prepare stmt from 'SELECT a FROM t1 WHERE b = ?';
+set @a=2;
+--sorted_result
+execute stmt using @a;
+drop prepare stmt;
+--echo ### prepare with func
+prepare stmt from 'explain format=tree SELECT a FROM t1 WHERE b = ?';
+execute stmt using abs(-2);
+drop prepare stmt;
+prepare stmt from 'SELECT a FROM t1 WHERE b = ?';
+--sorted_result
+execute stmt using abs(-2);
+drop prepare stmt;
 
 --echo ### ref or null scan ###
 --let $query=SELECT a FROM t1 WHERE b = 2 or b is NULL
 --source ../include/explain_and_run.inc
 
+--echo ### prepare
+prepare stmt from 'SELECT a FROM t1 WHERE b = ? or b is NULL';
+set @a=2;
+--sorted_result
+execute stmt using @a;
+drop prepare stmt;
+
+
+
 # drop table t1
-let drop_table_name=t1;
---source include/drop_spider_table.inc
+DROP TABLE t1;
 
 # issue that causes wrong avg result.
-let create_table_sql=
-  CREATE TABLE t1(c1 int primary key, c2 char(10));
-let shardkey=c1;
---source include/create_spider_table.inc
+CREATE TABLE t1(c1 int primary key, c2 char(10)) shardkey=c1;
 insert into t1 (c1, c2) values(1, 'sss'), (3, 'sss'), (4, 'rrr'), (6, 'rrr');
 --let $query=SELECT sum(c1), count(c1), avg(c1), c2 FROM t1 GROUP BY c2 order by c2;
 --source ../include/explain_and_run.inc
 
 # drop table t1
-let drop_table_name=t1;
---source include/drop_spider_table.inc
+DROP TABLE t1;
 
 --echo ### const table scan ###
-let create_table_sql=
-  CREATE TABLE t1(a INT PRIMARY KEY, b INT);
-let shardkey=a;
---source include/create_spider_table.inc
+CREATE TABLE t1(a INT PRIMARY KEY, b INT) shardkey=a;
 INSERT INTO t1 VALUES(1,1),(2,2);
-set optimizer_switch='subquery_to_derived=on';
+set tdsql_disable_const_tables_for_pq=ON;
 --let $query=SELECT a FROM t1 WHERE a = 1;
 --source ../include/explain_and_run.inc
-set optimizer_switch=default;
+
+# for issue#478
+set tdsql_disable_const_tables_for_pq=OFF;
+prepare stmt from "EXPLAIN format=tree SELECT a FROM t1 WHERE a = 1";
+execute stmt;
+set @saved_switch=@@optimizer_switch;
+set optimizer_switch='subquery_to_derived=on';
+prepare stmt from "EXPLAIN format=tree SELECT a FROM t1 WHERE a = 1";
+execute stmt;
+set @@optimizer_switch=@saved_switch;
+
+set tdsql_enable_parallel_query=OFF;
+--error ER_WRONG_VALUE_FOR_VAR
+set tdsql_disable_const_tables_for_pq=ON;
+set tdsql_enable_parallel_query=ON;
+set tdsql_disable_const_tables_for_pq=ON;
+prepare stmt from "EXPLAIN format=tree SELECT a FROM t1 WHERE a = 1";
+execute stmt;
+set tdsql_disable_const_tables_for_pq=OFF;
+execute stmt;
+prepare stmt from "EXPLAIN format=tree SELECT a FROM t1 WHERE a = 1";
+execute stmt;
+set tdsql_disable_const_tables_for_pq=ON;
+execute stmt;
+
+--echo ### prepare
+prepare stmt from 'SELECT a FROM t1 WHERE a = ?';
+set @a=1;
+--sorted_result
+execute stmt using @a;
+drop prepare stmt;
+set tdsql_disable_const_tables_for_pq=OFF;
 
 # drop table t1
-let drop_table_name=t1;
---source include/drop_spider_table.inc
+DROP TABLE t1;
 
 --echo ### group min max scan ###
-let create_table_sql=
-  CREATE TABLE t1 (id int primary key auto_increment, a1 CHAR(64), a2 CHAR(64),
-                   b CHAR(16), c CHAR(16) not null, d CHAR(16),
-                   dummy CHAR(248) default ' ');
-let shardkey=id;
---source include/create_spider_table.inc
-
+CREATE TABLE t1 (id int primary key auto_increment, a1 CHAR(64), a2 CHAR(64),
+                 b CHAR(16), c CHAR(16) not null, d CHAR(16),
+                 dummy CHAR(248) default ' ') shardkey=id;
 INSERT INTO t1 (a1, a2, b, c, d) VALUES
 ('a','a','a','a111','xy1'),('a','a','a','b111','xy2'),('a','a','a','c111','xy3'),('a','a','a','d111','xy4'),
 ('a','a','b','e112','xy1'),('a','a','b','f112','xy2'),('a','a','b','g112','xy3'),('a','a','b','h112','xy4');
@@ -173,27 +237,17 @@ let create_index_sql=CREATE INDEX idx_t1_2 ON t1 (a1,a2,b);
 --let $query=SELECT a1, MIN(a2),MAX(a2) FROM t1 GROUP BY a1
 --source ../include/explain_and_run.inc
 # drop table t1
-let drop_table_name=t1;
---source include/drop_spider_table.inc
+DROP TABLE t1;
 
---disable_testcase BUG#0000
-# For now, it's hard to support composite primary key(a,b,c,d) as shard_key. Todo in the future.
 --echo ### index skip scan ###
-let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, a INT, b INT, c INT, d INT, KEY(a, b, c, d), KEY(b, d));
-let shardkey=id;
---source include/create_spider_table.inc
+CREATE TABLE t1(id int primary key auto_increment, a INT, b INT, c INT, d INT, KEY(a, b, c, d), KEY(b, d)) shardkey=id;
 INSERT INTO t1 (a, b, c, d) VALUES(1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5),(1,1,1,6),(2,2,2,6),(3,3,3,6),(4,4,4,6),(5,5,5,6);
 --let $query = SELECT /*+ SKIP_SCAN(t1) */ a, b, c, d FROM t1 WHERE a IN (1, 2, 3, 4, 5) AND b IN (1, 2, 3) AND d >= 4
 --source ../include/explain_and_run.inc
-let drop_table_name=t1;
---source include/drop_spider_table.inc
---enable_testcase
+DROP TABLE t1;
 
---disable_testcase BUG#0000
 --echo ### BLOB type ###
-let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, int a INT, b TEXT, c TEXT, d TEXT);
-let shardkey=id;
---source include/create_spider_table.inc
+CREATE TABLE t1(id int primary key auto_increment, a INT, b TEXT, c TEXT, d TEXT) shardkey=id;
 insert into t1 (a, b, c, d) values (1, 'MySQL1', 'Ten1', '3cent');
 insert into t1 (a, b, c, d) values (2, 'MySQL2', 'Ten2', '4cent');
 insert into t1 (a, b, c, d) values (1, 'MySQLa', 'Tenx', 'ycent');
@@ -203,16 +257,11 @@ insert into t1 (a, b, c, d) values (2, 'MySQLa', 'Tenx', 'zcent');
 --let $query = SELECT d FROM t1 ORDER BY b, c, d DESC
 --source ../include/explain_and_run.inc
 
-let drop_table_name=t1;
---source include/drop_spider_table.inc
---enable_testcase
-
-# JOIN is disabled currently
---disable_testcase BUG#0000
+DROP TABLE t1;
 
 --echo ### nested loop join ###
-CREATE TABLE t1(a INT, b INT);
-CREATE TABLE t2(a INT PRIMARY KEY, b INT);
+CREATE TABLE t1(a INT PRIMARY KEY, b INT) shardkey=a;
+CREATE TABLE t2(a INT PRIMARY KEY, b INT) shardkey=noshardkey_allset;
 INSERT INTO t1 VALUES(1,1),(2,2),(3,3);
 INSERT INTO t2 VALUES(1,1),(2,2),(3,3);
 --let $query = SELECT * FROM t1,t2 WHERE t1.a = t2.a
@@ -220,10 +269,10 @@ INSERT INTO t2 VALUES(1,1),(2,2),(3,3);
 DROP TABLE t1, t2;
 
 --echo ### batched key access join ###
-CREATE TABLE t1 (t1a int, t1b int);
-INSERT INTO t1 VALUES (99, NULL),(99, 3),(99,0);
-CREATE TABLE t2 (t2a int, t2b int, KEY idx (t2b));
-INSERT INTO t2 VALUES (100,0),(150,200),(999, 0),(999, NULL);
+CREATE TABLE t1 (id int primary key auto_increment, t1a int, t1b int) shardkey=id;
+INSERT INTO t1 (t1a, t1b) VALUES (99, NULL),(99, 3),(99,0);
+CREATE TABLE t2 (id int primary key auto_increment, t2a int, t2b int, KEY idx (t2b)) shardkey=noshardkey_allset;
+INSERT INTO t2 (t2a, t2b) VALUES (100,0),(150,200),(999, 0),(999, NULL);
 ANALYZE TABLE t1, t2;
 set optimizer_switch='batched_key_access=on,mrr_cost_based=off';
 --let $query = SELECT * FROM t1 LEFT JOIN t2 force index (idx) ON t2.t2b = t1.t1b
@@ -238,23 +287,13 @@ set optimizer_switch = default;
 DROP TABLE t1, t2;
 
 --echo ### nested loop semijoin with duplicate removal (loose scan) ###
-CREATE TABLE t1 (
-a INTEGER NOT NULL
-);
-INSERT INTO t1 VALUES (2),(2);
-CREATE TABLE t2 (
-b INTEGER
-);
-INSERT INTO t2 VALUES (2),(11),(11);
-CREATE TABLE t3 (
-b INTEGER,
-pk INTEGER,
-KEY b_key (b)
-);
+CREATE TABLE t1 (id int primary key auto_increment, a INTEGER NOT NULL) shardkey=id;
+INSERT INTO t1(a) VALUES (2),(2);
+CREATE TABLE t2 (id int primary key auto_increment, b INTEGER) shardkey=id;
+INSERT INTO t2 (b) VALUES (2),(11),(11);
+CREATE TABLE t3 (b INTEGER, pk INTEGER, KEY b_key (b)) shardkey=b;
 INSERT INTO t3 VALUES (2,5);
-CREATE TABLE t4 (
-pk INTEGER NOT NULL
-);
+CREATE TABLE t4 (pk INTEGER PRIMARY KEY NOT NULL) shardkey=pk;
 INSERT INTO t4 VALUES (5),(7);
 ANALYZE TABLE t1,t2,t3,t4;
 
@@ -263,19 +302,17 @@ ANALYZE TABLE t1,t2,t3,t4;
 DROP TABLE t1,t2,t3,t4;
 
 --echo ### semijoin firstmatch ###
-CREATE TABLE t1(a INT);
-CREATE TABLE t2(a INT);
-CREATE TABLE t6(a INT);
-INSERT INTO t1 VALUES(1);
-INSERT INTO t2 VALUES(5), (8);
-INSERT INTO t6 VALUES (7),(1),(0),(5),(1),(4);
+CREATE TABLE t1(id int primary key auto_increment, a INT) shardkey=id;
+CREATE TABLE t2(id int primary key auto_increment, a INT) shardkey=id;
+CREATE TABLE t6(id int primary key auto_increment, a INT) shardkey=id;
+INSERT INTO t1 (a) VALUES(1);
+INSERT INTO t2 (a) VALUES(5), (8);
+INSERT INTO t6 (a) VALUES (7),(1),(0),(5),(1),(4);
 
 --let $query = SELECT /*+ JOIN_PREFIX(nt2) */ * FROM t2 AS nt2 WHERE 1 IN (SELECT /*+ semijoin(firstmatch) */ it1.a FROM t1 AS it1 JOIN t6 AS it3 ON it1.a=it3.a)
 --source ../include/explain_and_run.inc
 
 DROP TABLE t1, t2, t6;
---enable_testcase
 
 # clean env.
---source ../include/deinit_spider.inc
 --enable_warnings

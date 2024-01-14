@@ -44,12 +44,11 @@ class TableDist {
  public:
   virtual ~TableDist() {}
   virtual bool Init(MEM_ROOT *mem_root) = 0;
-  /// equality JOIN on dist key could be pushed down if two tables are
-  /// compatible
-  virtual bool IsCompatibleWith(TableDist *other [[maybe_unused]]) {
+  virtual bool ReduceForExecNodes(TableDist *&exec_table_dist [[maybe_unused]],
+                                  bool inner_of_outer_join [[maybe_unused]]) {
     return false;
   }
-
+  virtual bool IsPartial() { return false; }
   virtual NodeArray *GetStoreNodes() = 0;
 };
 using TableDistArray = Mem_root_array<TableDist *>;

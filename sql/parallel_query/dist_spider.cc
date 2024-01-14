@@ -49,10 +49,16 @@ class SpiderNode : public Node {
 
 class SpiderTableDist : public TableDist {
  public:
+  // TD_SHARD_TABLE, TD_NOSHARD_TABLE, TD_ALLSET_TABLE
+  enum class DistType { Shard = 1, SingleShard = 2, Replicated = 4 };
+  SpiderTableDist(DistType dist_type) : m_dist_type(dist_type) {}
   bool Init(MEM_ROOT *mem_root) override {
     m_store_nodes.init(mem_root);
     return false;
   }
+  // Mem_root_array not really destruct in ~Mem_root_array
+  // do it manually
+  ~SpiderTableDist() { for (auto *node : m_store_nodes) destroy(node); }
   virtual NodeArray *GetStoreNodes() override { return &m_store_nodes; }
 
   bool PushStoreNode(MEM_ROOT *mem_root, TABLE *table, uint shardid) {
@@ -60,16 +66,34 @@ class SpiderTableDist : public TableDist {
     return !node || m_store_nodes.push_back(node);
   }
 
-  bool IsCompatibleWith(TableDist *other) override {
-    auto *spider_other = down_cast<const SpiderTableDist *>(other);
-    if (m_store_nodes.size() != 1) return false;
-    return std::equal(m_store_nodes.begin(), m_store_nodes.end(),
-                      spider_other->m_store_nodes.begin(),
-                      spider_other->m_store_nodes.end(),
-                      [](auto &a, auto &b) { return a->SameWith(b); });
+  bool ReduceForExecNodes(TableDist *&exec_table_dist,
+                          bool inner_of_outer_join) override {
+    if (m_dist_type == DistType::Replicated) return false;
+    if (exec_table_dist == nullptr) {
+      exec_table_dist = this;
+      return false;
+    }
+    if (inner_of_outer_join && m_dist_type == DistType::Shard) return true;
+
+    auto *curr_dist = down_cast<const SpiderTableDist *>(exec_table_dist);
+
+    if (curr_dist->m_store_nodes.size() > 1 && m_store_nodes.size() > 1)
+      return true;
+
+    // Note, we can get here if two shard tables are pruned to one set, here
+    // we check whether they are same or not.
+    // TODO: This should be improved e.g add some asserts when JOINs between
+    // shard tables got supported.
+    return !std::equal(m_store_nodes.begin(), m_store_nodes.end(),
+                       exec_table_dist->GetStoreNodes()->begin(),
+                       exec_table_dist->GetStoreNodes()->end(),
+                       [](auto &a, auto &b) { return a->SameWith(b); });
   }
 
+  bool IsPartial() override { return m_dist_type == DistType::Shard; }
+
  private:
+  DistType m_dist_type;
   NodeArray m_store_nodes;
 };
 
@@ -78,10 +102,13 @@ class SpiderPartialDistPlan : public PartialDistPlan {
   SpiderPartialDistPlan(NodeArray *exec_nodes, PlanDeparser *plan_deparser)
       : PartialDistPlan(exec_nodes), m_plan_deparser(plan_deparser) {}
 
+  // need free the memory alloc in the heap
+  ~SpiderPartialDistPlan() { destroy(m_plan_deparser); }
+
   bool InitExecution(PartialPlan *, uint workers [[maybe_unused]]) override {
     // Number of worker must equal to execution nodes.
     assert(workers == m_exec_nodes->size());
-    if (!m_plan_deparser->IsDeparsed() && m_plan_deparser->deparse())
+    if (!m_plan_deparser->is_deparsed() && m_plan_deparser->deparse())
       return true;
 
     return false;
@@ -90,7 +117,7 @@ class SpiderPartialDistPlan : public PartialDistPlan {
   bool ExplainPlan(std::vector<std::string> *description,
                    bool *hide_plan_tree) override {
     *hide_plan_tree = true;
-    if (!m_plan_deparser->IsDeparsed() && m_plan_deparser->deparse())
+    if (!m_plan_deparser->is_deparsed() && m_plan_deparser->deparse())
       return true;
 
     /*
@@ -147,12 +174,19 @@ class SpiderAdapter : public Adapter {
   TableDist *GetTableDist(THD *thd, TABLE *table, uint, key_range *,
                           key_range *, bool) override {
     SpiderTableDist *table_desc;
-    if (!(table_desc = new (thd->mem_root) SpiderTableDist)) return nullptr;
+    auto table_type = table->s->tdsql_table_type;
+    SpiderTableDist::DistType dist_type(SpiderTableDist::DistType::Shard);
+    if (table_type == tdsql::ddl::TD_NOSHARD_TABLE ||
+        table_type == tdsql::ddl::TD_ALLSET_TABLE)
+      dist_type = (SpiderTableDist::DistType)table_type;
+    else if (table->part_info == nullptr) // mtr mode no table type
+      dist_type = SpiderTableDist::DistType::SingleShard;
+
+    if (!(table_desc = new (thd->mem_root) SpiderTableDist((dist_type))))
+      return nullptr;
 
     if (table_desc->Init(thd->mem_root)) return nullptr;
-    auto shard_type = table->s->tdsql_table_type;
-    if (shard_type == tdsql::ddl::TD_NOSHARD_TABLE ||
-        shard_type == tdsql::ddl::TD_ALLSET_TABLE) {
+    if (dist_type != SpiderTableDist::DistType::Shard) {
       if (table_desc->PushStoreNode(thd->mem_root, table, spider_non_shardid))
         return nullptr;
 
@@ -197,9 +231,11 @@ class SpiderAdapter : public Adapter {
     THD *thd = plan->thd();
     SpiderNode *node = down_cast<SpiderNode *>(exec_nodes->at(worker_id - 1));
     auto *dist_plan = down_cast<SpiderPartialDistPlan *>(plan->DistPlan());
+    auto *conn = node->GetConn(thd);
+    if (unlikely(!conn)) return nullptr;
     auto *worker =
         CreateMySQLClientWorker(worker_id, state_event, thd, collector_table,
-                                dist_plan->Deparser(), node->GetConn(thd));
+                                dist_plan->Deparser(), conn);
     if (unlikely(thd->lex->is_explain_analyze)) node->m_exec_worker = worker;
     return worker;
   }

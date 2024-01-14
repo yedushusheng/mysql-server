@@ -1,0 +1,287 @@
+set tdsql_parallel_query_switch='join=on';
+CREATE TABLE t1(a INT PRIMARY KEY, b INT) shardkey=a;
+CREATE TABLE t2(a INT PRIMARY KEY, b INT) shardkey=noshardkey_allset;
+INSERT INTO t1 VALUES(1,1),(2,2),(3,3);
+INSERT INTO t2 VALUES(1,1),(2,2),(3,3);
+explain SELECT * FROM t1,t2 WHERE t1.a = t2.a;
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	NULL	ALL	PRIMARY	NULL	NULL	NULL	2	100.00	NULL
+1	SIMPLE	t1	s1,s2	eq_ref	PRIMARY	PRIMARY	4	test.t2.a	1	100.00	NULL
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t1` join `test`.`t2` where (`test`.`t1`.`a` = `test`.`t2`.`a`)
+Note	1003	Query is executed in a parallel plan;  explain with tree format to see the plan details.
+EXPLAIN format=tree SELECT * FROM t1,t2 WHERE t1.a = t2.a;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`a` AS `a`,`t1`.`b` AS `b`,`t2`.`a` AS `a`,`t2`.`b` AS `b` from `test`.`t2` inner join `test`.`t1` on (`t1`.`a` = `t2`.`a`)
+   Execution datasets: s1, s2
+
+SELECT * FROM t1,t2 WHERE t1.a = t2.a;
+a	b	a	b
+1	1	1	1
+2	2	2	2
+3	3	3	3
+DROP TABLE t1, t2;
+create table t1(id int primary key, c int) shardkey=id;
+create table t2(id int primary key, c int, name varchar(30)) shardkey=noshardkey_allset;
+insert into t1 values(1, 1),(2, 2);
+insert into t2 values(1,1,'kz'),(3,3,'wj');
+EXPLAIN format=tree select /*+ no_bnl(t1,t2) */ * from t1 left join t2 on t1.id = t2.id where t1.id > 1;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`c` AS `c`,`t2`.`id` AS `id`,`t2`.`c` AS `c`,`t2`.`name` AS `name` from `test`.`t1` left join `test`.`t2` on (`t2`.`id` = `t1`.`id`) where (`t1`.`id` > 1)
+   Execution datasets: s1, s2
+
+select /*+ no_bnl(t1,t2) */ * from t1 left join t2 on t1.id = t2.id where t1.id > 1;
+id	c	id	c	name
+2	2	NULL	NULL	NULL
+EXPLAIN format=tree select /*+ no_bnl(t1,t2) */ * from t1 right join t2 on t1.id = t2.id where t2.id > 1;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`c` AS `c`,`t2`.`id` AS `id`,`t2`.`c` AS `c`,`t2`.`name` AS `name` from `test`.`t2` left join `test`.`t1` on (`t1`.`id` = `t2`.`id`) where (`t2`.`id` > 1)
+   Execution datasets: s1, s2
+
+select /*+ no_bnl(t1,t2) */ * from t1 right join t2 on t1.id = t2.id where t2.id > 1;
+id	c	id	c	name
+NULL	NULL	3	3	wj
+NULL	NULL	3	3	wj
+create table t3(id int primary key, c int) shardkey=noshardkey_allset;
+insert into t3 values(1,1),(4,4);
+EXPLAIN format=tree select * from t1 left join t2 on t1.id = t2.id left join t3 on t3.id = t1.id where t3.c = 1;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`c` AS `c`,`t2`.`id` AS `id`,`t2`.`c` AS `c`,`t2`.`name` AS `name`,`t3`.`id` AS `id`,`t3`.`c` AS `c` from `test`.`t3` inner join `test`.`t1` on (`t1`.`id` = `t3`.`id`) left join `test`.`t2` on (`t2`.`id` = `t3`.`id`) where (`t3`.`id` is not null) and (`t3`.`c` = 1)
+   Execution datasets: s1, s2
+
+select * from t1 left join t2 on t1.id = t2.id left join t3 on t3.id = t1.id where t3.c = 1;
+id	c	id	c	name	id	c
+1	1	1	1	kz	1	1
+drop table t1,t2,t3;
+create table t1(id int primary key, name varchar(20)) shardkey=id;
+create table t2(id int primary key, name varchar(20)) shardkey=noshardkey_allset;
+insert into t1 values(1,'kz');
+insert into t2 values(1,'wj');
+EXPLAIN format=tree select * from t1 where t1.id in (select id from t2);
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`name` AS `name` from `test`.`t2` inner join `test`.`t1` on (`t1`.`id` = `t2`.`id`)
+   Execution datasets: s1, s2
+
+select * from t1 where t1.id in (select id from t2);
+id	name
+1	kz
+update t2 set id=2 where id=1;
+EXPLAIN format=tree select * from t1 where t1.id not in (select id from t2);
+EXPLAIN
+-> Hash antijoin (t2.id = t1.id)  (cost=N.NNN rows=NNN)
+    -> Table scan on t1  (cost=N.NNN rows=NNN)
+    -> Hash
+        -> Index scan on t2 using PRIMARY  (cost=N.NNN rows=NNN)
+
+select * from t1 where t1.id not in (select id from t2);
+id	name
+1	kz
+drop table t1,t2;
+# issue #491 hash join 
+create table t1(id int primary key, age int, score int) shardkey=id;
+create table t2(id int primary key, age int, score int) shardkey=noshardkey_allset;
+create table t3(id int primary key, age int, score int) shardkey=noshardkey_allset;
+insert into t1(id, age, score) values (1, 11, 87), (2, 22, 94), (3, 33, 89);
+insert into t2(id, age, score) values (2, 22, 77), (3, 33, 89), (4, 44, 75);
+insert into t3(id, age, score) values (2, 22, 45), (3, 33, 32), (4, 44, 61);
+# hash join only contains equi condition
+EXPLAIN format=tree select * from t1 join t2 on t1.age = t2.age;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`age` AS `age`,`t1`.`score` AS `score`,`t2`.`id` AS `id`,`t2`.`age` AS `age`,`t2`.`score` AS `score` from `test`.`t1` inner join `test`.`t2` on true  where (`t1`.`age` = `t2`.`age`)
+   Execution datasets: s1, s2
+
+select * from t1 join t2 on t1.age = t2.age;
+id	age	score	id	age	score
+2	22	94	2	22	77
+3	33	89	3	33	89
+EXPLAIN format=tree select * from t1 join t2 on t1.age = t2.age and t1.score = t2.score;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`age` AS `age`,`t1`.`score` AS `score`,`t2`.`id` AS `id`,`t2`.`age` AS `age`,`t2`.`score` AS `score` from `test`.`t1` inner join `test`.`t2` on true  where (`t1`.`score` = `t2`.`score`) and (`t1`.`age` = `t2`.`age`)
+   Execution datasets: s1, s2
+
+select * from t1 join t2 on t1.age = t2.age and t1.score = t2.score;
+id	age	score	id	age	score
+3	33	89	3	33	89
+# hash join only contains equi condition and non-equi condition
+EXPLAIN format=tree select * from t1 join t2 on t1.age = t2.age and t1.score > 90;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`age` AS `age`,`t1`.`score` AS `score`,`t2`.`id` AS `id`,`t2`.`age` AS `age`,`t2`.`score` AS `score` from `test`.`t2` inner join `test`.`t1` on true  where (`t1`.`score` > 90) and (`t2`.`age` = `t1`.`age`)
+   Execution datasets: s1, s2
+
+select * from t1 join t2 on t1.age = t2.age and t1.score > 90;
+id	age	score	id	age	score
+2	22	94	2	22	77
+# hash join contains multi table
+EXPLAIN format=tree select t3.score from t1 join t2 on t1.age = t2.age join t3 on t2.age = t3.age and t3.score > 40;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t3`.`score` AS `score` from `test`.`t1` inner join `test`.`t2` inner join `test`.`t3` on true  on true  where (`t3`.`score` > 40) and (`t2`.`age` = `t3`.`age`) and (`t1`.`age` = `t3`.`age`)
+   Execution datasets: s1, s2
+
+select t3.score from t1 join t2 on t1.age = t2.age join t3 on t2.age = t3.age and t3.score > 40;
+score
+45
+# hash join contains or conditoin
+EXPLAIN format=tree select * from t1 join t2 on t1.age = t2.age or t1.score = 87;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`age` AS `age`,`t1`.`score` AS `score`,`t2`.`id` AS `id`,`t2`.`age` AS `age`,`t2`.`score` AS `score` from `test`.`t1` inner join `test`.`t2` on true  where ((`t1`.`age` = `t2`.`age`) or (`t1`.`score` = 87))
+   Execution datasets: s1, s2
+
+select * from t1 join t2 on t1.age = t2.age or t1.score = 87;
+id	age	score	id	age	score
+1	11	87	2	22	77
+1	11	87	3	33	89
+1	11	87	4	44	75
+2	22	94	2	22	77
+3	33	89	3	33	89
+# refused to deal outer join (outer join cond is transformed to Item_func_trig_cond, which is not parallel_safe)
+EXPLAIN format=tree select * from t1 left join t2 on t1.age = t2.age;;
+EXPLAIN
+-> Left hash join (t2.age = t1.age)  (cost=N.NNN rows=NNN)
+    -> Table scan on t1  (cost=N.NNN rows=NNN)
+    -> Hash
+        -> Table scan on t2  (cost=N.NNN rows=NNN)
+
+select * from t1 left join t2 on t1.age = t2.age;;
+id	age	score	id	age	score
+1	11	87	NULL	NULL	NULL
+2	22	94	2	22	77
+3	33	89	3	33	89
+drop table t1, t2, t3;
+create table t1 (a int key, b char(20)) shardkey=a;
+create table t2 (a int key, b char(20)) shardkey=a;
+create table t3 (a int key, b char(20)) shardkey=noshardkey_allset;
+create table t4 (a int key, b char(20)) shardkey=noshardkey_allset;
+create table t5( a int key, b char(20));
+create table t6( a int key, b char(20));
+insert into t1 values(1,"abc"), (2,"abcd"),(3,"abc"),(4,"abcd"),(5,"abc");
+insert into t2 values(1,"abc"), (2,"abcd"),(3,"abc");
+insert into t3 values(1,"abc"), (2,"abcd"),(3,"abc");
+insert into t4 values(1,"abc"), (2,"abcd"),(3,"abc");
+insert into t5 values(1,"abc"), (2,"abcd"),(3,"abc");
+insert into t6 values(1,"abc"), (2,"abcd"),(3,"abc");
+# JOIN is pushed down 1 set
+EXPLAIN format=tree select count(*) from t1, t2 where t1.a = t2.a and t1.a in (2, 4);
+EXPLAIN
+-> Aggregate: count(`count(0)`)  (cost=N.NNN rows=NNN)
+    -> Gather (slice: 1, workers: 1)
+       Statement: select count(0) from `test`.`t1` inner join `test`.`t2` on (`t2`.`a` = `t1`.`a`) where (`t1`.`a` in (2,4))
+       Execution datasets: s2
+
+select count(*) from t1, t2 where t1.a = t2.a and t1.a in (2, 4);
+count(*)
+1
+# refuse to parallel if JOIN involves more than 1 set.
+EXPLAIN format=tree select count(*) from t1, t2 where t1.b = t2.b;
+EXPLAIN
+-> Aggregate: count(0)  (cost=N.NNN rows=NNN)
+    -> Inner hash join (t2.b = t1.b)  (cost=N.NNN rows=NNN)
+        -> Table scan on t2  (cost=N.NNN rows=NNN)
+        -> Hash
+            -> Table scan on t1  (cost=N.NNN rows=NNN)
+
+select count(*) from t1, t2 where t1.b = t2.b;
+count(*)
+8
+all set tables join with shard table
+EXPLAIN format=tree select * from t3, t4, t1 where t3.a = t4.a and t4.a = t1.a;;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t3`.`a` AS `a`,`t3`.`b` AS `b`,`t4`.`a` AS `a`,`t4`.`b` AS `b`,`t1`.`a` AS `a`,`t1`.`b` AS `b` from `test`.`t3` inner join `test`.`t4` on (`t4`.`a` = `t3`.`a`) inner join `test`.`t1` on (`t1`.`a` = `t3`.`a`)
+   Execution datasets: s1, s2
+
+select * from t3, t4, t1 where t3.a = t4.a and t4.a = t1.a;;
+a	b	a	b	a	b
+1	abc	1	abc	1	abc
+2	abcd	2	abcd	2	abcd
+3	abc	3	abc	3	abc
+no shard table join with shard table
+EXPLAIN format=tree select * from t1, t5 where t1.a = t5.a;;
+EXPLAIN
+-> Nested loop inner join  (cost=N.NNN rows=NNN)
+    -> Table scan on t5  (cost=N.NNN rows=NNN)
+    -> Single-row index lookup on t1 using PRIMARY (a=t5.a)  (cost=N.NNN rows=NNN)
+
+select * from t1, t5 where t1.a = t5.a;;
+a	b	a	b
+1	abc	1	abc
+2	abcd	2	abcd
+3	abc	3	abc
+inner tables of outer join can not includes shard tables
+EXPLAIN format=tree select * from t3 left join t1 on (t3.b = t1.b);;
+EXPLAIN
+-> Left hash join (t1.b = t3.b)  (cost=N.NNN rows=NNN)
+    -> Table scan on t3  (cost=N.NNN rows=NNN)
+    -> Hash
+        -> Table scan on t1  (cost=N.NNN rows=NNN)
+
+select * from t3 left join t1 on (t3.b = t1.b);;
+a	b	a	b
+1	abc	1	abc
+1	abc	3	abc
+1	abc	5	abc
+2	abcd	2	abcd
+2	abcd	4	abcd
+3	abc	1	abc
+3	abc	3	abc
+3	abc	5	abc
+all set table join with all set table
+EXPLAIN format=tree select * from t3, t4 where t3.a = t4.a;;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=N.NNN rows=NNN)
+   Statement: select `t3`.`a` AS `a`,`t3`.`b` AS `b`,`t4`.`a` AS `a`,`t4`.`b` AS `b` from `test`.`t3` inner join `test`.`t4` on (`t4`.`a` = `t3`.`a`)
+   Execution datasets: s1
+
+select * from t3, t4 where t3.a = t4.a;;
+a	b	a	b
+1	abc	1	abc
+2	abcd	2	abcd
+3	abc	3	abc
+no shard table join with no shard table
+EXPLAIN format=tree select * from t5, t6 where t5.a = t6.a;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=N.NNN rows=NNN)
+   Statement: select `t5`.`a` AS `a`,`t5`.`b` AS `b`,`t6`.`a` AS `a`,`t6`.`b` AS `b` from `test`.`t5` inner join `test`.`t6` on (`t6`.`a` = `t5`.`a`)
+   Execution datasets: s1
+
+select * from t5, t6 where t5.a = t6.a;
+a	b	a	b
+1	abc	1	abc
+2	abcd	2	abcd
+3	abc	3	abc
+all set tables join with no shard table
+EXPLAIN format=tree select * from t3, t4, t5 where t3.a = t4.a and t4.a = t5.a;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=N.NNN rows=NNN)
+   Statement: select `t3`.`a` AS `a`,`t3`.`b` AS `b`,`t4`.`a` AS `a`,`t4`.`b` AS `b`,`t5`.`a` AS `a`,`t5`.`b` AS `b` from `test`.`t3` inner join `test`.`t4` on (`t4`.`a` = `t3`.`a`) inner join `test`.`t5` on (`t5`.`a` = `t3`.`a`)
+   Execution datasets: s1
+
+select * from t3, t4, t5 where t3.a = t4.a and t4.a = t5.a;
+a	b	a	b	a	b
+1	abc	1	abc	1	abc
+2	abcd	2	abcd	2	abcd
+3	abc	3	abc	3	abc
+all kinds of table join
+EXPLAIN format=tree select * from t1, t3, t5 where t1.a = t3.a and t3.a = t5.a;
+EXPLAIN
+-> Nested loop inner join  (cost=N.NNN rows=NNN)
+    -> Nested loop inner join  (cost=N.NNN rows=NNN)
+        -> Table scan on t3  (cost=N.NNN rows=NNN)
+        -> Single-row index lookup on t5 using PRIMARY (a=t3.a)  (cost=N.NNN rows=NNN)
+    -> Single-row index lookup on t1 using PRIMARY (a=t3.a)  (cost=N.NNN rows=NNN)
+
+select * from t1, t3, t5 where t1.a = t3.a and t3.a = t5.a;
+a	b	a	b	a	b
+1	abc	1	abc	1	abc
+2	abcd	2	abcd	2	abcd
+3	abc	3	abc	3	abc
+drop table t1,t2,t3,t4,t5,t6;

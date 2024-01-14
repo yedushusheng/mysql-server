@@ -1,0 +1,134 @@
+--disable_warnings
+--disable_query_log
+--disable_result_log
+--source  suite/tdsql_proxy/include/connect_master_1.inc
+--source ../include/pq_default.inc
+--enable_result_log
+--enable_query_log
+--enable_warnings
+
+set tdsql_parallel_query_switch='join=on';
+CREATE TABLE t1(a INT PRIMARY KEY, b INT) shardkey=a;
+CREATE TABLE t2(a INT PRIMARY KEY, b INT) shardkey=noshardkey_allset;
+INSERT INTO t1 VALUES(1,1),(2,2),(3,3);
+INSERT INTO t2 VALUES(1,1),(2,2),(3,3);
+explain SELECT * FROM t1,t2 WHERE t1.a = t2.a;
+--let $query = SELECT * FROM t1,t2 WHERE t1.a = t2.a
+--source suite/parallel_query/include/explain_and_run.inc
+DROP TABLE t1, t2;
+
+#outer join
+create table t1(id int primary key, c int) shardkey=id;
+create table t2(id int primary key, c int, name varchar(30)) shardkey=noshardkey_allset;
+insert into t1 values(1, 1),(2, 2);
+insert into t2 values(1,1,'kz'),(3,3,'wj');
+--let $query = select /*+ no_bnl(t1,t2) */ * from t1 left join t2 on t1.id = t2.id where t1.id > 1
+--source suite/parallel_query/include/explain_and_run.inc
+--let $query = select /*+ no_bnl(t1,t2) */ * from t1 right join t2 on t1.id = t2.id where t2.id > 1
+--source suite/parallel_query/include/explain_and_run.inc
+
+create table t3(id int primary key, c int) shardkey=noshardkey_allset;
+insert into t3 values(1,1),(4,4);
+--let $query = select * from t1 left join t2 on t1.id = t2.id left join t3 on t3.id = t1.id where t3.c = 1
+--source suite/parallel_query/include/explain_and_run.inc 
+drop table t1,t2,t3;
+
+#semi/anti join support later
+create table t1(id int primary key, name varchar(20)) shardkey=id;
+create table t2(id int primary key, name varchar(20)) shardkey=noshardkey_allset;
+insert into t1 values(1,'kz');
+insert into t2 values(1,'wj');
+--let $query = select * from t1 where t1.id in (select id from t2)
+--source suite/parallel_query/include/explain_and_run.inc
+update t2 set id=2 where id=1;
+--let $query = select * from t1 where t1.id not in (select id from t2)
+--source suite/parallel_query/include/explain_and_run.inc
+drop table t1,t2;
+
+--echo # issue #491 hash join 
+create table t1(id int primary key, age int, score int) shardkey=id;
+create table t2(id int primary key, age int, score int) shardkey=noshardkey_allset;
+create table t3(id int primary key, age int, score int) shardkey=noshardkey_allset;
+insert into t1(id, age, score) values (1, 11, 87), (2, 22, 94), (3, 33, 89);
+insert into t2(id, age, score) values (2, 22, 77), (3, 33, 89), (4, 44, 75);
+insert into t3(id, age, score) values (2, 22, 45), (3, 33, 32), (4, 44, 61);
+
+--echo # hash join only contains equi condition
+--let $query = select * from t1 join t2 on t1.age = t2.age
+--source suite/parallel_query/include/explain_and_run.inc
+--let $query = select * from t1 join t2 on t1.age = t2.age and t1.score = t2.score
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo # hash join only contains equi condition and non-equi condition
+--let $query = select * from t1 join t2 on t1.age = t2.age and t1.score > 90
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo # hash join contains multi table
+--let $query = select t3.score from t1 join t2 on t1.age = t2.age join t3 on t2.age = t3.age and t3.score > 40
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo # hash join contains or conditoin
+--let $query = select * from t1 join t2 on t1.age = t2.age or t1.score = 87
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo # refused to deal outer join (outer join cond is transformed to Item_func_trig_cond, which is not parallel_safe)
+--let $query = select * from t1 left join t2 on t1.age = t2.age;
+--source suite/parallel_query/include/explain_and_run.inc
+
+drop table t1, t2, t3;
+
+create table t1 (a int key, b char(20)) shardkey=a;
+create table t2 (a int key, b char(20)) shardkey=a;
+create table t3 (a int key, b char(20)) shardkey=noshardkey_allset;
+create table t4 (a int key, b char(20)) shardkey=noshardkey_allset;
+# No shard table
+create table t5( a int key, b char(20));
+create table t6( a int key, b char(20));
+
+insert into t1 values(1,"abc"), (2,"abcd"),(3,"abc"),(4,"abcd"),(5,"abc");
+insert into t2 values(1,"abc"), (2,"abcd"),(3,"abc");
+insert into t3 values(1,"abc"), (2,"abcd"),(3,"abc");
+insert into t4 values(1,"abc"), (2,"abcd"),(3,"abc");
+insert into t5 values(1,"abc"), (2,"abcd"),(3,"abc");
+insert into t6 values(1,"abc"), (2,"abcd"),(3,"abc");
+
+--echo # JOIN is pushed down 1 set
+--let $query = select count(*) from t1, t2 where t1.a = t2.a and t1.a in (2, 4)
+--source ../include/explain_and_run.inc
+
+--echo # refuse to parallel if JOIN involves more than 1 set.
+--let $query = select count(*) from t1, t2 where t1.b = t2.b
+--source ../include/explain_and_run.inc
+
+--echo all set tables join with shard table
+--let $query = select * from t3, t4, t1 where t3.a = t4.a and t4.a = t1.a;
+--source ../include/explain_and_run.inc
+
+--echo no shard table join with shard table
+--let $query = select * from t1, t5 where t1.a = t5.a;
+--source ../include/explain_and_run.inc
+
+--echo inner tables of outer join can not includes shard tables
+--let $query = select * from t3 left join t1 on (t3.b = t1.b);
+--source ../include/explain_and_run.inc
+
+--echo all set table join with all set table
+--let $query = select * from t3, t4 where t3.a = t4.a;
+--source ../include/explain_and_run.inc
+
+--echo no shard table join with no shard table
+--let $query = select * from t5, t6 where t5.a = t6.a
+--source ../include/explain_and_run.inc
+
+--echo all set tables join with no shard table
+--let $query = select * from t3, t4, t5 where t3.a = t4.a and t4.a = t5.a
+--source ../include/explain_and_run.inc
+
+--echo all kinds of table join
+--let $query = select * from t1, t3, t5 where t1.a = t3.a and t3.a = t5.a
+--source ../include/explain_and_run.inc
+
+drop table t1,t2,t3,t4,t5,t6;
+
+# clean env.
+--enable_warnings

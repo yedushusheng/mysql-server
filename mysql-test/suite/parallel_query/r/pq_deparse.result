@@ -1,0 +1,276 @@
+set tdsql_parallel_query_switch='join=on';
+CREATE TABLE t1(id INT PRIMARY KEY, b INT) shardkey=id;
+CREATE TABLE t2(id INT PRIMARY KEY, b INT, c INT) shardkey=noshardkey_allset;
+insert into t1 values(1,1),(2,2),(3,3);
+insert into t2 values(1,1,0),(2,2,0),(3,2,1),(4,3,0),(5,3,1),(6,3,2);
+EXPLAIN format=tree select t1.b, (select count(*) from t2 where t2.b = t1.b) as count from t1 order by count;
+EXPLAIN
+-> Sort: count
+    -> Stream results  (cost=N.NNN rows=NNN)
+        -> Table scan on t1  (cost=N.NNN rows=NNN)
+-> Select #2 (subquery in projection; dependent)
+    -> Aggregate: count(0)  (cost=N.NNN rows=NNN)
+        -> Filter: (t2.b = t1.b)  (cost=N.NNN rows=NNN)
+            -> Table scan on t2  (cost=N.NNN rows=NNN)
+
+Warnings:
+Note	1276	Field or reference 'test.t1.b' of SELECT #2 was resolved in SELECT #1
+select t1.b, (select count(*) from t2 where t2.b = t1.b) as count from t1 order by count;
+b	count
+1	1
+2	2
+3	3
+insert into t2 values(7,4,0),(8,5,1),(9,5,2);
+EXPLAIN format=tree select (select count(*) from t2 where t2.b = t1.b) as count, count(t1.b) from t1 group by count;
+EXPLAIN
+-> Table scan on <temporary>
+    -> Aggregate using temporary table
+        -> Table scan on t1  (cost=N.NNN rows=NNN)
+-> Select #2 (subquery in projection; dependent)
+    -> Aggregate: count(0)  (cost=N.NNN rows=NNN)
+        -> Filter: (t2.b = t1.b)  (cost=N.NNN rows=NNN)
+            -> Table scan on t2  (cost=N.NNN rows=NNN)
+
+Warnings:
+Note	1276	Field or reference 'test.t1.b' of SELECT #2 was resolved in SELECT #1
+select (select count(*) from t2 where t2.b = t1.b) as count, count(t1.b) from t1 group by count;
+count	count(t1.b)
+1	1
+2	1
+3	1
+EXPLAIN format=tree select * from t1 join t2;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`b` AS `b`,`t2`.`id` AS `id`,`t2`.`b` AS `b`,`t2`.`c` AS `c` from `test`.`t1` inner join `test`.`t2` on true 
+   Execution datasets: s1, s2
+
+select * from t1 join t2;
+id	b	id	b	c
+1	1	1	1	0
+1	1	2	2	0
+1	1	3	2	1
+1	1	4	3	0
+1	1	5	3	1
+1	1	6	3	2
+1	1	7	4	0
+1	1	8	5	1
+1	1	9	5	2
+2	2	1	1	0
+2	2	2	2	0
+2	2	3	2	1
+2	2	4	3	0
+2	2	5	3	1
+2	2	6	3	2
+2	2	7	4	0
+2	2	8	5	1
+2	2	9	5	2
+3	3	1	1	0
+3	3	2	2	0
+3	3	3	2	1
+3	3	4	3	0
+3	3	5	3	1
+3	3	6	3	2
+3	3	7	4	0
+3	3	8	5	1
+3	3	9	5	2
+EXPLAIN format=tree select count(*) from t1,t2;
+EXPLAIN
+-> Aggregate: count(`count(0)`)
+    -> Gather (slice: 1, workers: 2)
+       Statement: select count(0) from `test`.`t2`
+       Execution datasets: s1, s2
+
+select count(*) from t1,t2;
+count(*)
+18
+create table t4(a int primary key, b enum('a','b','c')) shardkey=a;
+EXPLAIN format=tree select * from t4 where b = 'd';
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t4`.`a` AS `a`,`t4`.`b` AS `b` from `test`.`t4` where (`t4`.`b` = 'd')
+   Execution datasets: s1, s2
+
+select * from t4 where b = 'd';
+a	b
+EXPLAIN format=tree select 1 from t1;;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select 1 from `test`.`t1`
+   Execution datasets: s1, s2
+
+select 1 from t1;;
+1
+1
+1
+1
+EXPLAIN format=tree select 101, 102 from t1;;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select 1 from `test`.`t1`
+   Execution datasets: s1, s2
+
+select 101, 102 from t1;;
+101	102
+101	102
+101	102
+101	102
+EXPLAIN format=tree select 11, id, 15 from t1;;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id` from `test`.`t1`
+   Execution datasets: s1, s2
+
+select 11, id, 15 from t1;;
+11	id	15
+11	1	15
+11	2	15
+11	3	15
+set tdsql_pushdown_condition=off;
+set optimizer_switch='subquery_to_derived=on';
+EXPLAIN format=tree select * from t2 where id = 1;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=0.35..0.35 rows=1)
+   Statement: select `t2`.`id` AS `id`,`t2`.`b` AS `b`,`t2`.`c` AS `c` from `test`.`t2` where (`t2`.`id` = 1)
+   Execution datasets: s1
+
+select * from t2 where id = 1;
+id	b	c
+1	1	0
+set optimizer_switch='subquery_to_derived=on';
+EXPLAIN format=tree select * from t1 where id=1 limit 1;
+EXPLAIN
+-> Limit: 1 row(s)  (cost=0.35..0.35 rows=1)
+    -> Gather (slice: 1, workers: 1)
+       Statement: select `t1`.`id` AS `id`,`t1`.`b` AS `b` from `test`.`t1` where (`t1`.`id` = 1) limit 1
+       Execution datasets: s1
+
+select * from t1 where id=1 limit 1;
+id	b
+1	1
+create table t9(id int primary key, a blob, b int) shardkey=id;
+insert into t9 values(1,'1',2),(2,'1',2),(3,'2',3),(4,'2',3);
+set sql_mode='STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3135	'NO_ZERO_DATE', 'NO_ZERO_IN_DATE' and 'ERROR_FOR_DIVISION_BY_ZERO' sql modes should be used with strict mode. They will be merged with strict mode in a future release.
+EXPLAIN format=tree select b from t9 group by a order by b;;
+EXPLAIN
+-> Sort: t9.b
+    -> Table scan on <temporary>  (cost=0.64..2.55 rows=4)
+        -> Temporary table with deduplication  (cost=2.44..4.35 rows=4)
+            -> Gather (slice: 1, workers: 2)
+               Statement: select `t9`.`a` AS `a`,`t9`.`b` AS `b` from `test`.`t9` group by `t9`.`a`
+               Execution datasets: s1, s2
+
+select b from t9 group by a order by b;;
+b
+2
+3
+create table t6(id int primary key, a blob, b int) shardkey=id;
+insert into t6 values(1,'1',1),(2,'1',2),(3,'2',1),(4,'2',2);
+set sql_mode='STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3135	'NO_ZERO_DATE', 'NO_ZERO_IN_DATE' and 'ERROR_FOR_DIVISION_BY_ZERO' sql modes should be used with strict mode. They will be merged with strict mode in a future release.
+EXPLAIN format=tree select a from t6 group by a order by a;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)
+   Merge sort with duplicate removal: t6.a
+   Statement: select `t6`.`a` AS `a` from `test`.`t6` group by `t6`.`a` order by `t6`.`a`
+   Execution datasets: s1, s2
+
+select a from t6 group by a order by a;
+a
+1
+2
+EXPLAIN format=tree select sum(b) from t6 group by a;
+EXPLAIN
+-> Table scan on <temporary>
+    -> Aggregate using temporary table
+        -> Gather (slice: 1, workers: 2)
+           Statement: select `t6`.`a` AS `a`,sum(`t6`.`b`) AS `b` from `test`.`t6` group by `t6`.`a`
+           Execution datasets: s1, s2
+
+select sum(b) from t6 group by a;
+sum(b)
+3
+3
+EXPLAIN format=tree select a as c, sum(b) from t6 group by a;
+EXPLAIN
+-> Table scan on <temporary>
+    -> Aggregate using temporary table
+        -> Gather (slice: 1, workers: 2)
+           Statement: select `t6`.`a` AS `c`,sum(`t6`.`b`) AS `b` from `test`.`t6` group by `t6`.`a`
+           Execution datasets: s1, s2
+
+select a as c, sum(b) from t6 group by a;
+c	sum(b)
+1	3
+2	3
+EXPLAIN format=tree select t.a, sum(t.b) from t6 t group by t.a;
+EXPLAIN
+-> Table scan on <temporary>
+    -> Aggregate using temporary table
+        -> Gather (slice: 1, workers: 2)
+           Statement: select `t`.`a` AS `a`,sum(`t`.`b`) AS `b` from `test`.`t6` `t` group by `t`.`a`
+           Execution datasets: s1, s2
+
+select t.a, sum(t.b) from t6 t group by t.a;
+a	sum(t.b)
+1	3
+2	3
+EXPLAIN format=tree select count(*), b + 1 as c from t6 group by c;
+EXPLAIN
+-> Table scan on <temporary>
+    -> Aggregate using temporary table
+        -> Gather (slice: 1, workers: 2)
+           Statement: select count(0),(`t6`.`b` + 1) AS `c` from `test`.`t6` group by `c`
+           Execution datasets: s1, s2
+
+select count(*), b + 1 as c from t6 group by c;
+count(*)	c
+2	2
+2	3
+create table t7(a int primary key, b int) shardkey=a;
+EXPLAIN format=tree select rand() as c0, ref_0.b as c1, 36 as c2 from t7 as ref_0 where ref_0.b is NULL group by 1, 2, 3;
+EXPLAIN
+-> Table scan on <temporary>  (cost=2.51..2.51 rows=1)
+    -> Temporary table with deduplication  (cost=4.01..4.01 rows=1)
+        -> Gather (slice: 1, workers: 2)
+           Statement: select rand() AS `c0`,`ref_0`.`b` AS `c1` from `test`.`t7` `ref_0` where (`ref_0`.`b` is null) group by `c0`, `ref_0`.`b`
+           Execution datasets: s1, s2
+
+select rand() as c0, ref_0.b as c1, 36 as c2 from t7 as ref_0 where ref_0.b is NULL group by 1, 2, 3;
+c0	c1	c2
+CREATE TABLE `t8` (
+`a` int NOT NULL,
+`b` tinyint DEFAULT NULL,
+`c` smallint DEFAULT NULL,
+`d` bigint DEFAULT NULL,
+`e` decimal(10,0) DEFAULT NULL,
+`f` double DEFAULT NULL,
+`g` float DEFAULT NULL,
+PRIMARY KEY (`a`)
+) shardkey=a;
+EXPLAIN format=tree select distinct  ref_0.d as c0,  ref_0.b as c1,  ref_0.b as c2, case when case when ref_0.g is not NULL then ref_0.d else ref_0.d end  > ref_0.d then ref_0.b else ref_0.b end as c3 from  t8 as ref_0 where ref_0.b >= ref_0.b order by 1, 2, 3, 4 limit 136;
+EXPLAIN
+-> Limit: 136 row(s)
+    -> Gather (slice: 1, workers: 2)
+       Merge sort with duplicate removal: t8.c0, t8.c1, c3
+       Statement: select `ref_0`.`d` AS `c0`,`ref_0`.`b` AS `c1`,`ref_0`.`b` AS `c2`,(case when ((case when (`ref_0`.`g` is not null) then `ref_0`.`d` else `ref_0`.`d` end) > `ref_0`.`d`) then `ref_0`.`b` else `ref_0`.`b` end) AS `c3` from `test`.`t8` `ref_0` where (`ref_0`.`b` >= `ref_0`.`b`) group by `ref_0`.`d`, `ref_0`.`b`, `c3` order by `ref_0`.`d`, `ref_0`.`b`, c3 limit 136
+       Execution datasets: s1, s2
+
+select distinct  ref_0.d as c0,  ref_0.b as c1,  ref_0.b as c2, case when case when ref_0.g is not NULL then ref_0.d else ref_0.d end  > ref_0.d then ref_0.b else ref_0.b end as c3 from  t8 as ref_0 where ref_0.b >= ref_0.b order by 1, 2, 3, 4 limit 136;
+c0	c1	c2	c3
+DROP TABLE t1, t2, t4, t6, t7, t8, t9;
+create database s1;
+use s1;
+create table t1 (a int primary key) shardkey=a;
+create database s2;
+use s2;
+create table t2 (a int primary key) shardkey=a;
+select * from s1.t1;
+a
+use s1;
+select * from s2.t2;
+a
+drop database s1;
+drop database s2;
