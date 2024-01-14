@@ -346,6 +346,7 @@ static std::pair<std::string *, std::string *> GetOutputWorkersTimingData(
 
   collector->ForEachWorker([&](Worker *worker) {
     auto *timing_data = worker->QueryPlanTimingData();
+    if (!timing_data) return;
     // Only needs check root iterator
     uint64 num_rows, num_init_calls;
     duration_type time_spent_in_first_row, time_spent_in_other_rows;
