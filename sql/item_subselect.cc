@@ -1735,6 +1735,7 @@ Item_subselect::trans_res Item_in_subselect::single_value_transformer(
       }
       if (upper_item) upper_item->set_sum_test(item);
       select->base_ref_items[0] = item;
+      if (upper_item) select->forbid_parallel_by_upper_query_block = true;
 
       // Find the correct position in the field list, and overwrite it with the
       // item.
@@ -1769,6 +1770,7 @@ Item_subselect::trans_res Item_in_subselect::single_value_transformer(
       subs = item = new Item_maxmin_subselect(this, select, func->l_op(),
                                               substype() == ANY_SUBS);
       if (upper_item) upper_item->set_sub_test(item);
+      if (upper_item) select->forbid_parallel_by_upper_query_block = true;
     }
     if (upper_item) upper_item->set_subselect(this);
 

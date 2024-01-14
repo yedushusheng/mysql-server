@@ -120,14 +120,31 @@ static void ChooseParallelPlan(JOIN *join) {
     cause = "disabled_by_zero_of_max_parallel_workers";
     return;
   }
-
+  // Only support SELECT command
   if (thd->lex->sql_command != SQLCOM_SELECT) {
     cause = "not_supported_sql_command";
     return;
   }
 
-  // Block plan which does't support yet
+  // Block uncacheable subqueries, Note some converted subqueries may also
+  // blocked.
+  if (!join->query_block->is_cacheable()) {
+    cause = "not_supported_unacheable_subquery";
+    return;
+  }
+  if (join->query_block->forbid_parallel_by_upper_query_block) {
+    cause = "item_referred_by_upper_query_block";
+    return;
+  }
+  // Block plan of derived table that transformed from subquery. It has a
+  // bug ORDER::item that points to ORDER::item_initial incorrectly.
+  auto *derived_table = join->query_expression()->derived_table;
+  if (derived_table && derived_table->m_was_scalar_subquery) {
+    cause = "buggy_derived_plan_from_subquery";
+    return;
+  }
 
+  // Block plan which does't support yet
   if (join->zero_result_cause) {
     cause = "plan_with_zero_result";
     return;
@@ -165,13 +182,23 @@ static void ChooseParallelPlan(JOIN *join) {
 
   // Block parallel query based on table properties
   auto *qt = &join->qep_tab[0];
+  auto *table_ref = qt->table_ref;
+
+  if (table_ref->is_placeholder()) {
+    cause = "table_is_not_real_user_table";
+    return;
+  }
+
+  if (is_temporary_table(table_ref)) {
+    cause = "temporary_table_is_not_supported";
+    return;
+  }
 
   if (qt->type() != JT_ALL && qt->type() != JT_INDEX_SCAN &&
       qt->type() != JT_RANGE) {
     cause = "table_access_type_is_not_supported";
     return;
   }
-
   if (qt->type() == JT_RANGE && !IsAccessRangeSupported(qt)) {
     cause = "unsupported_access_range_type";
     return;
