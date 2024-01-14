@@ -6,6 +6,7 @@
 
 class Item_clone_context;
 class JOIN;
+class RowIterator;
 
 namespace pq {
 /**
@@ -45,11 +46,18 @@ class AccessPathRewriter {
   virtual bool rewrite_sort(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_aggregate(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_temptable_aggregate(AccessPath *, AccessPath *) = 0;
-  virtual bool rewrite_limit_offset(AccessPath *, AccessPath *) {return false;}
+  virtual bool rewrite_limit_offset(AccessPath *, AccessPath *) {
+    return false;
+  }
   virtual bool rewrite_stream(AccessPath *, AccessPath *) = 0;
   virtual bool rewrite_materialize(AccessPath *in, AccessPath *out);
 
-  MEM_ROOT *mem_root() const { return m_item_clone_context->mem_root(); };
+  MEM_ROOT *mem_root() const { return m_item_clone_context->mem_root(); }
+  /**
+    Do some additional rewrites for out access path, access path parallelizer
+    use it to set fake timing iterator.
+  */
+  virtual void post_rewrite_out_path(AccessPath *out [[maybe_unused]]) {}
 
   Item_clone_context *m_item_clone_context;
   JOIN *m_join_in;
@@ -71,6 +79,9 @@ class AccessPathParallelizer : public AccessPathRewriter {
     m_collector_access_path = path;
   }
   AccessPath *collector_access_path() const { return m_collector_access_path; }
+  void set_fake_timing_iterator(RowIterator *iterator) {
+    m_fake_timing_iterator = iterator;
+  }
 
  private:
   bool end_of_out_path() override { return m_collector_path_pos != nullptr; }
@@ -90,9 +101,12 @@ class AccessPathParallelizer : public AccessPathRewriter {
   bool rewrite_stream(AccessPath *, AccessPath *) override;
   bool rewrite_materialize(AccessPath *in, AccessPath *out) override;
 
+  void post_rewrite_out_path(AccessPath *out) override;
+
   AccessPath *m_collector_access_path{nullptr};
   AccessPath **m_collector_path_pos{nullptr};
   ORDER *merge_sort{nullptr};
+  RowIterator *m_fake_timing_iterator{nullptr};
 };
 
 class PartialAccessPathRewriter : public AccessPathRewriter {

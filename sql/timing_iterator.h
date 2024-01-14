@@ -79,7 +79,7 @@ class TimingIterator final : public RowIterator {
     m_iterator.EndPSIBatchModeIfStarted();
   }
 
-  std::string TimingString() const override;
+  std::string TimingString(bool binary) const override;
 
   RowIterator *real_iterator() override { return &m_iterator; }
   const RowIterator *real_iterator() const override { return &m_iterator; }
@@ -151,7 +151,7 @@ int TimingIterator<RealIterator>::Read() {
 }
 
 template <class RealIterator>
-std::string TimingIterator<RealIterator>::TimingString() const {
+std::string TimingIterator<RealIterator>::TimingString(bool binary) const {
   double first_row_ms =
       duration<double>(m_time_spent_in_first_row).count() * 1e3;
   double last_row_ms =
@@ -159,6 +159,27 @@ std::string TimingIterator<RealIterator>::TimingString() const {
           .count() *
       1e3;
   char buf[1024];
+
+  if (binary) {
+    // Following serialized data is used by class pq::FakeTimingIterator. Please
+    // check that if this function changed.
+    uint i = 0;
+
+    memcpy(buf, &m_num_rows, sizeof m_num_rows);
+    i += sizeof m_num_rows;
+    memcpy(buf + i, &m_num_init_calls, sizeof m_num_init_calls);
+    i += sizeof m_num_init_calls;
+    memcpy(buf + i, &m_time_spent_in_first_row,
+           sizeof m_time_spent_in_first_row);
+    i += sizeof m_time_spent_in_first_row;
+    memcpy(buf + i, &m_time_spent_in_other_rows,
+           sizeof m_time_spent_in_other_rows);
+    i += sizeof m_time_spent_in_other_rows;
+    std::string res;
+    res.append(buf, i);
+    return res;
+  }
+    
   if (m_num_init_calls == 0) {
     snprintf(buf, sizeof(buf), "(never executed)");
   } else {

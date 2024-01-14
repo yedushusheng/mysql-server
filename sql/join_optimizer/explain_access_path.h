@@ -29,6 +29,13 @@ struct AccessPath;
 class JOIN;
 
 /**
+  Like PrintQueryPlan() but print out timing data to @param timing_data, used in
+  partial plan explain analyze.
+ */
+void PrintQueryPlanTiming(AccessPath *path, JOIN *join, bool is_root_of_join,
+                          std::string *timing_data);
+
+/**
   Print out an access path and all of its children (if any) in a tree.
   "level" is the current indenting level, as this is called recursively.
   "join" should be set to the JOIN that "path" is part of (or nullptr

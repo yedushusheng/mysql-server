@@ -176,7 +176,8 @@ vector<ExplainData::Child> GetAccessPathsFromSelectList(JOIN *join) {
   return ret;
 }
 
-ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join);
+ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
+                              std::string *timing_data = nullptr);
 
 // The table iterator could be a whole string of iterators
 // (sort, filter, etc.) due to add_sorting_to_table(), so show them all.
@@ -333,7 +334,8 @@ static void AddChildrenFromPushedCondition(
  * AddTableIteratorDescription
  * PrintQueryPlan
 */
-ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join) {
+ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
+                              std::string *timing_data) {
   vector<string> description;
   vector<ExplainData::Child> children;
   switch (path->type) {
@@ -694,8 +696,8 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join) {
       // We don't list the table iterator as an explicit child; we mark it in
       // our description instead. (Anything else would look confusingly much
       // like a join.)
-      ExplainData table_explain =
-          ExplainAccessPath(path->temptable_aggregate().table_path, join);
+      ExplainData table_explain = ExplainAccessPath(
+          path->temptable_aggregate().table_path, join, timing_data);
       description = move(table_explain.description);
       description.emplace_back("Aggregate using temporary table");
       children.push_back({path->temptable_aggregate().subquery_path});
@@ -863,10 +865,34 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join) {
     }
     description.back().push_back(' ');
     description.back() += path->iterator->TimingString();
+    if (timing_data) *timing_data += path->iterator->TimingString(true);
   }
   return {description, children};
 }
 
+void PrintQueryPlanTiming(AccessPath *path, JOIN *join, bool is_root_of_join,
+                          std::string *timing_data) {
+  ExplainData explain = ExplainAccessPath(path, join, timing_data);
+
+  for (const ExplainData::Child &child : explain.children) {
+    JOIN *subjoin = child.join != nullptr ? child.join : join;
+    bool child_is_root_of_join = subjoin != join;
+
+    PrintQueryPlanTiming(child.path, subjoin, child_is_root_of_join,
+                         timing_data);
+  }
+
+  // See PrintQueryPlan().
+  if (is_root_of_join) {
+    if (path->type == AccessPath::ZERO_ROWS) return;
+
+    for (const auto &child : GetAccessPathsFromSelectList(join))
+      PrintQueryPlanTiming(child.path, child.join,
+                           /*is_root_of_join=*/true, timing_data);
+  }
+}
+
+// Please check PrintQueryPlanTiming() if this function changed.
 /** Note:外部接口
  * 调用:
  * sql/opt_explain.cc/ExplainIterator
