@@ -271,7 +271,7 @@ bool JOIN::create_intermediate_table(
         !(tab->quick() && tab->quick()->is_agg_loose_index_scan());
     if (prepare_sum_aggregators(sum_funcs, need_distinct)) goto err;
     if (setup_sum_funcs(thd, sum_funcs)) goto err;
-    group_list_planned = group_list;
+    merge_sort = group_list;
     group_list.clean();
   } else {
     if (make_sum_func_list(*fields, false)) goto err;
