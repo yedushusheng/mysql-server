@@ -50,10 +50,13 @@ class MemRowChannel : public RowChannel {
     if (m_message_queue_owned) ::destroy(m_message_queue);
   }
   bool Init(THD *thd, Event *event, bool) override {
-    if ((!m_message_queue && !(m_message_queue = new (thd->mem_root)
-                                   MessageQueue(message_queue_ring_size))) ||
-        m_message_queue->Init(thd->mem_root))
-      return true;
+    if (m_message_queue_owned) {
+      assert(!m_message_queue);
+      if (!(m_message_queue =
+                new (thd->mem_root) MessageQueue(message_queue_ring_size)) ||
+          m_message_queue->Init(thd->mem_root))
+        return true;
+    }
 
     if (!(m_message_queue_handle = new (thd->mem_root)
               MessageQueueHandle(m_message_queue, thd, event)))

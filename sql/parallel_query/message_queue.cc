@@ -18,6 +18,7 @@ MessageQueue::MessageQueue(std::size_t queue_size)
 }
 
 bool MessageQueue::Init(MEM_ROOT *mem_root) {
+  assert(!m_buffer);
   if (!(m_buffer = (char *)mem_root->Alloc(m_ring_size))) return true;
 
   return false;

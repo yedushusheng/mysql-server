@@ -122,12 +122,11 @@ bool MergeSort::Init(THD *thd, Filesort *filesort, uint nelements) {
   return false;
 }
 
-uchar *MergeSortElement::CurrentRecord(comm::RowDataInfo **rowdata) const {
+uchar *MergeSortElement::CurrentRecord() const {
   assert(m_cur_read < m_cur_write &&
          m_cur_write <= m_cur_read + (std::uint64_t)m_allocated_records);
 
   auto cur_rec = m_cur_read % (std::uint64_t)m_allocated_records;
-  if (rowdata) *rowdata = RowDataInfoAt(m_row_data, cur_rec);
   return m_records_buffer + cur_rec * m_record_length;
 }
 
@@ -195,7 +194,7 @@ template <bool Push>
 bool FillToPriorityQueue(MergeSort *merge_sort, MergeSortElement *elem) {
   TABLE *table = merge_sort->m_table;
   Sort_param *sort_param = &merge_sort->m_sort_param;
-  uchar *rec = elem->CurrentRecord(nullptr);
+  uchar *rec = elem->CurrentRecord();
 
   // repoint tmp table's fields to refer to current record in element buffer
   RepointSortFields repoint_sortfields(sort_param, rec - table->record[0]);
@@ -257,7 +256,7 @@ MergeSort::Result MergeSort::FillElementBuffer(MergeSortElement *elem,
   return Result::SUCCESS;
 }
 
-MergeSort::Result MergeSort::Read(uchar **buf, comm::RowDataInfo *&rowdata) {
+MergeSort::Result MergeSort::Read(uchar **buf) {
   // Return end if nothing is pushed in Populate().
   if (m_priority_queue->size() == 0) return Result::END;
 
@@ -289,7 +288,7 @@ MergeSort::Result MergeSort::Read(uchar **buf, comm::RowDataInfo *&rowdata) {
     assert(!elem->IsEmpty());
   }
 
-  *buf = elem->CurrentRecord(&rowdata);
+  *buf = elem->CurrentRecord();
 
   // One record is returned, advance read cursor and decrease num_record, fill
   // PQ for next read.
