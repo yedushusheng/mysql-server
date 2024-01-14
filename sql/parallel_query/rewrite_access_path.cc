@@ -183,9 +183,9 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *path) {
       break;
     }
     case AccessPath::STREAM: {
-      assert(end_of_out_path());
-      out = nullptr;
+      out = end_of_out_path() ? nullptr : accesspath_dup(path, mem_root());
       if (rewrite_stream(path, out)) return true;
+      if (out) out->stream().child = m_out_path;
       break;
     }
     case AccessPath::MATERIALIZE: {
@@ -371,6 +371,7 @@ static bool recreate_materialized_table(THD *thd, JOIN *join, ORDER *group,
   (*tmp_table_param)->hidden_field_count = CountHiddenFields(*curr_fields);
 
   (*tmp_table_param)->skip_create_table = true;
+  //  Switch_ref_item_slice slice_switch(join, ref_slice - 1);
   *table = create_tmp_table(
       thd, *tmp_table_param, *curr_fields, group, distinct, save_sum_fields,
       join->query_block->active_options(), limit_rows, "");
@@ -403,7 +404,22 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
   if (out && super::rewrite_materialize(in, out)) return true;
   auto *src = in->materialize().param;
   auto &query_block = src->query_blocks[0];
-
+  // If MATERIALIZE is a child of AGGREGATE, we should create it on leader.
+  if (out && !MaterializeIsDoingDeduplication(src->table)) {
+#ifndef NDEBUG
+    // This should be SQL_BUFFER_RESULT or do DISTINCT by LIMIT 1, We just push
+    // down this to worker and leader do nothing. see ConnectJoins()
+    // QEP_TAB::needs_duplicate_removal processing.
+    if (!(m_join_in->query_block->active_options() & OPTION_BUFFER_RESULT)) {
+      uint i = 0;
+      for (; i < m_join_in->tables; i++) {
+        if (m_join_in->qep_tab[i].table() == src->table) break;
+      }
+      assert(m_join_in->qep_tab[i].needs_duplicate_removal);
+    }
+#endif
+    return false;
+  }
   if (out && src->table->group) {
     assert(m_join_out->group_list.empty());
     // Uses JOIN::group_list to save TABLE::group of this access path to avoid
@@ -493,33 +509,45 @@ bool AccessPathParallelizer::rewrite_temptable_aggregate(
   return false;
 }
 
-bool AccessPathParallelizer::rewrite_stream(AccessPath *in, AccessPath *) {
-  auto &stream = in->stream();
-
-  m_path_changes_store->register_changes(
-      NewAccessPathChanges(in, stream.table, stream.temp_table_param));
-  if (recreate_materialized_table(m_join_in->thd, m_join_in, nullptr, false,
-                                  true, stream.ref_slice, HA_POS_ERROR,
-                                  &stream.table, &stream.temp_table_param))
+bool AccessPathRewriter::do_stream_rewrite(JOIN *join, AccessPath *path) {
+  auto &stream = path->stream();
+  THD *thd = join->thd;
+  auto ref_slice = stream.ref_slice;
+  // On leader, slice may be allocated in planing stage, So here make sure
+  // it is not allocated yet.
+  if (join->ref_items[ref_slice].is_null() &&
+      join->alloc_ref_item_slice(thd, ref_slice))
+    return true;
+  if (recreate_materialized_table(thd, join, nullptr, false, true, ref_slice,
+                                  HA_POS_ERROR, &stream.table,
+                                  &stream.temp_table_param))
     return true;
 
   // XXX see setup_tmptable_write_func(), do some refactor for this. Also
   // the case OT_MATERIALIZE and precomputed_group_by process
 
   Temp_table_param *const tmp_tbl = stream.temp_table_param;
-  if (m_join_in->streaming_aggregation && !tmp_tbl->precomputed_group_by) {
-    for (Item_sum **func_ptr = m_join_in->sum_funcs; *func_ptr != nullptr;
+  if (join->streaming_aggregation && !tmp_tbl->precomputed_group_by) {
+    for (Item_sum **func_ptr = join->sum_funcs; *func_ptr != nullptr;
          ++func_ptr) {
       tmp_tbl->items_to_copy->push_back(
           Func_ptr(*func_ptr, (*func_ptr)->get_result_field()));
     }
   }
-  set_sorting_info({stream.table, stream.ref_slice});
+  set_sorting_info({stream.table, ref_slice});
   // We made a new table, so make sure it gets properly cleaned up
   // at the end of execution.
-  m_join_in->temp_tables.push_back(
+  join->temp_tables.push_back(
       JOIN::TemporaryTableToCleanup{stream.table, stream.temp_table_param});
   return false;
+}
+
+bool AccessPathParallelizer::rewrite_stream(AccessPath *in, AccessPath *out) {
+  if (out) return false;
+  auto &stream = in->stream();
+  m_path_changes_store->register_changes(
+      NewAccessPathChanges(in, stream.table, stream.temp_table_param));
+  return do_stream_rewrite(m_join_in, in);
 }
 
 bool AccessPathParallelizer::rewrite_filter(AccessPath *in, AccessPath *) {
@@ -726,10 +754,20 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
                                   &dest_param->table, &query_block.temp_table_param))
     return true;
   TABLE *table = dest_param->table;
+  auto *temp_table_param = query_block.temp_table_param;
+  // See setup_tmptable_write_func()
+  if (temp_table_param->precomputed_group_by) {
+    for (Item_sum **func_ptr = m_join_out->sum_funcs; *func_ptr != nullptr;
+         ++func_ptr) {
+      if (temp_table_param->items_to_copy->push_back(
+              Func_ptr(*func_ptr, (*func_ptr)->get_result_field())))
+        return true;
+    }
+  }
   // We made a new table, so make sure it gets properly cleaned up
   // at the end of execution.
   m_join_out->temp_tables.push_back(
-      JOIN::TemporaryTableToCleanup{table, query_block.temp_table_param});
+      JOIN::TemporaryTableToCleanup{table, temp_table_param});
   set_sorting_info({table, dest_param->ref_slice});
   out->materialize().table_path =
       accesspath_dup(out->materialize().table_path, mem_root());
@@ -804,8 +842,7 @@ bool PartialAccessPathRewriter::rewrite_aggregate(AccessPath *, AccessPath *) {
   return false;
 }
 
-bool PartialAccessPathRewriter::rewrite_stream(AccessPath *, AccessPath *) {
-  assert(false);
-  return false;
+bool PartialAccessPathRewriter::rewrite_stream(AccessPath *, AccessPath *out) {
+  return do_stream_rewrite(m_join_out, out);
 }
 }  // namespace pq

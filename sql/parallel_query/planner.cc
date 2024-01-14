@@ -782,6 +782,9 @@ bool ParallelPlan::GeneratePartialPlan(
       join->make_sum_func_list(partial_query_block->fields, false))
     return true;
 
+  join->tmp_table_param.precomputed_group_by =
+      source_join->tmp_table_param.precomputed_group_by;
+
   if (CreateCollector(thd)) return true;
 
   // We don't support blob type in row exchange

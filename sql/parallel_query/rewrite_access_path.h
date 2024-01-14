@@ -101,6 +101,8 @@ class AccessPathRewriter {
   virtual bool rewrite_stream(AccessPath *, AccessPath *) = 0;
   virtual bool rewrite_materialize(AccessPath *in, AccessPath *out);
 
+  bool do_stream_rewrite(JOIN *join, AccessPath *path);
+
   MEM_ROOT *mem_root() const { return m_item_clone_context->mem_root(); }
   /**
     Do some additional rewrites for out access path, access path parallelizer
