@@ -401,12 +401,26 @@ static bool recreate_materialized_table(THD *thd, JOIN *join, ORDER *group,
   (*tmp_table_param)->hidden_field_count = CountHiddenFields(*curr_fields);
 
   (*tmp_table_param)->skip_create_table = true;
+
+  // item's marker in group can be changed in create_tmp_table(). The
+  // materialize table rewriter should not change that. This leads to temp
+  // table of query result to collector reclength is inconsistent with
+  // collector table.
+  mem_root_deque<Item::item_marker> marker_saver(thd->mem_root);
+  for (ORDER *tmp = group; tmp; tmp = tmp->next) {
+    if (marker_saver.push_back((*tmp->item)->marker)) return true;
+  }
   //  Switch_ref_item_slice slice_switch(join, ref_slice - 1);
   *table = create_tmp_table(
       thd, *tmp_table_param, *curr_fields, group, distinct, save_sum_fields,
       join->query_block->active_options(), limit_rows, "");
   if (!*table) return true;
   (*table)->alias = "<temporary>";
+
+  // Restore original markers
+  auto marker_saver_it = marker_saver.begin();
+  for (ORDER *tmp = group; tmp; tmp = tmp->next)
+    (*tmp->item)->marker = *marker_saver_it++;
 
   // See handling of need_tmp_before_win in make_tmp_tables_info(), if there is
   // tmp table REF_SLICE_SAVED_BASE must be assigned.

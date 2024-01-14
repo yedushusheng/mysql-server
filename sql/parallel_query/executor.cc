@@ -474,15 +474,7 @@ class Query_result_to_collector : public Query_result_interceptor {
     Temp_table_param tmp_table_param;
     tmp_table_param.skip_create_table = true;
     tmp_table_param.func_count = m_tmp_table_param->func_count;
-#if 0
-    // See create_tmp_table, worker can set Item::marker by
-    // make_tmp_tables_info() which can affect this table difference with
-    // leader.
-    for (auto *item : items) {
-      if (item->marker != Item::MARKER_BIT) continue;
-      item->marker = Item::MARKER_NONE;
-    }
-#endif
+
     if (!(m_table = create_tmp_table(
               thd, &tmp_table_param, items, nullptr, false, true,
               unit->first_query_block()->active_options() |
