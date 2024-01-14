@@ -425,6 +425,7 @@ struct System_variables {
   uint max_parallel_degree;
   double parallel_plan_cost_threshold;
   ulonglong parallel_scan_records_threshold;
+  ulong parallel_scan_ranges_threshold;
 };
 
 /**

@@ -7093,3 +7093,12 @@ static Sys_var_ulonglong Sys_parallel_scan_records_threshold(
     HINT_UPDATEABLE SESSION_VAR(parallel_scan_records_threshold),
     CMD_LINE(REQUIRED_ARG), VALID_RANGE(0, ULLONG_MAX), DEFAULT(10000),
     BLOCK_SIZE(1));
+
+static Sys_var_ulong Sys_parallel_scan_ranges_threshold(
+    "parallel_scan_ranges_threshold",
+    "estimated ranges threshold for parallel scan. When the number of "
+    "estimated parallel scan ranges is greater or equal to this value, "
+    "parallel scan of this table will be considered.",
+    HINT_UPDATEABLE SESSION_VAR(parallel_scan_ranges_threshold),
+    CMD_LINE(REQUIRED_ARG), VALID_RANGE(0, ULONG_MAX), DEFAULT(2),
+    BLOCK_SIZE(1));
