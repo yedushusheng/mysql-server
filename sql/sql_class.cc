@@ -362,7 +362,7 @@ void Open_tables_state::reset_open_tables_state() {
   reset_reprepare_observers();
 }
 
-THD::THD(bool enable_plugins)
+THD::THD(bool enable_plugins, THD *leader)
     : Query_arena(&main_mem_root, STMT_REGULAR_EXECUTION),
       mark_used_columns(MARK_COLUMNS_READ),
       want_privilege(0),
@@ -371,6 +371,7 @@ THD::THD(bool enable_plugins)
       m_dd_client(new dd::cache::Dictionary_client(this)),
       m_query_string(NULL_CSTR),
       m_db(NULL_CSTR),
+      m_leader(leader),
       rli_fake(nullptr),
       rli_slave(nullptr),
       initial_status_var(nullptr),

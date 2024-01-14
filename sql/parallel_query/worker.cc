@@ -112,6 +112,7 @@ class Query_result_to_collector : public Query_result_interceptor {
 Worker::Worker(THD *thd, uint worker_id, PartialPlan *plan,
                mysql_mutex_t *state_lock, mysql_cond_t *state_cond)
     : m_leader_thd(thd),
+      m_thd(true, m_leader_thd),
       m_id(worker_id),
       m_query_plan(plan),
       m_row_exchange_writer(&m_row_exchange),

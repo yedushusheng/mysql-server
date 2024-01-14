@@ -926,6 +926,10 @@ class THD : public MDL_context_owner,
     - Other threads may read the value, but must hold LOCK_thd_query to do so.
   */
   String m_rewritten_query;
+  THD *m_leader{nullptr};
+
+ public:
+  THD *parallel_leader() const { return m_leader; }
 
  public:
   /* Used to execute base64 coded binlog events in MySQL server */
@@ -2569,7 +2573,7 @@ class THD : public MDL_context_owner,
   */
   bool m_audited;
 
-  THD(bool enable_plugins = true);
+  explicit THD(bool enable_plugins = true, THD *leader = nullptr);
 
   /*
     The THD dtor is effectively split in two:
