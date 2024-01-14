@@ -15,7 +15,7 @@ class RowChannel {
   virtual Result Send(std::size_t nbytes, const void *data, bool nowait) = 0;
   virtual Result Receive(std::size_t *nbytesp, void **datap, bool nowait,
                          MessageBuffer *buf) = 0;
-  virtual Result SendEOF() { return Result::SUCCESS; }
+  virtual Result SendEOF() = 0;
 
   // Call this function to send EOF after all rows are sent out.
   virtual void Close() = 0;

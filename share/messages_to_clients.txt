@@ -9529,6 +9529,9 @@ ER_WARN_BAD_PARALLEL_DEGREE
 ER_WARN_UNSUPPORTED_PARALLEL
   eng "PARALLEL hint is not supported by this statement"
 
+ER_PARALLEL_ROW_CHANNEL_MESSAGE_TOO_LARGE
+  eng "Parallel query operator failed to send or receive row because it is too large."
+
 #
 #  End of 8.0 error messages (server-to-client).
 #  Do NOT add messages intended for the error log above!

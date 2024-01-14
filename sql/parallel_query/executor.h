@@ -20,6 +20,7 @@ class Worker;
 
 class Collector {
  public:
+  using CollectResult = comm::RowExchange::Result;
   Collector(uint num_workers, PartialPlan *partial_plan);
   ~Collector();
   TABLE *CollectorTable() const { return m_table; }
@@ -30,7 +31,7 @@ class Collector {
   /// to PrepareExecution()
   bool Init(THD *thd);
   void Reset();
-  int Read(THD *thd);
+  CollectResult Read(THD *thd);
   void End(THD *thd, ha_rows *found_rows);
   void Destroy(THD *thd);
   AccessPath *PartialRootAccessPath() const;
@@ -47,7 +48,6 @@ class Collector {
  private:
   bool LaunchWorkers(bool &has_failed_worker);
   void TerminateWorkers();
-  bool HandleWorkerExited(uint windex);
   void CollectStatusFromWorkers(THD *thd);
   bool InitParallelScan();
   Diagnostics_area *combine_workers_stmt_da(THD *thd, ha_rows *found_rows);
@@ -70,7 +70,7 @@ std::string ExplainTableParallelScan(JOIN *join, TABLE *table);
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
 }  // namespace pq
 
-class CollectorIterator final : public TableRowIterator {
+class CollectorIterator final : public RowIterator {
  public:
   // "examined_rows", if not nullptr, is incremented for each successful Read().
   CollectorIterator(THD *thd, pq::Collector *collector, ha_rows *examined_rows);
@@ -78,11 +78,13 @@ class CollectorIterator final : public TableRowIterator {
 
   bool Init() override;
   int Read() override;
+  void SetNullRowFlag(bool) override {}
+  void UnlockRow() override {}
 
  private:
+  TABLE *table() { return m_collector->CollectorTable(); }
   pq::Collector *m_collector;
   ha_rows *const m_examined_rows;
 };
-
 
 #endif

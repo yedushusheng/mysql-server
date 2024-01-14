@@ -26,7 +26,8 @@ bool MessageBuffer::reserve(std::size_t len) {
   assert(len < MaxMessageSize);
 
   uchar *newbuf;
-  if (!(newbuf = (uchar *)my_realloc(PSI_NOT_INSTRUMENTED, buf, len, MYF(0))))
+  if (!(newbuf =
+            (uchar *)my_realloc(PSI_NOT_INSTRUMENTED, buf, len, MYF(MY_WME))))
     return true;
 
   buf = newbuf;
@@ -67,8 +68,16 @@ class MemRowChannel : public RowChannel {
                  MessageBuffer *buf) override {
     return m_message_queue_handle->Receive(nbytesp, datap, nowait, buf);
   }
-  void Close() override { m_message_queue_handle->Detach(); }
-  bool IsClosed() const override {  return m_message_queue_handle->IsClosed(); }
+  Result SendEOF() override {
+    m_message_queue_handle->SetEOF();
+    return Result::SUCCESS;
+  }
+  void Close() override {
+    assert(!m_closed);
+    m_message_queue_handle->Detach();
+    m_closed = true;
+  }
+  bool IsClosed() const override { return m_closed; }
   void SetPeerEvent(Event *peer_event) {
     assert(m_message_queue_handle);
     m_message_queue_handle->SetPeerEvent(peer_event);
@@ -78,6 +87,11 @@ class MemRowChannel : public RowChannel {
   MessageQueue *m_message_queue{nullptr};
   MessageQueueHandle *m_message_queue_handle{nullptr};
   bool m_message_queue_owned{true};
+  /**
+    The flag is set which means sender/receiver does not send/receive messages
+    any more.
+  */
+  bool m_closed{false};
 };
 
 /// Create a memory row channel and create an owned message queue if @param

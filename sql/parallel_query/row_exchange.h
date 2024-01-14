@@ -17,7 +17,7 @@ class RowChannel;
 
 class RowExchange {
  public:
-  enum Result { SUCCESS, END, ERROR, OOM, KILLED };
+  enum Result { SUCCESS, END, ERROR};
   RowExchange() = default;
   bool Init(MEM_ROOT *mem_root, uint num_channels,
             std::function<RowChannel *(uint)> get_channel,
@@ -42,25 +42,13 @@ class RowExchange {
 class RowExchangeReader {
  public:
   using Result = RowExchange::Result;
-  RowExchangeReader(RowExchange *row_exchange,
-                    std::function<bool(uint)> queue_detach_handler)
-      : m_row_exchange(row_exchange),
-        m_queue_detach_handler(queue_detach_handler) {}
+  RowExchangeReader(RowExchange *row_exchange) : m_row_exchange(row_exchange) {}
   virtual bool Init(THD *thd) = 0;
   virtual Result Read(THD *thd, uchar *dest, std::size_t nbytes) = 0;
 
  protected:
-  bool HandleQueueDetach(uint index) {
-    m_row_exchange->CloseChannel(index);
-    return m_queue_detach_handler(index);
-  }
-
- protected:
   RowExchange *m_row_exchange;
   RowSegmentCodec *m_row_segment_codec{nullptr};
-
- private:
-  std::function<bool(uint)> m_queue_detach_handler;
 };
 
 class RowExchangeWriter {
@@ -77,9 +65,9 @@ class RowExchangeWriter {
   RowSegmentCodec *m_row_segment_codec{nullptr};
 };
 
-RowExchangeReader *CreateRowExchangeReader(
-    MEM_ROOT *mem_root, RowExchange *row_exchange, TABLE *table,
-    Filesort *merge_sort, std::function<bool(uint)> queue_detach_handler);
+RowExchangeReader *CreateRowExchangeReader(MEM_ROOT *mem_root,
+                                           RowExchange *row_exchange,
+                                           TABLE *table, Filesort *merge_sort);
 }  // namespace comm
 }  // namespace pq
 

@@ -103,7 +103,7 @@ MessageQueue::Result MessageQueue::SendBytes(
 
       endpoint_info->Wait();
 
-      if (unlikely(endpoint_info->IsKilled())) return Result::KILLED;
+      if (unlikely(endpoint_info->IsKilled())) return Result::ERROR;
 
     } else {
       std::size_t offset = wb % (uint64)m_ring_size;
@@ -193,7 +193,8 @@ MessageQueue::Result MessageQueue::ReceiveBytes(
       atomic_thread_fence(std::memory_order_acquire);
       if (written != m_bytes_written.load(std::memory_order_relaxed)) continue;
 
-      return Result::DETACHED;
+      // Unexpected detached treats as an error.
+      return m_eof ? Result::DETACHED : Result::ERROR;
     }
 
     /*
@@ -210,7 +211,7 @@ MessageQueue::Result MessageQueue::ReceiveBytes(
 
     endpoint_info->Wait();
 
-    if (unlikely(endpoint_info->IsKilled())) return Result::KILLED;
+    if (unlikely(endpoint_info->IsKilled())) return Result::ERROR;
   }
 }
 
@@ -227,7 +228,10 @@ MessageQueue::Result MessageQueueHandle::Send(std::size_t nbytes,
     Prevent writing messages overwhelming the receiver. Should this return a
     meaningful error message?
   */
-  if (nbytes > MaxMessageSize) return Result::OOM;
+  if (nbytes > MaxMessageSize) {
+    my_error(ER_PARALLEL_ROW_CHANNEL_MESSAGE_TOO_LARGE, MYF(0));
+    return Result::ERROR;
+  }
 
   while (!m_length_word_complete) {
     assert(m_partial_bytes < sizeof(std::size_t));
@@ -359,7 +363,7 @@ MessageQueue::Result MessageQueueHandle::Receive(
       std::size_t lengthbytes;
 
       if (unlikely(reassemble_buf->reserve(InitialBufferSize)))
-        return Result::OOM;
+        return Result::ERROR;
 
       assert(reassemble_buf->buflen >= sizeof(std::size_t));
 
@@ -389,7 +393,10 @@ MessageQueue::Result MessageQueueHandle::Receive(
    prohibitively large message. Should this return a meaningful error
    message?
   */
-  if (nbytes > MaxMessageSize) return Result::OOM;
+  if (nbytes > MaxMessageSize) {
+    my_error(ER_PARALLEL_ROW_CHANNEL_MESSAGE_TOO_LARGE, MYF(0));
+    return Result::ERROR;
+  }
 
   /* m_partial_bytes could be non-zero if nowait is true */
   if (m_partial_bytes == 0) {
@@ -420,7 +427,7 @@ MessageQueue::Result MessageQueueHandle::Receive(
       std::size_t newbuflen = my_round_up_to_next_power(nbytes);
       assert(newbuflen >= nbytes);  // Avoid overflow.
       newbuflen = std::min(newbuflen, MaxMessageSize);
-      if (unlikely(reassemble_buf->reserve(newbuflen))) return Result::OOM;
+      if (unlikely(reassemble_buf->reserve(newbuflen))) return Result::ERROR;
     }
   }
 

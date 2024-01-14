@@ -34,7 +34,7 @@ class MergeSort {
       std::vector<MergeSortElement *, Malloc_allocator<MergeSortElement *>>,
       Mem_compare_queue_key>;
 
-  enum class Result { SUCCESS, OOM, KILLED, NODATA, END, ERROR };
+  enum class Result { SUCCESS, NODATA, END, ERROR };
   MergeSort(MergeSortSource *source) : m_source(source) {}
   ~MergeSort();
   bool Init(THD *thd, Filesort *filesort, uint nelements);

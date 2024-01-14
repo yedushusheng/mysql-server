@@ -10,7 +10,7 @@ namespace comm {
 // maximum length of LONGBLOB and LONGTEXT
 constexpr std::size_t MaxMessageSize = UINT32_MAX;
 
-enum class RowTxResult { SUCCESS, DETACHED, WOULD_BLOCK, OOM, KILLED };
+enum class RowTxResult { SUCCESS, DETACHED, WOULD_BLOCK, ERROR};
 
 class Event {
  public:
