@@ -4,15 +4,19 @@
 #include <functional>
 #include "my_base.h"
 #include "my_dbug.h"
+#include "my_sqlcommand.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "sql/parallel_query/row_exchange.h"
 #include "sql/row_iterator.h"
+#include "sql/handler.h"
+#include "sql/xa.h"
 
 class Diagnostics_area;
-class AccessPath;
 class Filesort;
 struct ORDER;
+class user_var_entry;
+class Security_context;
 
 namespace pq {
 class PartialPlan;
@@ -46,7 +50,7 @@ class Collector {
   }
 
  private:
-  bool LaunchWorkers(bool &has_failed_worker);
+  bool LaunchWorkers(THD *thd, bool *has_failed_worker);
   void TerminateWorkers();
   void CollectStatusFromWorkers(THD *thd);
   bool InitParallelScan();
@@ -66,6 +70,61 @@ class Collector {
   mysql_cond_t m_worker_state_cond;
   bool is_ended{false};
 };
+
+struct PartialExecutorContext {
+  enum_tx_isolation tx_isolation;
+  struct timeval *start_time;
+  LEX_CSTRING db;
+  LEX_CSTRING query;
+  query_id_t query_id;
+  Security_context *security_context;
+  ulonglong first_successful_insert_id_in_prev_stmt;
+
+  enum_sql_command sql_command;
+  bool is_explain_analyze;
+  std::function<user_var_entry *(const std::string &)> find_user_var_entry;
+};
+
+class PartialExecutor {
+ public:
+  PartialExecutor(THD *thd, PartialPlan *query_plan,
+                  std::function<void()> &&cleanup_func)
+      : m_thd(thd), m_query_plan(query_plan), m_cleanup_func(cleanup_func) {}
+
+  bool Init(comm::RowChannel *sender_channel,
+            comm::RowExchange *sender_exchange, bool is_explain_analyze);
+
+  void InitExecThd(PartialExecutorContext *ctx, THD *mdl_group_leader);
+  void ExecuteQuery(PartialExecutorContext *context);
+
+  std::string *QueryPlanTimingData() {
+    if (m_query_plan_timing_data->size() == 0) return nullptr;
+
+    return m_query_plan_timing_data.get();
+  }
+
+ private:
+  bool PrepareQueryPlan(PartialExecutorContext *context);
+
+  void EndQuery();
+  bool AttachTablesParallelScan();
+  /// Let row exchange reader side return, We need call this if there is a
+  /// failure before lex->result is set.
+  void NotifyAbort();
+
+  THD *m_thd;  // Current worker's THD
+  PartialPlan *m_query_plan;
+
+  std::function<void()> m_cleanup_func;
+
+  std::unique_ptr<std::string> m_query_plan_timing_data;
+
+  /// Communication facilities with leader
+  comm::RowChannel *m_sender_channel{nullptr};
+  comm::RowExchange *m_sender_exchange{nullptr};
+  comm::RowExchangeWriter m_row_exchange_writer;
+};
+
 std::string ExplainTableParallelScan(JOIN *join, TABLE *table);
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
 }  // namespace pq

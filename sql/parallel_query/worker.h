@@ -5,8 +5,18 @@
 
 namespace pq {
 class PartialPlan;
+
+#ifndef NDEBUG
+#define SET_DBUG_CS_STACK_CLONE(worker, cs_stack) \
+  (worker)->dbug_cs_stack_clone = cs_stack
+#else
+#define SET_DBUG_CS_STACK_CLONE(worker, cs_stack)
+#endif
+
 /**
-  Class has a instance of THD, needs call destroy if allocated in MEM_ROOT
+  The abstract class that the leader manages. Currently the only child
+  class: LocalWorker that runs as local thread (or bthread). We can inherits
+  from it to implement remote workers.
 */
 class Worker {
  public:
@@ -15,65 +25,50 @@ class Worker {
   /// QUICK_GROUP_MIN_MAX_SELECT::get_next(). When a worker is in Cleaning
   /// state, Terminate() skips to send termination request to it.
   enum class State { None, Starting, Started, Cleaning, Finished, StartFailed };
-  Worker(THD *thd, uint worker_id, PartialPlan *plan, mysql_mutex_t *state_lock,
-         mysql_cond_t *state_cond);
-  ~Worker();
-  THD *thd() { return &m_thd; }
-  THD *leader_thd() const { return m_leader_thd; }
-  /// The receiver row channel created inside of worker, @param comm_event
-  /// is for receiver waiting.
-  bool Init(comm::Event *comm_event);
-  int Start();
-  bool IsStartFailed() const;
-  bool IsRunning(bool need_state_lock);
-  void Terminate();
-  void ThreadMainEntry();
-  bool PrepareQueryPlan();
-  void ExecuteQuery();
-  void EndQuery();
-  bool is_error() { return m_thd.is_error(); }
-  comm::RowChannel *receiver_channel() const {return m_receiver_channel; }
-  Diagnostics_area *stmt_da(ha_rows *found_rows, ha_rows *examined_rows);
-  std::string *QueryPlanTimingData() {
-    if (m_query_plan_timing_data->size() != 0)
-      return m_query_plan_timing_data.get();
-    // No data if the worker got killed in plan preparing stage or starts
-    // failed.
-    assert(m_terminate_requested || IsStartFailed());
-    return nullptr;
+  Worker(uint id) : m_id(id) {}
+  virtual ~Worker();
+
+ public:
+  // Life-cycle management interfaces
+  virtual bool Init(comm::Event *comm_event) = 0;
+  virtual bool Start() = 0;
+  virtual void Terminate() = 0;
+
+  // State interfaces
+  bool IsRunning(bool need_state_lock) const {
+    auto cur_state = state(need_state_lock);
+    bool is_running =
+        (cur_state == State::Started || cur_state == State::Cleaning ||
+         cur_state == State::Starting);
+    return is_running;
   }
-#if !defined(NDEBUG)
-  CSStackClone *dbug_cs_stack_clone;
+  bool IsStartFailed() const { return state() == State::StartFailed; }
+
+  virtual Diagnostics_area *stmt_da(bool finished_collect, ha_rows *found_rows,
+                                    ha_rows *examined_rows) = 0;
+  virtual std::string *QueryPlanTimingData() = 0;
+  virtual void CollectStatusVars(THD *target_thd) = 0;
+
+  comm::RowChannel *receiver_channel() const { return m_receiver_channel; }
+
+#ifndef NDEBUG
+  bool is_error() { return stmt_da(false, nullptr, nullptr)->is_error(); }
+  CSStackClone *dbug_cs_stack_clone = nullptr;
 #endif
 
- private:
-  void InitExecThdFromLeader();
-  /// Cleanup resources in this class allocated in m_thd. Those must be released
-  /// before its mem_root clears.
-  void CleanupThdResources();
-  /// Let row exchange reader side return, We need call this if there is a
-  /// failure before lex->result is set.
-  void NotifyAbort();
-  bool AttachTablesParallelScan();
-  /// Set worker state to @param state and broadcast "state cond" if
-  /// State::Finished.
-  void SetState(State state);
-  THD *m_leader_thd;
-  THD m_thd;  // Current worker's THD
-  uint m_id;
-  PartialPlan *m_query_plan;
-
-  std::unique_ptr<std::string> m_query_plan_timing_data;
-
-  /// Communication facilities with leader
+ protected:
+  // Internal state functions
+  virtual State state(bool need_state_lock = true) const = 0;
+  virtual void SetState(State state) = 0;
+  const uint m_id;
+  /// Communication facilities for leader, leader use this channel to
+  /// receive rows from workers. Note, because we only have two phase of
+  /// query plan, so we can put receiver channel here, move this to suitable
+  /// position.
   comm::RowChannel *m_receiver_channel{nullptr};
-  comm::RowChannel *m_sender_channel{nullptr};
-  comm::RowExchange m_sender_exchange;
-  comm::RowExchangeWriter m_row_exchange_writer;
-  State m_state{State::None};
-  mysql_mutex_t *m_state_lock;
-  mysql_cond_t *m_state_cond;
-  bool m_terminate_requested{false};
 };
+
+Worker *CreateLocalWorker(uint id, THD *thd, PartialPlan *plan,
+                          mysql_mutex_t *state_lock, mysql_cond_t *state_cond);
 }
 #endif

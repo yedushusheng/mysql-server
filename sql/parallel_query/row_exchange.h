@@ -54,14 +54,13 @@ class RowExchangeReader {
 class RowExchangeWriter {
  public:
   using Result = RowExchange::Result;
-  RowExchangeWriter(RowExchange *row_exchange)
-      : m_row_exchange(row_exchange) {}
+  void SetExchange(RowExchange *row_exchange) { m_row_exchange = row_exchange; }
   Result Write(const uchar *record, size_t nbytes);
   void WriteEOF();
   bool CreateRowSegmentCodec(MEM_ROOT *mem_root, TABLE *table);
 
  private:
-  RowExchange *m_row_exchange;
+  RowExchange *m_row_exchange{nullptr};
   RowSegmentCodec *m_row_segment_codec{nullptr};
 };
 
