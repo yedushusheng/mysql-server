@@ -4656,7 +4656,8 @@ class Item_param final : public Item, private Settable_routine_parameter {
   Item *safe_charset_converter(THD *thd, const CHARSET_INFO *tocs) override;
   Item *clone_item() const override;
   Item *new_item(Item_clone_context *context) const override {
-    return new Item_param(POS(), context->mem_root(), pos_in_query);
+    return new Item_param(POS(), context->mem_root(), item_name.ptr(),
+                          pos_in_query, len_in_query);
   }
   Item_parallel_safe parallel_safe() const override {
     return Item_parallel_safe::Safe;
