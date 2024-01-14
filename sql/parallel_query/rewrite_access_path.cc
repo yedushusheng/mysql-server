@@ -264,7 +264,8 @@ void AccessPathParallelizer::set_table_parallel_scan(TABLE *table, uint keynr,
   key_range *min_key = nullptr, *max_key = nullptr;
   bool is_asc = !reverse;
   uint16_t key_used = UINT16_MAX;
-  parallel_scan_desc_t scan_desc = {keynr, min_key, max_key, key_used, is_asc};
+  parallel_scan_desc_t scan_desc = {keynr, min_key,  max_key,
+                                    false, key_used, is_asc};
 
   m_partial_plan->SetTablesParallelScan(table, scan_desc);
 }
@@ -279,7 +280,7 @@ bool AccessPathParallelizer::rewrite_table_scan(AccessPath *in, AccessPath *out
 
 void AccessPathParallelizer::rewrite_index_access_path(
     TABLE *table, uint keynr, bool use_order, bool reverse,
-    std::function<void(uint16_t *, key_range **, key_range **)>
+    std::function<void(uint16_t *, key_range **, key_range **, bool *)>
         get_scan_range) {
   auto *join = m_join_in;
   if (use_order) {
@@ -295,8 +296,11 @@ void AccessPathParallelizer::rewrite_index_access_path(
   key_range *min_key = nullptr, *max_key = nullptr;
   bool is_asc = !reverse;
   uint16_t key_used = UINT16_MAX;
-  if(get_scan_range) get_scan_range(&key_used, &min_key, &max_key);
-  parallel_scan_desc_t scan_desc = {keynr, min_key, max_key, key_used, is_asc};
+  bool max_key_is_null = false;
+  if (get_scan_range)
+    get_scan_range(&key_used, &min_key, &max_key, &max_key_is_null);
+  parallel_scan_desc_t scan_desc = {keynr,           min_key,  max_key,
+                                    max_key_is_null, key_used, is_asc};
 
   m_partial_plan->SetTablesParallelScan(table, scan_desc);
 }
@@ -315,11 +319,12 @@ static void get_scan_range_for_ref(MEM_ROOT *mem_root, TABLE_REF *ref,
                                    uint16_t *key_used, key_range **min_key,
                                    key_range **max_key) {
   *key_used = UINT16_MAX;
-  *min_key = *max_key = new (mem_root) key_range();
+  *min_key = new (mem_root) key_range();
   (*min_key)->key = (const uchar *)ref->key_buff;
   (*min_key)->length = ref->key_length;
   (*min_key)->keypart_map = make_prev_keypart_map(ref->key_parts);
   (*min_key)->flag = HA_READ_KEY_EXACT;
+  if (max_key) *max_key = *min_key;
 }
 
 bool AccessPathParallelizer::rewrite_ref(AccessPath *in,
@@ -328,7 +333,7 @@ bool AccessPathParallelizer::rewrite_ref(AccessPath *in,
   auto &ref = in->ref();
   rewrite_index_access_path(
       ref.table, ref.ref->key, ref.use_order, ref.reverse,
-      [&ref, this](auto key_used, auto min_key, auto max_key) {
+      [&ref, this](auto key_used, auto min_key, auto max_key, auto) {
         get_scan_range_for_ref(mem_root(), ref.ref, key_used, min_key, max_key);
       });
   return false;
@@ -341,9 +346,21 @@ bool AccessPathParallelizer::rewrite_ref_or_null(AccessPath *in, AccessPath *out
 
   rewrite_index_access_path(
       ref_or_null.table, ref_or_null.ref->key, ref_or_null.use_order, false,
-      [&ref_or_null, this](auto key_used, auto min_key, auto max_key) {
+      [&ref_or_null, this](auto key_used, auto min_key, auto max_key,
+                           auto max_key_is_null) {
         get_scan_range_for_ref(mem_root(), ref_or_null.ref, key_used, min_key,
-                               max_key);
+                               nullptr);
+        // Construct null ref key for parallel scan, avoid change origin
+        // data, copy it from REF's key_buff (min_key->key point to it)
+        *max_key_is_null = true;
+        *max_key = new (mem_root()) key_range();
+        **max_key = **min_key;
+        bool old_null_ref_key = *ref_or_null.ref->null_ref_key;
+        *ref_or_null.ref->null_ref_key = true;
+        (*max_key)->key = new (mem_root()) uchar[(*min_key)->length];
+        memcpy(const_cast<uchar *>((*max_key)->key), (*min_key)->key,
+               (*min_key)->length);
+        *ref_or_null.ref->null_ref_key = old_null_ref_key;
       });
   return false;
 }
@@ -355,8 +372,9 @@ bool AccessPathParallelizer::rewrite_eq_ref(AccessPath *in,
 
   rewrite_index_access_path(
       eq_ref.table, eq_ref.ref->key, eq_ref.use_order, false,
-      [&eq_ref, this](auto key_used, auto min_key, auto max_key) {
-        get_scan_range_for_ref(mem_root(), eq_ref.ref, key_used, min_key, max_key);
+      [&eq_ref, this](auto key_used, auto min_key, auto max_key, auto) {
+        get_scan_range_for_ref(mem_root(), eq_ref.ref, key_used, min_key,
+                               max_key);
       });
   return false;
 }
@@ -372,8 +390,8 @@ bool AccessPathParallelizer::rewrite_index_range_scan(AccessPath *in,
   rewrite_index_access_path(
       quick->head, quick->index,
       m_join_in->m_ordered_index_usage != JOIN::ORDERED_INDEX_VOID,
-      !quick->reverse_sorted(),
-      [quick, this](auto key_used, auto min_key, auto max_key) {
+      quick->reverse_sorted(),
+      [quick, this](auto key_used, auto min_key, auto max_key, auto) {
         *key_used = quick->scan_range_keyused(mem_root(), min_key, max_key);
       });
 

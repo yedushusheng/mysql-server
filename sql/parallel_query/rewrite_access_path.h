@@ -165,7 +165,7 @@ class AccessPathParallelizer : public AccessPathRewriter {
 
   void rewrite_index_access_path(
       TABLE *table, uint keynr, bool use_order, bool reverse,
-      std::function<void(uint16_t *, key_range **, key_range **)>
+      std::function<void(uint16_t *, key_range **, key_range **, bool *)>
           get_scan_range);
 
   PartialPlan *m_partial_plan;
