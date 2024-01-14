@@ -6286,12 +6286,17 @@ bool Item_sum_json_array::add() {
 
     Json_dom_ptr value_dom;
     Json_array_ptr value_arr;
-    if (m_sum_stage == COMBINE_STAGE)
-      value_arr.reset(down_cast<Json_array *>(value_wrapper.to_dom(thd)));
-    else
+    if (m_sum_stage == COMBINE_STAGE) {
+      auto *dom = value_wrapper.to_dom(thd);
+      if (dom->json_type() == enum_json_type::J_NULL) {
+        null_value = true;
+        return false;
+      }
+      value_arr.reset(down_cast<Json_array *>(dom));
+    } else
       value_dom.reset(value_wrapper.to_dom(thd));
     value_wrapper.set_alias();  // release the DOM
-
+    
     /*
       The m_wrapper always points to m_json_array or the result of
       deserializing the result_field in reset/update_field.
