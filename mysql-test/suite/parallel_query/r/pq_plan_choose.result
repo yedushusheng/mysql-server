@@ -3,13 +3,13 @@ CREATE TABLE t1(a int primary key, b int, c text, index(b));
 INSERT INTO t1 VALUES(1, 1, '1'),(2, 2, '2');
 EXPLAIN FORMAT=tree SELECT * FROM t1;
 EXPLAIN
--> Table scan on t1  (cost=1125002.50 rows=10000000)
+-> Table scan on t1  (cost=1127.50 rows=10000)
 
 EXPLAIN FORMAT=tree SELECT b FROM t1 where c = 1;
 EXPLAIN
--> Gather (slice: 1, workers: 1)  (cost=1125002.50 rows=1000000)
-    -> Filter: (t1.c = 1)  (cost=1125002.50 rows=1000000)
-        -> Table scan on t1  (cost=1125002.50 rows=10000000)
+-> Gather (slice: 1, workers: 1)  (cost=1127.50 rows=1000)
+    -> Filter: (t1.c = 1)  (cost=1127.50 rows=1000)
+        -> Table scan on t1  (cost=1127.50 rows=10000)
 
 EXPLAIN FORMAT=tree SELECT a, b FROM t1 WHERE a = 1;
 EXPLAIN

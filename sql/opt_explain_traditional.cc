@@ -78,7 +78,8 @@ static const char *traditional_extra_tags[ET_total] = {
     "Table function:",                  // ET_TABLE_FUNCTION
     "Index dive skipped due to FORCE",  // ET_SKIP_RECORDS_IN_RANGE
     "Using secondary engine",           // ET_USING_SECONDARY_ENGINE
-    "Rematerialize"                     // ET_REMATERIALIZE
+    "Rematerialize",                    // ET_REMATERIALIZE
+    "Parallel scan"                     // ET_PARALLEL_SCAN
 };
 
 static const char *mod_type_name[] = {"NONE", "INSERT", "UPDATE", "DELETE",

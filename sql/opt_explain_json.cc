@@ -93,7 +93,8 @@ static const char *json_extra_tags[ET_total] = {
     "table_function",                      // ET_TABLE_FUNCTION
     "skip_records_in_range_due_to_force",  // ET_SKIP_RECORDS_IN_RANGE
     "using_secondary_engine",              // ET_USING_SECONDARY_ENGINE
-    "rematerialize"                        // ET_REMATERIALIZE
+    "rematerialize",                       // ET_REMATERIALIZE
+    "parallel_scan"                        // ET_PARALLEL_SCAN
 };
 
 // JSON key names
