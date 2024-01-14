@@ -15023,7 +15023,9 @@ uint16_t QUICK_SKIP_SCAN_SELECT::scan_range_keyused(MEM_ROOT *mem_root,
     uchar *key_prefix = (uchar *)mem_root->Alloc(eq_prefix_len);
     size_t offset = 0;
     for (uint i = 0; i < eq_prefix_key_parts; i++) {
-      const uchar *key = eq_key_prefixes[i][0];
+      const uchar *key = eq_key_prefixes[i][key_flag == HA_READ_KEY_OR_NEXT
+                                                ? 0
+                                                : eq_prefix_elements[i] - 1];
       uint part_length = (index_info->key_part + i)->store_length;
       memcpy(key_prefix + offset, key, part_length);
       offset += part_length;
@@ -15116,7 +15118,7 @@ int QUICK_SKIP_SCAN_SELECT::init() {
         }
         continue;
       }
-      
+
       uint j = 0;
       first_range = cur_range->first();
       for (cur_range = first_range; cur_range;
