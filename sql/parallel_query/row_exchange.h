@@ -41,6 +41,9 @@ class RowExchangeReader {
  public:
   using Result = RowExchange::Result;
   RowExchangeReader(RowExchange *row_exchange) : m_row_exchange(row_exchange) {}
+  // We needs destroy this by the end of object life because some readers
+  // may allocate resources e.g. message reassemble buffers.
+  virtual ~RowExchangeReader() {}
   virtual bool Init(THD *thd) = 0;
   virtual Result Read(THD *thd, uchar *dest, std::size_t nbytes) = 0;
 
