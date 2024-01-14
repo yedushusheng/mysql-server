@@ -47,13 +47,15 @@ class PartialPlan {
   void SetQueryBlock(Query_block *query_block) { m_query_block = query_block; }
   Query_expression *QueryExpression() const;
   JOIN *Join() const;
+  ParallelScanInfo &GetParallelScanInfo() { return m_parallel_scan_info; }
   void SetTableParallelScan(TABLE *table, ulong suggested_ranges,
                             const parallel_scan_desc_t &psdesc);
-  void SetTableParallelScanReverse() {
+  void SetParallelScanReverse() {
     m_parallel_scan_info.scan_desc.is_asc = false;
   }
-
-  ParallelScanInfo &ParallelScan() { return m_parallel_scan_info; }
+  bool IsParallelScanTable(TABLE *table) {
+    return m_parallel_scan_info.table == table;
+  }
   bool DeparsePlan(THD *thd);
   PlanDeparser *Deparser() const { return m_plan_deparser; }
   String *DeparsedStatement() const;
@@ -87,7 +89,9 @@ class ParallelPlan {
                             const parallel_scan_desc_t &psdesc) {
     m_partial_plan.SetTableParallelScan(table, suggested_ranges, psdesc);
   }
-  TABLE *ParallelScanTable() { return m_partial_plan.ParallelScan().table; }
+  bool IsParallelScanTable(TABLE *table) {
+    return m_partial_plan.IsParallelScanTable(table);
+  }
 
  private:
   THD *thd() const;

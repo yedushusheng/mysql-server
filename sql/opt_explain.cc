@@ -994,7 +994,7 @@ bool Explain_table_base::explain_extra_common(int quick_type, uint keyno) {
     }
 
     auto *parallel_plan = tab->join() ? tab->join()->parallel_plan : nullptr;
-    if (parallel_plan && tab->table() == parallel_plan->ParallelScanTable()) {
+    if (parallel_plan && parallel_plan->IsParallelScanTable(tab->table())) {
       char buf[16];
       snprintf(buf, sizeof(buf), "(%u workers)",
                parallel_plan->ParallelDegree());

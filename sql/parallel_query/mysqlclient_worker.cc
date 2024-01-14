@@ -451,7 +451,7 @@ class MySQLClientWorker : public Worker {
       : Worker(id, state_event),
         m_query_executor(partial_plan->Deparser(), m_collector_table),
         m_share_state(share_state),
-        m_parallel_table(partial_plan->ParallelScan().table),
+        m_parallel_table(partial_plan->GetParallelScanInfo().table),
         m_thd(thd) {}
 
   /// The receiver row channel created inside of worker, @param comm_event

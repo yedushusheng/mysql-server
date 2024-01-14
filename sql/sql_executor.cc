@@ -6532,39 +6532,6 @@ bool QEP_TAB::pfs_batch_update(const JOIN *join) const {
            (condition() && condition()->has_subquery()));  // 3
 }
 
-void QEP_TAB::clone_from(const QEP_TAB *source, bool full) {
-  set_position(source->position());
-  set_index(source->index());
-  set_type(source->type());
-  set_records(source->records());
-  using_dynamic_range = source->using_dynamic_range;
-  set_reversed_access(source->reversed_access());
-  set_keys(source->keys());
-  set_first_inner(source->first_inner());
-  set_last_inner(source->last_inner());
-  set_first_sj_inner(source->first_sj_inner());
-  set_last_sj_inner(source->last_sj_inner());
-  set_first_upper(source->first_upper());
-  firstmatch_return = source->firstmatch_return;
-  match_tab = source->match_tab;
-  loosescan_key_len = source->loosescan_key_len;
-  op_type = source->op_type;
-
-  if (!full) return;
-
-  set_table(source->table());
-  set_condition(source->condition());
-  set_quick(source->quick());
-  set_quick_optim();
-  set_ref(source->ref());
-  ref_item_slice = source->ref_item_slice;
-
-  // We don't create join_tab in parallel plan template, reset it to
-  // avoid to pollute table cache.
-  if (table()) table()->reginfo.join_tab = NULL;
-  materialize_table = source->materialize_table;
-}
-
 /**
   @} (end of group Query_Executor)
 */

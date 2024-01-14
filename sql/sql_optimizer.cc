@@ -966,7 +966,7 @@ bool JOIN::optimize() {
   if (thd->is_error()) return true;
 
   if (pq::GenerateParallelPlan(this)) return true;
-  
+
   // Make plan visible for EXPLAIN
   set_plan_state(PLAN_READY);
 
@@ -1268,7 +1268,9 @@ uint QEP_TAB::effective_index() const {
       return MAX_KEY;
 
     case JT_RANGE:
-      return quick()->index;
+      // PQ: This function just used in select_count pushed down, Avoid to clone
+      // quick(), we use index() instead.
+      return quick() ? quick()->index : index();
 
     case JT_ALL:
     default:

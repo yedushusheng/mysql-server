@@ -46,7 +46,7 @@ AccessPath *AccessPathRewriter::accesspath_dup(AccessPath *path) {
   should use WalkAccessPaths(), but here we don't need to walk into some special
   paths, see caller of rewrite_temptable_scan_path().
  */
-bool AccessPathRewriter::do_rewrite(AccessPath *path, AccessPath *curjoin,
+bool AccessPathRewriter::do_rewrite(AccessPath *&path, AccessPath *curjoin,
                                     AccessPath *&out) {
   // Do a post-order traversal
   AccessPath *outer_path = nullptr;
@@ -61,6 +61,7 @@ bool AccessPathRewriter::do_rewrite(AccessPath *path, AccessPath *curjoin,
     // since the iterator is not created yet.
     case AccessPath::INDEX_RANGE_SCAN:
     case AccessPath::PARALLEL_COLLECTOR_SCAN:
+    case AccessPath::UNQUALIFIED_COUNT:
       break;
     case AccessPath::NESTED_LOOP_JOIN:
       if (do_rewrite(path->nested_loop_join().outer, path, out)) return true;
@@ -123,7 +124,7 @@ bool AccessPathRewriter::do_rewrite(AccessPath *path, AccessPath *curjoin,
   return rewrite_each_access_path(path, curjoin, outer_path, out);
 }
 
-bool AccessPathRewriter::rewrite_each_access_path(AccessPath *path,
+bool AccessPathRewriter::rewrite_each_access_path(AccessPath *&path,
                                                   AccessPath *curjoin,
                                                   AccessPath *outer_path,
                                                   AccessPath *&out) {
@@ -164,6 +165,11 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *path,
       assert(!end_of_out_path());
       dup = accesspath_dup(path);
       if (rewrite_index_range_scan(path, dup)) return true;
+      break;
+    case AccessPath::UNQUALIFIED_COUNT:
+      assert(!end_of_out_path());
+      dup = accesspath_dup(path);
+      if (rewrite_unqualified_count(path, dup)) return true;
       break;
     case AccessPath::NESTED_LOOP_JOIN:
       assert(!end_of_out_path());
@@ -270,15 +276,17 @@ AccessPath *AccessPathParallelizer::parallelize_access_path(
   AccessPath *collector_path =
     NewParallelCollectorAccessPath(thd, collector, m_collector_table, true);
 
+  AccessPath *root_path = nullptr;
   // All plan is pushed down, so just replace whole plan with collector path
   if (!collector_path_pos()) {
     CopyBasicProperties(*partial_path, collector_path);
-    return collector_path;
-  }
+    root_path = collector_path;
+  } else
+    *m_collector_path_pos = collector_path;
 
-  *m_collector_path_pos = collector_path;
+  if (!root_path) root_path = in;
 
-  return in;
+  return root_path;
 }
 
 void AccessPathParallelizer::post_rewrite_out_path(AccessPath *out) {
@@ -307,8 +315,9 @@ void AccessPathParallelizer::rewrite_index_access_path(TABLE *table,
     if (!merge_sort && !join->merge_sort.empty())
       merge_sort = join->merge_sort.order;
   }
-  if (reverse && table == m_partial_plan->ParallelScan().table)
-    m_partial_plan->SetTableParallelScanReverse();
+
+  if (reverse && m_partial_plan->IsParallelScanTable(table))
+    m_partial_plan->SetParallelScanReverse();
 }
 
 bool AccessPathParallelizer::rewrite_index_scan(AccessPath *in, AccessPath *out
@@ -360,7 +369,53 @@ bool AccessPathParallelizer::rewrite_index_range_scan(AccessPath *in,
   return false;
 }
 
-  /// Rewrite the temporary table scan access path under a materialize access
+/// Just DO NOT use this for other purpose. it just clone TABLE* and index no of
+/// QEP_TAB
+static QEP_TAB *minimal_clone_qep_tab(
+    QEP_TAB *qt_source, uint tables, MEM_ROOT *mem_root,
+    std::function<TABLE *(TABLE *)> get_table) {
+  auto *qs = new (mem_root) QEP_shared[tables];
+  auto *qep_tab = new (mem_root) QEP_TAB[tables];
+  if (!qs || !qep_tab) return nullptr;
+
+  for (uint i = 0; i < tables; i++) {
+    auto *src = &qt_source[i];
+    auto *qt = &qep_tab[i];
+    qt->set_qs(&qs[i]);
+    auto *table = get_table(src->table());
+    qt->set_table(table);
+    qt->set_type(src->type());
+    qt->set_index(src->index());
+
+    // Just used in select_count, There is no condition pushed down.
+    assert(!table->file->pushed_idx_cond);
+
+    // See QEP_TAB::effective_index(), we depends that function in
+    // get_exact_record_count()
+    if (src->ref().key != -1) qt->ref().key = src->ref().key;
+    // We don't want clone quick(), use QEP_TAB's index instead.
+    if (src->quick()) qt->set_index(src->quick()->index);
+  }
+
+  return qep_tab;
+}
+
+bool AccessPathParallelizer::rewrite_unqualified_count(AccessPath *&in,
+                                                       AccessPath *) {
+  // Create QEP_TABs for get_exact_record_count() calling.
+  if (!(m_join_out->qep_tab = minimal_clone_qep_tab(
+            m_join_in->qep_tab, m_join_in->primary_tables, mem_root(),
+            [](auto *table) { return table; })))
+    return true;
+  m_join_out->tables = m_join_out->primary_tables = m_join_in->primary_tables;
+
+  auto *aggregate_path = NewAggregateAccessPath(m_join_out->thd, in, false);
+  set_collector_path_pos(&aggregate_path->aggregate().child);
+  in = aggregate_path;
+  return false;
+}
+
+/// Rewrite the temporary table scan access path under a materialize access
 /// path, replace its table with @param table
 static void rewrite_temptable_scan_path(AccessPath *table_path, TABLE *table) {
   TABLE **table_ptr = nullptr;
@@ -827,6 +882,18 @@ bool PartialAccessPathRewriter::rewrite_index_range_scan(AccessPath *,
   set_sorting_info({table, REF_SLICE_SAVED_BASE});
   return false;
 }
+
+bool PartialAccessPathRewriter::rewrite_unqualified_count(AccessPath *&,
+                                                          AccessPath *) {
+  if (!(m_join_out->qep_tab = minimal_clone_qep_tab(
+            m_join_in->qep_tab, m_join_in->primary_tables, mem_root(),
+            [this](TABLE *table) { return find_leaf_table(table); })))
+    return true;
+  m_join_out->tables = m_join_out->primary_tables = m_join_in->primary_tables;
+
+  return false;
+}
+
 bool PartialAccessPathRewriter::
     rewrite_nested_loop_semijoin_with_duplicate_removal(AccessPath *in,
                                                         AccessPath *out) {

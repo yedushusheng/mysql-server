@@ -150,8 +150,7 @@ static bool GetTableParallelScanInfo(QEP_TAB *tab, ulong parallel_degree,
   auto *thd = tab->join()->thd;
 
   scan_desc->is_ref_or_null = false;
-  // Field is_asc set is complicated, set it in access path rewriter by
-  // SetTableParallelScanReverse().
+  // Field is_asc set is complicated, set it in access path rewriter.
   scan_desc->is_asc = true;
   scan_desc->key_used = UINT16_MAX;
 
@@ -227,16 +226,18 @@ static void ChooseParallelPlan(JOIN *join) {
   Opt_trace_context *const trace = &thd->opt_trace;
   Opt_trace_object wrapper(trace);
   Opt_trace_object trace_choosing(trace, "considering");
-  bool chosen = false;
   const char *cause = nullptr;
-  auto trace_set_guard =
-      create_scope_guard([&trace_choosing, &chosen, &cause, thd]() {
-        assert(chosen || cause || thd->is_error());
-        trace_choosing.add("chosen", chosen);
-        if (!chosen)
-          trace_choosing.add_alnum(
-              "cause", cause ? cause : "error_when_parallel_plan_choosing");
-      });
+
+  auto trace_set_guard = create_scope_guard([&trace_choosing, &cause, join]() {
+    assert(cause || join->thd->is_error());
+    trace_choosing.add("chosen", false);
+    trace_choosing.add_alnum(
+        "cause", cause ? cause : join->thd->get_stmt_da()->message_text());
+    if (join->parallel_plan) {
+      destroy(join->parallel_plan);
+      join->parallel_plan = nullptr;
+    }
+  });
 
   if (max_parallel_workers == 0) {
     cause = "disabled_by_zero_of_max_parallel_workers";
@@ -272,8 +273,10 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  // Need special parallel scan support
-  if (join->select_count) {
+  // Innodb fake parallel scan does not support parallel scan in records()
+  bool disable_select_count = true;
+  DBUG_EXECUTE_IF("pq_enable_select_count", disable_select_count = false;);
+  if (join->select_count && disable_select_count) {
     cause = "plan_with_select_count";
     return;
   }
@@ -446,8 +449,11 @@ static void ChooseParallelPlan(JOIN *join) {
     ReleaseParallelWorkers(parallel_degree);
     return;
   }
+
   join->parallel_plan->SetTableParallelScan(table, scan_ranges, scan_desc);
-  chosen = true;
+
+  trace_choosing.add("chosen", true);
+  trace_set_guard.commit();
 }
 
 bool GenerateParallelPlan(JOIN *join) {
