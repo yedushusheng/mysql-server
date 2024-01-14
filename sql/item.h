@@ -786,12 +786,20 @@ class Item_tree_walker {
 */
 enum class Item_parallel_safe { Safe, Restricted, Unsafe };
 class Item_sum_hybrid_field;
-class Item_ref;
+class Item_view_ref;
 class Item_func_get_user_var;
+
+class Item_ref_clone_resolver {
+ public:
+  virtual bool resolve(Item_ref *item, const Item_ref *from) = 0;
+  virtual void final_resolve() {}
+};
+
 class Item_clone_context {
  public:
-  Item_clone_context(THD *thd, Query_block *query_block)
-      : m_thd(thd), m_query_block(query_block) {}
+  Item_clone_context(THD *thd, Query_block *query_block,
+                     Item_ref_clone_resolver *ref_resolver)
+      : m_thd(thd), m_query_block(query_block), m_ref_resolver(ref_resolver) {}
   THD *thd() const { return m_thd; }
   MEM_ROOT *mem_root() const;
   Query_block *query_block() const { return m_query_block; }
@@ -805,10 +813,13 @@ class Item_clone_context {
                                 const Item *arg [[maybe_unused]]) {
     return nullptr;
   }
-  virtual void repoint_ref(Item_ref *item [[maybe_unused]],
-                           const Item_ref *from [[maybe_unused]]) {
-    assert(0);
+  bool resolve_ref(Item_ref *item, const Item_ref *from) {
+    assert(m_ref_resolver);
+    return m_ref_resolver->resolve(item, from);
   }
+  void final_resolve_refs() { m_ref_resolver->final_resolve(); }
+  virtual bool resolve_view_ref(Item_view_ref *item,
+                                const Item_view_ref *from) = 0;
   virtual void rebind_user_var(Item_func_get_user_var *item [[maybe_unused]]) {}
 
  protected:
@@ -816,6 +827,7 @@ class Item_clone_context {
   THD *m_thd;
   // Target query block
   Query_block *m_query_block;
+  Item_ref_clone_resolver *m_ref_resolver{nullptr};
 };
 
 /** NOTE:约束条件是指WHERE或JOIN/ON或HAVING子句中的谓词表达式,
@@ -5588,6 +5600,10 @@ class Item_ref : public Item_ident {
       : Item_ident(thd, item),
         result_field(item->result_field),
         ref(item->ref) {}
+  /* Constructor for item clone */
+  explicit Item_ref()
+      : Item_ident(POS(), nullptr, nullptr, nullptr), ref(nullptr) {}
+
   enum Type type() const override { return REF_ITEM; }
   bool eq(const Item *item, bool binary_cmp) const override {
     const Item *it = const_cast<Item *>(item)->real_item();
@@ -5609,12 +5625,11 @@ class Item_ref : public Item_ident {
   void fix_after_pullout(SELECT_LEX *parent_select,
                          SELECT_LEX *removed_select) override;
   void save_org_in_field(Field *field) override;
-  Item *new_item(Item_clone_context *context) const override {
-    Item_ref *item = new Item_ref(context->thd(), const_cast<Item_ref *>(this));
-    item->ref = nullptr;
-    return item;
-  }
-  bool init_from(const Item *from, Item_clone_context *context) override;  
+  Item *new_item(Item_clone_context *) const override { return new Item_ref; }
+  bool init_from(const Item *from, Item_clone_context *context) override;
+  Item_parallel_safe parallel_safe() const override {
+    return (*ref)->parallel_safe();
+  }  
   Item_result result_type() const override { return (*ref)->result_type(); }
   Field *get_tmp_table_field() override {
     return result_field ? result_field : (*ref)->get_tmp_table_field();
@@ -5772,6 +5787,8 @@ class Item_view_ref final : public Item_ref {
       first_inner_table = cached_table->any_outer_leaf_table();
     }
   }
+  // For Item clone
+  explicit Item_view_ref() : first_inner_table(nullptr) {}
 
   /*
     We share one underlying Item_field, so we have to disable
@@ -5845,6 +5862,10 @@ class Item_view_ref final : public Item_ref {
   bool send(Protocol *prot, String *tmp) override;
   bool collect_item_field_or_view_ref_processor(uchar *arg) override;
   Item *replace_item_view_ref(uchar *arg) override;
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_view_ref;
+  }
+  bool init_from(const Item *from, Item_clone_context *context) override;
 
  protected:
   type_conversion_status save_in_field_inner(Field *field,

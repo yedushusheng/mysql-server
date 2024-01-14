@@ -9823,8 +9823,7 @@ bool Item_func::init_from(const Item *from, Item_clone_context *context) {
 
   auto *item = down_cast<const Item_func *>(from);
   for (uint i = 0; i < arg_count; ++i) {
-    if (!(args[i] = item->args[i]->clone(context))) return true;
-    used_tables_cache |= args[i]->used_tables();
+    if (!(args[i] = item->args[i]->clone(context))) return true;    
   }
 
   return false;

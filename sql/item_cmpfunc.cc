@@ -1227,6 +1227,44 @@ bool Arg_comparator::set_cmp_func(Item_result_field *owner_arg, Item **left_arg,
   return set_compare_func(owner_arg, type);
 }
 
+bool Arg_comparator::clone(Item_clone_context *context,
+                           const Arg_comparator &cmp,
+                           Item_result_field *owner_arg, Item **left_arg,
+                           Item **right_arg) {
+  left = left_arg;
+  right = right_arg;
+  func = cmp.func;
+  owner = owner_arg;
+  comparator_count = cmp.comparator_count;
+  precision = cmp.precision;
+  set_null = cmp.set_null;
+  m_max_str_length = cmp.m_max_str_length;
+  m_compare_type = cmp.m_compare_type;
+
+  if (cmp.comparators) {
+    assert((*left)->cols() == comparator_count &&
+           comparator_count == (*right)->cols());
+    if (!(comparators =
+              new (context->mem_root()) Arg_comparator[comparator_count]))
+      return true;
+    for (uint i = 0; i < comparator_count; i++) {
+      if (comparators[i].clone(context, cmp.comparators[i], owner_arg,
+                               (*left)->addr(i), (*right)->addr(i)))
+        return true;
+    }
+  } else
+    comparators = nullptr;
+
+  // a_cache and b_cache are execution time members. Skip cloning them.
+
+  get_value_a_func = cmp.get_value_a_func;
+  get_value_b_func = cmp.get_value_b_func;
+  json_scalar = cmp.json_scalar;
+  cmp_collation.set(cmp.cmp_collation);
+
+  return false;
+}
+
 bool Arg_comparator::set_cmp_func(Item_result_field *owner_arg, Item **left_arg,
                                   Item **right_arg, bool set_null_arg) {
   set_null = set_null_arg;
