@@ -432,13 +432,14 @@ SourcePlanChangedStore::~SourcePlanChangedStore() {
   }
 
   if (m_fields) {
-    assert(m_ref_items);
     m_join->fields = m_fields;
     const int num_slices = REF_SLICE_WIN_1 + m_join->m_windows.elements;
-    for (int i = 0; i < num_slices; i++) {
-      if (m_ref_items[i].is_null()) continue;
-      m_join->ref_items[i] = m_ref_items[i];
-      m_join->tmp_fields[i] = m_tmp_fields[i];
+    if (m_ref_items) {
+      for (int i = 0; i < num_slices; i++) {
+        if (m_ref_items[i].is_null()) continue;
+        m_join->ref_items[i] = m_ref_items[i];
+        m_join->tmp_fields[i] = m_tmp_fields[i];
+      }
     }
   }
 
