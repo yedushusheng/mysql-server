@@ -2527,4 +2527,21 @@ class Sys_var_binlog_encryption : public Sys_var_bool {
   bool global_update(THD *thd, set_var *var) override;
 };
 
+
+class Td_Sys_var_flagset : public Sys_var_flagset {
+  public:
+   Td_Sys_var_flagset(
+       const char *name_arg, const char *comment, int flag_args, ptrdiff_t off,
+       size_t size MY_ATTRIBUTE((unused)), CMD_LINE getopt,
+       const char *values[], ulonglong def_val, PolyLock *lock = nullptr,
+       enum binlog_status_enum binlog_status_arg = VARIABLE_NOT_IN_BINLOG,
+       on_check_function on_check_func = nullptr,
+       on_update_function on_update_func = nullptr,
+       const char *substitute = nullptr)
+       : Sys_var_flagset(name_arg, comment,
+                         flag_args + sys_var::TDSQL_SQLENGINE_VARS, off, size,
+                         getopt, values, def_val, lock, binlog_status_arg,
+                         on_check_func, on_update_func, substitute) {}
+};
+
 #endif /* SYS_VARS_H_INCLUDED */

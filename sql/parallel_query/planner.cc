@@ -279,6 +279,7 @@ static void ChooseParallelPlan(JOIN *join) {
   }
 
   // We just support single table
+  // TODO: remove this block when deparser supports JOIN.
   if (join->primary_tables != 1) {
     cause = "not_single_table";
     return;
@@ -286,6 +287,12 @@ static void ChooseParallelPlan(JOIN *join) {
 
   if (join->const_tables > 0) {
     cause = "plan_with_const_tables";
+    return;
+  }
+
+  if (!thd->parallel_query_switch_flag(PARALLEL_QUERY_JOIN) &&
+      join->primary_tables != 1) {
+    cause = "not_single_table";
     return;
   }
 

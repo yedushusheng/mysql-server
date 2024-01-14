@@ -1538,7 +1538,10 @@ class THD : public MDL_context_owner,
   inline bool optimizer_switch_flag(ulonglong flag) const {
     return (variables.optimizer_switch & flag);
   }
-
+  /** Tells whether the given parallel query switch is on */
+  inline bool parallel_query_switch_flag(ulonglong flag) const {
+    return (variables.parallel_query_switch & flag);
+  }
   enum binlog_filter_state {
     BINLOG_FILTER_UNKNOWN,
     BINLOG_FILTER_CLEAR,

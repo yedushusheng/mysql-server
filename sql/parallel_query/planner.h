@@ -7,6 +7,11 @@
 class QEP_TAB;
 struct AccessPath;
 
+#define PARALLEL_QUERY_JOIN (1ULL << 0)
+
+// Including the switch in this set, makes its default 'on'
+#define PARALLEL_QUERY_SWITCH_DEFAULT (PARALLEL_QUERY_JOIN)
+
 namespace pq {
 class Collector;
 class PlanDeparser;
