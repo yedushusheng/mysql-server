@@ -113,3 +113,13 @@ INSERT INTO t1 VALUES (1, 'hello'), (2, 'world');
 --let $query = SELECT 1 FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1
 --source suite/parallel_query/include/explain_and_run.inc
 DROP TABLE t1;
+
+# Issue #1212 GROUP BY sorting with DISTINCT, wrong save_sum_fields and
+# items_to_copy
+CREATE TABLE t1(a INT, b INT);
+INSERT INTO t1 VALUES(1, 1),(1, 3),(2, 2);
+--let $query = SELECT SQL_BIG_RESULT DISTINCT (AVG(a) + 1) AS avg_a  FROM t1 GROUP BY a
+--source suite/parallel_query/include/explain_and_run.inc
+--let $query = SELECT DISTINCT (AVG(a) + 1) AS avg_a, JSON_ARRAYAGG(a) as ja FROM t1 GROUP BY a
+--source suite/parallel_query/include/explain_and_run.inc
+DROP TABLE t1;
