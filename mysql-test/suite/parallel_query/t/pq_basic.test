@@ -6,21 +6,21 @@ INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,
 --echo ###
 --echo ### some basic queries
 --echo ###
-let $query=SELECT * FROM t1;
+--let $query=SELECT * FROM t1
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT * FROM t1 where a > 1;
+--let $query=SELECT * FROM t1 where a > 1
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT sum(a) FROM t1;
+--let $query=SELECT sum(a) FROM t1
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT a FROM t1 GROUP BY a;
+--let $query=SELECT a FROM t1 GROUP BY a
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT sum(b) FROM t1 GROUP BY a;
+--let $query=SELECT sum(b) FROM t1 GROUP BY a
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT a, sum(b) FROM t1 GROUP BY a;
+--let $query=SELECT a, sum(b) FROM t1 GROUP BY a
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT a, sum(b) FROM t1 GROUP BY a order by 2;
+--let $query=SELECT a, sum(b) FROM t1 GROUP BY a order by 2
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT a, sum(b) + 1 FROM t1 GROUP BY a order by 2;
+--let $query=SELECT a, sum(b) + 1 FROM t1 GROUP BY a order by 2
 --source suite/parallel_query/include/explain_and_run.inc
 
 --echo ###
@@ -28,27 +28,27 @@ let $query=SELECT a, sum(b) + 1 FROM t1 GROUP BY a order by 2;
 --echo ###
 
 --echo ### aggregate access path ###
-let $query=SELECT SQL_BIG_RESULT a FROM t1 GROUP BY a;
+--let $query=SELECT SQL_BIG_RESULT a FROM t1 GROUP BY a
 --source suite/parallel_query/include/explain_and_run.inc
 
 --echo ### stream access path ###
-let $query=SELECT DISTINCT SQL_BIG_RESULT a FROM t1 GROUP BY a,b ORDER BY a DESC;
+--let $query=SELECT DISTINCT SQL_BIG_RESULT a FROM t1 GROUP BY a,b ORDER BY a DESC
 --source suite/parallel_query/include/explain_and_run.inc
 
 --echo ### 2 temporary tables ###
-let $query=SELECT DISTINCT (COUNT(b) + 1) AS c FROM t1 WHERE b > 1 GROUP BY a;
+--let $query=SELECT DISTINCT (COUNT(b) + 1) AS c FROM t1 WHERE b > 1 GROUP BY a
 --source suite/parallel_query/include/explain_and_run.inc
 
 --echo ### offset limit ###
-let $query=SELECT * FROM t1 LIMIT 2 OFFSET 1;
+--let $query=SELECT * FROM t1 LIMIT 2 OFFSET 1
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT * FROM t1 ORDER BY a LIMIT 2 OFFSET 1;
+--let $query=SELECT * FROM t1 ORDER BY a LIMIT 2 OFFSET 1
 --source suite/parallel_query/include/explain_and_run.inc
 
 --echo ### having ###
-let $query=SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5;
+--let $query=SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5 LIMIT 1 OFFSET 2;
+--let $query=SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5 LIMIT 1 OFFSET 2
 --source suite/parallel_query/include/explain_and_run.inc
 
 DROP TABLE t1;
@@ -60,15 +60,41 @@ DROP TABLE t1;
 --echo ### index scan ###
 CREATE TABLE t1(a int, b int, c int, index(b));
 INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
-let $query=SELECT b FROM t1;
+--let $query=SELECT b FROM t1
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT b FROM t1 LIMIT 4;
+--let $query=SELECT b FROM t1 LIMIT 4
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT b FROM t1 ORDER BY b LIMIT 4;
+--let $query=SELECT b FROM t1 ORDER BY b LIMIT 4
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT b FROM t1 GROUP BY b LIMIT 4;
+--let $query=SELECT b FROM t1 GROUP BY b LIMIT 4
 --source suite/parallel_query/include/explain_and_run.inc
-let $query=SELECT count(a), b FROM t1 GROUP BY b ORDER BY 2,1 LIMIT 4;
+--let $query=SELECT count(a), b FROM t1 GROUP BY b ORDER BY 2,1 LIMIT 4
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo ### range index scan ###
+--let $query=SELECT a FROM t1 WHERE b BETWEEN 2 AND 5
+--source suite/parallel_query/include/explain_and_run.inc
+
+DROP TABLE t1;
+
+--echo ### group min max scan ###
+CREATE TABLE t1 (
+a1 CHAR(64), a2 CHAR(64), b CHAR(16), c CHAR(16) not null, d CHAR(16), dummy CHAR(248) default ' '
+) charset latin1;
+INSERT INTO t1 (a1, a2, b, c, d) VALUES
+('a','a','a','a111','xy1'),('a','a','a','b111','xy2'),('a','a','a','c111','xy3'),('a','a','a','d111','xy4'),
+('a','a','b','e112','xy1'),('a','a','b','f112','xy2'),('a','a','b','g112','xy3'),('a','a','b','h112','xy4');
+CREATE INDEX idx_t1_0 ON t1 (a1);
+CREATE INDEX idx_t1_1 ON t1 (a1,a2,b,c);
+CREATE INDEX idx_t1_2 ON t1 (a1,a2,b);
+--let $query=SELECT a1, MIN(a2),MAX(a2) FROM t1 GROUP BY a1
+--source suite/parallel_query/include/explain_and_run.inc
+DROP TABLE t1;
+
+--echo ### index skip scan ###
+CREATE TABLE t1(a INT, b INT, c INT, d INT, PRIMARY KEY(a, b, c, d), KEY(b, d));
+INSERT INTO t1 VALUES(1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5),(1,1,1,6),(2,2,2,6),(3,3,3,6),(4,4,4,6),(5,5,5,6);
+--let $query = SELECT /*+ SKIP_SCAN(t1) */ a, b, c, d FROM t1 WHERE a IN (1, 2, 3, 4, 5) AND b IN (1, 2, 3) AND d >= 4
 --source suite/parallel_query/include/explain_and_run.inc
 
 DROP TABLE t1;

@@ -7,6 +7,7 @@
 class Item_clone_context;
 class JOIN;
 class RowIterator;
+class QUICK_SELECT_I;
 
 namespace pq {
 class PartialPlan;
@@ -87,7 +88,9 @@ class AccessPathRewriter {
   // See access_path.h, rewrite functions are followed same order with it.
   virtual bool rewrite_table_scan(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_index_scan(AccessPath *, AccessPath *) { return false; }
-
+  virtual bool rewrite_index_range_scan(AccessPath *, AccessPath *) {
+    return false;
+  }
   virtual bool rewrite_filter(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_sort(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_aggregate(AccessPath *, AccessPath *) { return false; }
@@ -134,11 +137,14 @@ class AccessPathParallelizer : public AccessPathRewriter {
   bool end_of_out_path() override { return m_collector_path_pos != nullptr; }
   void set_collector_path_pos(AccessPath **path);
   void set_table_parallel_scan(TABLE *table, uint keynr, bool reverse);
+  void set_table_parallel_scan(QUICK_SELECT_I *quick);
+
   AccessPath **collector_path_pos() const { return m_collector_path_pos; }
 
   // Rewrite routines for each access path
   bool rewrite_table_scan(AccessPath *, AccessPath *) override;
   bool rewrite_index_scan(AccessPath *, AccessPath *) override;
+  bool rewrite_index_range_scan(AccessPath *, AccessPath *) override;
 
   bool rewrite_filter(AccessPath *, AccessPath *) override;
   bool rewrite_sort(AccessPath *in, AccessPath *out) override;
@@ -173,6 +179,7 @@ class PartialAccessPathRewriter : public AccessPathRewriter {
   // Rewrite routines for each access path
   bool rewrite_table_scan(AccessPath *, AccessPath *) override;
   bool rewrite_index_scan(AccessPath *, AccessPath *) override;
+  bool rewrite_index_range_scan(AccessPath *in, AccessPath *out) override;
 
   bool rewrite_filter(AccessPath *, AccessPath *) override;
   bool rewrite_sort(AccessPath *in, AccessPath *out) override;

@@ -3,10 +3,7 @@ CREATE TABLE t1 (a INT, b INT, c INT DEFAULT 0);
 INSERT INTO t1 (a, b) VALUES (3,3), (2,2), (3,3), (2,2), (3,3), (4,4);
 CREATE TABLE t2 SELECT * FROM t1;
 FLUSH STATUS;
-EXPLAIN format=tree SELECT t1.a, SUM(t1.b) FROM t1
-WHERE t1.a = (SELECT SUM(t2.b) FROM t2
-ORDER BY SUM(t2.b) + SUM(t1.b) LIMIT 1)
-GROUP BY t1.a;;
+EXPLAIN format=tree SELECT t1.a, SUM(t1.b) FROM t1 WHERE t1.a = (SELECT SUM(t2.b) FROM t2 ORDER BY SUM(t2.b) + SUM(t1.b) LIMIT 1) GROUP BY t1.a;
 EXPLAIN
 -> Table scan on <temporary>
     -> Aggregate using temporary table
@@ -21,10 +18,7 @@ EXPLAIN
 
 Warnings:
 Note	1276	Field or reference 'test.t1.b' of SELECT #2 was resolved in SELECT #1
-SELECT t1.a, SUM(t1.b) FROM t1
-WHERE t1.a = (SELECT SUM(t2.b) FROM t2
-ORDER BY SUM(t2.b) + SUM(t1.b) LIMIT 1)
-GROUP BY t1.a;;
+SELECT t1.a, SUM(t1.b) FROM t1 WHERE t1.a = (SELECT SUM(t2.b) FROM t2 ORDER BY SUM(t2.b) + SUM(t1.b) LIMIT 1) GROUP BY t1.a;
 a	SUM(t1.b)
 SELECT variable_value > @@max_parallel_degree AS has_worker_created FROM performance_schema.session_status WHERE Variable_name = 'PQ_workers_created';
 has_worker_created

@@ -427,6 +427,13 @@ class QUICK_SELECT_I {
                             method uses.
   */
   virtual void get_fields_used(MY_BITMAP *used_fields) = 0;
+  virtual QUICK_SELECT_I *clone(JOIN *join, TABLE *table);
+  virtual uint16_t scan_range_keyused(MEM_ROOT *, key_range **min_key,
+                                      key_range **max_key) {
+    assert(false);
+    *min_key = *max_key = nullptr;
+    return UINT16_MAX;
+  }  
   void trace_quick_description(Opt_trace_context *trace);
 };
 
@@ -532,6 +539,11 @@ class QUICK_RANGE_SELECT : public QUICK_SELECT_I {
   bool is_agg_loose_index_scan() const override { return false; }
   void add_keys_and_lengths(String *key_names, String *used_lengths) override;
   void add_info_string(String *str) override;
+  QUICK_SELECT_I *clone(JOIN *join, TABLE *table) override;
+  bool init_from(const QUICK_RANGE_SELECT *from);
+  uint16_t scan_range_keyused(MEM_ROOT *mem_root, key_range **min_key,
+                              key_range **max_key) override;
+
 #ifndef DBUG_OFF
   void dbug_dump(int indent, bool verbose) override;
 #endif
@@ -555,6 +567,7 @@ class QUICK_RANGE_SELECT_GEOM : public QUICK_RANGE_SELECT {
       : QUICK_RANGE_SELECT(thd, table, index_arg, no_alloc, parent_alloc,
                            create_error) {}
   int get_next() override;
+  QUICK_SELECT_I *clone(JOIN *join, TABLE *table) override;
 };
 
 /*
@@ -898,6 +911,7 @@ class QUICK_GROUP_MIN_MAX_SELECT : public QUICK_SELECT_I {
   bool seen_first_key;         /* Denotes whether the first key was retrieved.*/
   KEY_PART_INFO *min_max_arg_part; /* The keypart of the only argument field */
                                    /* of all MIN/MAX functions.              */
+  uint min_max_arg_part_idx;
   uint min_max_arg_len;     /* The length of the MIN/MAX argument field */
   bool min_max_keypart_asc; /* TRUE if min_max key part is ascending. */
   uint key_infix_len;
@@ -966,6 +980,9 @@ class QUICK_GROUP_MIN_MAX_SELECT : public QUICK_SELECT_I {
   bool is_loose_index_scan() const override { return true; }
   bool is_agg_loose_index_scan() const override { return is_agg_distinct(); }
   void add_keys_and_lengths(String *key_names, String *used_lengths) override;
+  QUICK_SELECT_I *clone(JOIN *join, TABLE *table) override;
+  uint16_t scan_range_keyused(MEM_ROOT *mem_root, key_range **min_key,
+                              key_range **max_key) override;
 #ifndef DBUG_OFF
   void dbug_dump(int indent, bool verbose) override;
 #endif
@@ -993,6 +1010,7 @@ class QUICK_SELECT_DESC : public QUICK_RANGE_SELECT {
   QUICK_SELECT_I *make_reverse(uint) override {
     return this;  // is already reverse sorted
   }
+  QUICK_SELECT_I *clone(JOIN *join, TABLE *table) override;
 
  private:
   bool range_reads_after_key(QUICK_RANGE *range);
@@ -1069,6 +1087,7 @@ class QUICK_SKIP_SCAN_SELECT : public QUICK_SELECT_I {
   uint distinct_prefix_key_parts;
 
   KEY_PART_INFO *range_key_part; /* The keypart of range condition 'C'. */
+  uint range_key_part_idx;
   uint range_key_len;
   /*
     Denotes whether the first key for the current equality prefix was
@@ -1114,7 +1133,11 @@ class QUICK_SKIP_SCAN_SELECT : public QUICK_SELECT_I {
     return has_aggregate_function;
   }
   void add_keys_and_lengths(String *key_names, String *used_lengths) override;
-#ifndef DBUG_OFF
+
+  QUICK_SELECT_I *clone(JOIN *join, TABLE *table) override;
+  uint16_t scan_range_keyused(MEM_ROOT *mem_root, key_range **min_key,
+                              key_range **max_key) override;
+  int init_inner(const QUICK_SKIP_SCAN_SELECT *eq_prefix_copy_from);#ifndef DBUG_OFF
   void dbug_dump(int indent, bool verbose) override;
 #endif
   void get_fields_used(MY_BITMAP *used_fields) override {

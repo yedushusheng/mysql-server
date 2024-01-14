@@ -8,6 +8,7 @@
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
 #include "sql/join_optimizer/walk_access_paths.h"
+#include "sql/opt_range.h"
 #include "sql/opt_trace.h"
 #include "sql/parallel_query/executor.h"
 #include "sql/parallel_query/rewrite_access_path.h"
@@ -90,6 +91,18 @@ static uint32 table_parallel_degree(THD *thd, TABLE_LIST *table,
   return thd->variables.max_parallel_degree;
 }
 
+static bool IsAccessRangeSupported(QEP_TAB *qt) {
+  assert(qt->type() == JT_RANGE);
+
+  if (qt->dynamic_range()) return false;
+
+  auto quick_type = qt->quick()->get_type();
+  return quick_type == QUICK_SELECT_I::QS_TYPE_RANGE ||
+         quick_type == QUICK_SELECT_I::QS_TYPE_RANGE_DESC ||
+         quick_type == QUICK_SELECT_I::QS_TYPE_SKIP_SCAN ||
+         quick_type == QUICK_SELECT_I::QS_TYPE_GROUP_MIN_MAX;
+}
+
 static void ChooseParallelPlan(JOIN *join) {
   THD *thd = join->thd;
   Opt_trace_context *const trace = &thd->opt_trace;
@@ -153,6 +166,17 @@ static void ChooseParallelPlan(JOIN *join) {
   // Block parallel query based on table properties
   auto *qt = &join->qep_tab[0];
 
+  if (qt->type() != JT_ALL && qt->type() != JT_INDEX_SCAN &&
+      qt->type() != JT_RANGE) {
+    cause = "table_access_type_is_not_supported";
+    return;
+  }
+
+  if (qt->type() == JT_RANGE && !IsAccessRangeSupported(qt)) {
+    cause = "unsupported_access_range_type";
+    return;
+  }
+
   bool specified_by_hint;
   uint32 parallel_degree =
       table_parallel_degree(thd, qt->table_ref, &specified_by_hint);
@@ -179,10 +203,6 @@ static void ChooseParallelPlan(JOIN *join) {
   }
 
   auto *table = qt->table();
-  if (qt->type() != JT_ALL && qt->type() != JT_INDEX_SCAN) {
-    cause = "access_type_is_not_table_scan_or_index_scan";
-    return;
-  }
   if (!(table->file->ha_table_flags() & HA_CAN_PARALLEL_SCAN)) {
     cause = "table_does_not_support_parallel_scan";
     return;
@@ -478,20 +498,32 @@ bool ParallelPlan::GenPartialFields(Item_clone_context *context,
                                     FieldsPushdownDesc *fields_pushdown_desc) {
   Query_block *source = SourceQueryBlock();
   Query_block *partial_query_block = PartialQueryBlock();
+  JOIN *join = SourceJoin();
+
+  // See get_best_group_min_max(), which only support 1 table with no rollup
+  assert(join->primary_tables == 1 &&
+         join->rollup_state == JOIN::RollupState::NONE);
+
+  auto *qt = &join->qep_tab[0];
+  bool sumfuncs_full_pushdown =
+      qt->quick() &&
+      qt->quick()->get_type() == QUICK_SELECT_I::QS_TYPE_GROUP_MIN_MAX;
 
   for (uint i = 0; i < source->fields.size(); i++) {
     Item *new_item, *item = source->fields[i];
-    // if ONLY_FULL_GROUP_BY is turned off, the functions contains aggregation
-    // may include some item fields.
-    // XXX check whether all sums is safe to push down.
+    // if ONLY_FULL_GROUP_BY is turned off, the functions contains
+    // aggregation may include some item fields. Sum functions could be
+    // const_item(), see optimize_aggregated_query(), it calls make_const()
+    // to make MIN(), MAX() as a const. XXX This should be not pushed down
+    // if non-pushed down sum got supported.
     assert(item->parallel_safe() == Item_parallel_safe::Safe);
+    bool is_sum_func = item->type() == Item::SUM_FUNC_ITEM;
     bool pushdown =
-        !(item->has_aggregation() && item->type() != Item::SUM_FUNC_ITEM) &&
-        !item->const_item();
+        !(item->has_aggregation() || item->const_item()) || is_sum_func;
 
     if (pushdown) {
       if (!(new_item = item->clone(context))) return true;
-      if (new_item->type() == Item::SUM_FUNC_ITEM) {
+      if (is_sum_func && !sumfuncs_full_pushdown) {
         Item_sum *item_sum = down_cast<Item_sum *>(new_item);
         item_sum->set_sum_stage(Item_sum::TRANSITION_STAGE);
         // change item_name so let EXPLAIN doesn't show Sum(Sum(a)) for leader's
@@ -500,7 +532,7 @@ bool ParallelPlan::GenPartialFields(Item_clone_context *context,
         item_sum->item_name = arg->item_name;
       }
       if (partial_query_block->add_item_to_list(new_item)) return true;
-      if (fields_pushdown_desc->push_back(item->type() != Item::SUM_FUNC_ITEM
+      if (fields_pushdown_desc->push_back(!is_sum_func || sumfuncs_full_pushdown
                                               ? FieldPushdownDesc::Replace
                                               : FieldPushdownDesc::Clone))
         return true;

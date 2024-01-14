@@ -1831,9 +1831,12 @@ void JOIN::destroy() {
   for (Filesort *filesort : filesorts_to_cleanup) {
     ::destroy(filesort);
   }
+  for (auto *quick : quick_selects_to_cleanup) delete quick;
+
   temp_tables.clear();
   filesorts_to_cleanup.clear();
-  
+  quick_selects_to_cleanup.clear();
+
   if (join_tab || best_ref) {
     for (uint i = 0; i < tables; i++) {
       JOIN_TAB *const tab = join_tab ? &join_tab[i] : best_ref[i];

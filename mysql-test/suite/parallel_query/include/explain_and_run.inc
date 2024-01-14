@@ -1,3 +1,3 @@
---eval EXPLAIN format=tree $query;
+--eval EXPLAIN format=tree $query
 --sorted_result
---eval $query;
+--eval $query
