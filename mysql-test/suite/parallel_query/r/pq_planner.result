@@ -385,8 +385,8 @@ CREATE TABLE t1(a INT PRIMARY KEY, b INT, c INT, d varchar(16)) ENGINE=InnoDB DE
 create table for master
 CREATE TABLE t1(a INT PRIMARY KEY, b INT, c INT, d varchar(16)) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (a % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "a"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "a"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "a"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "a"'
     );
 "Create spider tables successfully."
 INSERT INTO t1 VALUES(1,1,1,'a'),(2,1,1,'a'),(3,1,1,'a'),(4,2,2,'b'),(5,2,2,'b'),(6,2,2,'b'),(7,2,2,'b'),(8,3,3,'c'),(9,3,3,'c'),(10,3,3,'c');
@@ -394,7 +394,7 @@ EXPLAIN format=tree SELECT DISTINCT b FROM t1 ORDER BY b;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)
    Merge sort with duplicate removal: t1.b
-   Statement: select `t1`.`b` AS `b` from `t1` group by `t1`.`b` order by `t1`.`b`
+   Statement: select `t1`.`b` AS `b` from `auto_test`.`t1` group by `t1`.`b` order by `t1`.`b`
    Execution datasets: s_2_1, s_2_2
 
 SELECT DISTINCT b FROM t1 ORDER BY b;
@@ -406,7 +406,7 @@ EXPLAIN format=tree SELECT b FROM t1 GROUP BY b ORDER BY b;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)
    Merge sort with duplicate removal: t1.b
-   Statement: select `t1`.`b` AS `b` from `t1` group by `t1`.`b` order by `t1`.`b`
+   Statement: select `t1`.`b` AS `b` from `auto_test`.`t1` group by `t1`.`b` order by `t1`.`b`
    Execution datasets: s_2_1, s_2_2
 
 SELECT b FROM t1 GROUP BY b ORDER BY b;
@@ -418,7 +418,7 @@ EXPLAIN format=tree SELECT d FROM t1 GROUP BY d ORDER BY d;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)
    Merge sort with duplicate removal: t1.d
-   Statement: select `t1`.`d` AS `d` from `t1` group by `t1`.`d` order by `t1`.`d`
+   Statement: select `t1`.`d` AS `d` from `auto_test`.`t1` group by `t1`.`d` order by `t1`.`d`
    Execution datasets: s_2_1, s_2_2
 
 SELECT d FROM t1 GROUP BY d ORDER BY d;
@@ -430,7 +430,7 @@ EXPLAIN format=tree SELECT DISTINCT b, c FROM t1 ORDER BY b, c;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)
    Merge sort with duplicate removal: t1.b, t1.c
-   Statement: select `t1`.`b` AS `b`,`t1`.`c` AS `c` from `t1` group by `t1`.`b`,`t1`.`c` order by `t1`.`b`,`t1`.`c`
+   Statement: select `t1`.`b` AS `b`,`t1`.`c` AS `c` from `auto_test`.`t1` group by `t1`.`b`, `t1`.`c` order by `t1`.`b`, `t1`.`c`
    Execution datasets: s_2_1, s_2_2
 
 SELECT DISTINCT b, c FROM t1 ORDER BY b, c;
@@ -444,7 +444,7 @@ EXPLAIN
     -> Table scan on <temporary>
         -> Aggregate using temporary table
             -> Gather (slice: 1, workers: 2)
-               Statement: select `t1`.`c` AS `c`,sum(`t1`.`c`) AS `c` from `t1` group by `t1`.`c`
+               Statement: select `t1`.`c` AS `c`,sum(`t1`.`c`) AS `c` from `auto_test`.`t1` group by `t1`.`c`
                Execution datasets: s_2_1, s_2_2
 
 SELECT c, SUM(c) FROM t1 GROUP BY c ORDER BY c;
@@ -458,7 +458,7 @@ EXPLAIN
     -> Table scan on <temporary>  (cost=0.64..2.55 rows=4)
         -> Temporary table with deduplication  (cost=2.44..4.35 rows=4)
             -> Gather (slice: 1, workers: 2)
-               Statement: select `t1`.`b` AS `b`,`t1`.`c` AS `c` from `t1` group by `t1`.`b`,`t1`.`c`
+               Statement: select `t1`.`b` AS `b`,`t1`.`c` AS `c` from `auto_test`.`t1` group by `t1`.`b`, `t1`.`c`
                Execution datasets: s_2_1, s_2_2
 
 SELECT b,c FROM t1 GROUP BY b,c ORDER BY c;
@@ -482,8 +482,8 @@ CREATE TABLE t1(id int primary key auto_increment, b VARCHAR(128)) ENGINE=InnoDB
 create table for master
 CREATE TABLE t1(id int primary key auto_increment, b VARCHAR(128)) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 INSERT INTO t1 (b) VALUES (REPEAT('a', 100)), (REPEAT('a', 100)), (REPEAT('a', 100)), (REPEAT('a', 100)), (REPEAT('b', 100)), (REPEAT('b', 100)), (REPEAT('b', 100)), (REPEAT('b', 100));
@@ -491,7 +491,7 @@ EXPLAIN format=tree SELECT b FROM t1 GROUP BY b ORDER BY b;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)
    Merge sort with duplicate removal: t1.b
-   Statement: select `t1`.`b` AS `b` from `t1` group by `t1`.`b` order by `t1`.`b`
+   Statement: select `t1`.`b` AS `b` from `auto_test`.`t1` group by `t1`.`b` order by `t1`.`b`
    Execution datasets: s_2_1, s_2_2
 
 SELECT b FROM t1 GROUP BY b ORDER BY b;
@@ -514,8 +514,8 @@ CREATE TABLE t1(id int primary key auto_increment, a text) ENGINE=InnoDB DEFAULT
 create table for master
 CREATE TABLE t1(id int primary key auto_increment, a text) ENGINE=Spider DEFAULT CHARSET=utf8
 PARTITION BY LIST (id % 2)
-(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
-PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test", srv "s_2_2", shard_key "id"'
     );
 "Create spider tables successfully."
 INSERT INTO t1 (a) VALUES('aaaa'),('aaaa'), ('bbbb'),('bbbb');
@@ -523,7 +523,7 @@ EXPLAIN format=tree SELECT DISTINCT a FROM t1 ORDER BY a;;
 EXPLAIN
 -> Gather (slice: 1, workers: 2)
    Merge sort with duplicate removal: t1.a
-   Statement: select `t1`.`a` AS `a` from `t1` group by `t1`.`a` order by `t1`.`a`
+   Statement: select `t1`.`a` AS `a` from `auto_test`.`t1` group by `t1`.`a` order by `t1`.`a`
    Execution datasets: s_2_1, s_2_2
 
 SELECT DISTINCT a FROM t1 ORDER BY a;;

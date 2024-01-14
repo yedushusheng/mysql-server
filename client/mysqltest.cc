@@ -10343,6 +10343,79 @@ void do_get_replace(struct st_command *command) {
   command->last_argument = command->end;
 }
 
+static void do_run_with_if_pq(struct st_command *command) {
+  if (!opt_parallel_query) {
+    command->last_argument = command->end;
+    return;
+  }
+
+  const char *from = command->first_argument;
+  char *start, *buff;
+  if (!*from) die("Missing argument in command %s", command->query);
+  start = buff = (char *)my_malloc(PSI_NOT_INSTRUMENTED, std::strlen(from) + 1,
+                                   MYF(MY_WME | MY_FAE));
+  while (*from) {
+    char *subcmd = get_string(&buff, &from, command);
+    char *arg = subcmd;
+    char *arg_start = nullptr;
+    struct st_command subcommand;
+    subcommand.query = command->query;
+    subcommand.first_argument = nullptr;
+
+    while (*arg) {
+      if (*arg == '=')
+        arg_start = arg;
+      else if (*arg == ',')
+        *arg = ' ';
+      ++arg;
+    }
+    subcommand.end = arg;
+
+    if (arg_start) {
+      *arg_start = '\0';
+      ++arg_start;
+      subcommand.first_argument = arg_start;
+    }
+    int type = find_type(subcmd, &command_typelib, FIND_TYPE_NO_PREFIX);
+    switch (type) {
+      case Q_SORTED_RESULT:
+        display_result_sorted = true;
+        start_sort_column = 0;
+        break;
+      case Q_LOWERCASE:
+        display_result_lower = true;
+        break;
+      case Q_DISABLE_RESULT_LOG:
+        set_once_property(P_RESULT, true);
+        break;
+      case Q_DISABLE_WARNINGS:
+        if (disabled_warnings->count()) disabled_warnings->clear_list();
+        set_once_property(P_WARN, true);
+        break;
+      case Q_REPLACE_NUMERIC_ROUND:
+        if (subcommand.first_argument)
+          do_get_replace_numeric_round(&subcommand);
+        else
+          glob_replace_numeric_round = 6;
+        break;
+      case Q_REPLACE_COLUMN:
+        check_subcommand_args(subcmd, &subcommand);
+        do_get_replace_column(&subcommand);
+        break;
+      case Q_REPLACE:
+        check_subcommand_args(subcmd, &subcommand);
+        do_get_replace(&subcommand);
+        break;
+      default:
+        die("Unsupported argument '%s' in command %s", subcmd, command->query);
+        break;
+    }
+  }
+
+  my_free(start);
+  command->last_argument = command->end;
+}
+
 void free_replace() {
   DBUG_TRACE;
   my_free(glob_replace);
