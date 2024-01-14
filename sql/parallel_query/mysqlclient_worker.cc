@@ -15,6 +15,7 @@
 #include "sql/parallel_query/plan_deparser.h"
 #include "sql/parallel_query/planner.h"
 #include "sql/parallel_query/row_channel.h"
+#include "sql/parallel_query/timing_channel.h"
 #include "sql/parallel_query/worker.h"
 #include "sql/parallel_query/spider_conn_worker.h"
 #include "sql/sql_class.h"
@@ -23,7 +24,6 @@
 #include "sql_common.h"
 
 namespace pq {
-
 void MySQLClient::report_error() {
   if (m_mysql)
     my_error(ER_CONNECT_TO_FOREIGN_DATA_SOURCE, MYF(0), mysql_error(m_mysql));
@@ -33,7 +33,8 @@ void MySQLClient::report_error() {
 }
 
 bool MySQLClient::use_result() {
-  if (!(m_result = (*m_mysql->methods->use_result)(m_mysql))) {
+  if (!(m_result = (*m_mysql->methods->use_result)(m_mysql)) &&
+      m_mysql->field_count) {
     report_error();
     return true;
   }
@@ -47,6 +48,30 @@ void MySQLClient::free_result() {
 }
 
 MySQLClientSync::~MySQLClientSync() { close(); }
+
+bool MySQLClientSync::init() {
+  if (!(m_mysql = mysql_init(nullptr))) {
+    report_error();
+    return true;
+  }
+  return false;
+}
+
+bool MySQLClientSync::real_connect(const char *host, const char *user,
+                                   const char *passwd, const char *db,
+                                   uint port, const char *unix_socket,
+                                   ulong client_flag) {
+  if (mysql_real_connect(m_mysql, host, user, passwd, db, port, unix_socket,
+                         client_flag) == nullptr) {
+    report_error();
+    return true;
+  }
+
+  m_pollfd.fd = mysql_get_socket_descriptor(m_mysql);
+  m_pollfd.events = POLLIN;
+
+  return false;
+}
 
 bool MySQLClientSync::connect(THD *) {
   if (!(m_mysql = mysql_init(nullptr))) {
@@ -195,10 +220,9 @@ MySQLClientQueryExec::~MySQLClientQueryExec() {
 }
 
 bool MySQLClientQueryExec::Init(THD *thd,
-                                TABLE *parallel_table [[maybe_unused]],
-                                uint worker_id [[maybe_unused]]) {
+                                SPIDER_CONN *spider_conn) {
   if (!(mysql = new (thd->mem_root)
-            MySQLClientSpider(parallel_table, worker_id - 1)) ||
+            MySQLClientSpider(spider_conn)) ||
       mysql->connect(thd)) {
     m_error = true;
     return true;
@@ -447,11 +471,14 @@ class MySQLClientChannel : public RowChannel {
 */
 class MySQLClientWorker : public Worker {
  public:
-  MySQLClientWorker(uint id, comm::Event *state_event, THD *thd,
-                    PartialPlan *partial_plan, TABLE *collector_table)
+  MySQLClientWorker(uint id, comm::Event *state_event,
+                    THD *thd,
+                    TABLE *collector_table,
+                    PlanDeparser *deparser,
+                    SPIDER_CONN *conn)
       : Worker(id, state_event),
-        m_query_executor(partial_plan->Deparser(), collector_table),
-        m_parallel_table(partial_plan->GetParallelScanInfo().table),
+        m_query_executor(deparser, collector_table),
+        m_spider_conn(conn),
         m_thd(thd) {}
 
   /// The receiver row channel created inside of worker, @param comm_event
@@ -463,25 +490,22 @@ class MySQLClientWorker : public Worker {
     return nullptr;
   }
   bool IsRunning() override;
-  bool IsStartFailed() override { return !m_query_executor.IsConnected(); }
 
   std::string *QueryPlanTimingData() override { return nullptr; }
   void CollectStatusVars(THD *) override {}
 
- protected:
-  TABLE *ParallelTable() const { return m_parallel_table; }
-
  private:
   MySQLClientQueryExec m_query_executor;
-  TABLE *m_parallel_table;
+  SPIDER_CONN *m_spider_conn;
   THD *m_thd;
 };
 
 bool MySQLClientWorker::Init(comm::Event *comm_event) {
-  if (m_query_executor.Init(m_thd, m_parallel_table, m_id)) return true;
+  if (m_query_executor.Init(m_thd, m_spider_conn)) return true;
 
-  if (!(m_receiver_channel = new (m_thd->mem_root)
-            comm::MySQLClientChannel(&m_query_executor)) ||
+  if (!(m_receiver_channel =
+            comm::NewRowChannel<comm::MySQLClientChannel>(
+                m_thd, &m_query_executor)) ||
       m_receiver_channel->Init(m_thd, comm_event, true))
     return true;
   return false;
@@ -502,10 +526,20 @@ bool MySQLClientWorker::IsRunning() {
   return !m_query_executor.DrainOutRows();
 }
 
+std::string PrintMySQLClientWorkerTiming(Worker *worker,
+                                         const std::string &worker_desc) {
+  std::string wkdesc;
+  wkdesc = "Worker(" + std::to_string(worker->Id()) + ") ";
+  wkdesc += "(dataset = " + worker_desc + ")";
+  wkdesc += " " + worker->ReceiverChannel()->TimingString();
+
+  return wkdesc;
+}
+
 Worker *CreateMySQLClientWorker(uint id, comm::Event *state_event, THD *thd,
-                                PartialPlan *partial_plan,
-                                TABLE *collector_table) {
-  return new (thd->mem_root)
-      MySQLClientWorker(id, state_event, thd, partial_plan, collector_table);
+                                TABLE *collector_table, PlanDeparser *deparser,
+                                SPIDER_CONN *conn) {
+  return new (thd->mem_root) MySQLClientWorker(id, state_event, thd,
+                                               collector_table, deparser, conn);
 }
 }  // namespace pq

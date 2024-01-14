@@ -17,9 +17,16 @@
 #include "sql/transaction.h"
 
 namespace pq {
+bool PartialPlan::InitExecution(uint num_workers) {
+  return m_dist_plan->InitExecution(this, num_workers);
+}
 
-Collector::Collector(uint num_workers, PartialPlan *partial_plan)
-    : m_partial_plan(partial_plan), m_workers(num_workers) {}
+Collector::Collector(dist::Adapter *dist_adapter, dist::NodeArray *exec_nodes,
+                     PartialPlan *partial_plan, uint num_workers)
+    : m_dist_adapter(dist_adapter),
+      m_exec_nodes(exec_nodes),
+      m_partial_plan(partial_plan),
+      m_workers(num_workers) {}
 
 Collector::~Collector() {
   if (m_table) {
@@ -79,52 +86,35 @@ bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order) {
   return false;
 }
 
-bool Collector::InitParallelScan() {
-  auto &psinfo = m_partial_plan->GetParallelScanInfo();
-  auto *table = psinfo.table;
-  int res;
-
-  if ((res = table->file->init_parallel_scan(&table->parallel_scan_handle,
-                                             &psinfo.suggested_ranges,
-                                             &psinfo.scan_desc)) != 0) {
-    table->file->print_error(res, MYF(0));
-    return true;
-  }
-
-  return false;
-}
-
 bool Collector::Init(THD *thd) {
-  if (m_partial_plan->DeparsePlan(thd)) return true;
+  // Do initialize parallel scan for the plan with parallel scan before workers
+  // are created and started. For 3.0, remote workers assign parallel scan jobs
+  // in this function and parallel workers are created based on that.
+  if (m_partial_plan->InitExecution(m_workers.size())) return true;
+
   // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
   // you should use m_id - 1
   for (uint widx = 0; widx < m_workers.size(); ++widx) {
-#if 0
-    auto *worker =
-        CreateLocalWorker(widx + 1, &m_worker_state_event, thd, partial_plan());
-#endif
-    auto *worker = CreateMySQLClientWorker(widx + 1, &m_worker_state_event, thd,
-                                           partial_plan(), m_table);
-
+    auto worker_id = widx + 1;
+    auto *worker = m_dist_adapter->CreateParallelWorker(
+        worker_id, &m_worker_state_event, partial_plan(), m_table,
+        m_exec_nodes);
     m_workers[widx] = worker;
     if (!worker || worker->Init(m_receiver_exchange.event())) return true;
   }
 
   if (m_receiver_exchange.Init(
           thd->mem_root, m_workers.size(),
-          [this](uint widx) { return m_workers[widx]->receiver_channel(); }))
+          [this](uint widx) { return m_workers[widx]->ReceiverChannel(); }))
     return true;
 
   if (!(m_row_exchange_reader = comm::CreateRowExchangeReader(
             thd->mem_root, &m_receiver_exchange, m_table, m_merge_sort)))
     return true;
 
-  // Do initialize parallel scan for tables before workers are started
-  if (InitParallelScan()) return true;
-
   DEBUG_SYNC(thd, "before_launch_pqworkers");
 
-  if (LaunchWorkers(thd)) return true;
+  if (LaunchWorkers()) return true;
 
   // Initialize row exchange reader after workers are started. The reader with
   // merge sort do a block read in Init().
@@ -144,28 +134,11 @@ void Collector::Reset() {
   for (auto *&worker : m_workers) destroy(worker);
 }
 
-bool Collector::LaunchWorkers(THD *thd) {
-  bool has_failed_worker = false;
-  bool all_start_error = true;
-
-  for (uint widx = 0; widx < m_workers.size(); ++widx) {
-    auto *worker = m_workers[widx];
-
+bool Collector::LaunchWorkers() {
+  for (auto *worker : m_workers) {
     SET_DBUG_CS_STACK_CLONE(worker, &dbug_cs_stack_clone);
-    if (!worker->Start()) {
-      if (all_start_error) all_start_error = false;
-      continue;
-    }
-
-    assert(worker->IsStartFailed());
-    // Let row exchange reader skip the worker by closing the queue
-    m_receiver_exchange.CloseChannel(widx);
-    if (!has_failed_worker) has_failed_worker = true;
+    if (worker->Start()) return true;
   }
-
-  if (all_start_error) return true;
-
-  if (has_failed_worker) thd->clear_error();
 
   return false;
 }
@@ -434,7 +407,9 @@ std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   if (!join || !join->partial_plan) return str;
 
   auto *partial_plan = join->partial_plan;
-  if (!partial_plan->IsParallelScanTable(table)) return str;
+  if (!partial_plan->HasParallelScan() ||
+      !partial_plan->IsParallelScanTable(table))
+    return str;
 
   auto &scaninfo = join->partial_plan->GetParallelScanInfo();
 
@@ -445,11 +420,10 @@ std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   return str;
 }
 
-std::string ExplainDeparsedPlan(PartialPlan *partial_plan) {
-  // For the union temporary scan, join is nullptr
-  std::string str;
-  if (partial_plan->DeparsePlan(current_thd)) return str;
-  return partial_plan->DeparsedStatement()->c_ptr();
+bool ExplainPartialPlan(PartialPlan *partial_plan,
+                        std::vector<std::string> *description,
+                        bool *hide_plan_tree) {
+  return partial_plan->ExplainPlan(description, hide_plan_tree);
 }
 
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector) {
@@ -666,8 +640,9 @@ bool PartialExecutor::PrepareQueryPlan(PartialExecutorContext *context) {
   thd->lex->set_current_query_block(query_block);
   thd->query_plan.set_query_plan(lex->sql_command, lex, false);
 
-  // Now attach tables' parallel scan
-  if (AttachTablesParallelScan()) return true;
+  // Now attach table parallel scan if it's available
+  if (m_query_plan->HasParallelScan() && AttachTablesParallelScan())
+    return true;
 
   return false;
 }

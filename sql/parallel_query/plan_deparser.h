@@ -31,16 +31,18 @@ class DeField {
 
 class PlanDeparser {
  public:
-  PlanDeparser(THD *thd, Query_block *query_block);
-  bool deparse(THD *thd);
+  PlanDeparser(Query_block *query_block);
+  THD *thd();
+  bool deparse();
+  bool IsDeparsed() { return m_statement.length() > 0; }
   String *statement() { return &m_statement; }
   bool CountAppended() const { return m_count_appended; }
   DeField *DeparseField(uint i) { return m_deparse_fields[i]; }
 
  private:
+  Query_block *m_query_block;
   mem_root_deque<DeField *> m_deparse_fields;
   bool m_count_appended{false};
-  Query_block *m_query_block;
   String m_statement;
 };
 }  // namespace pq

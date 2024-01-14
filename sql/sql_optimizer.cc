@@ -965,8 +965,8 @@ bool JOIN::optimize() {
   // fail:
   if (thd->is_error()) return true;
 
-  if (pq::GenerateParallelPlan(this)) return true;
-
+  if (thd->variables.tdsql_enable_parallel_query && pq::GenerateParallelPlan(this))
+    return true;
   // Make plan visible for EXPLAIN
   set_plan_state(PLAN_READY);
 

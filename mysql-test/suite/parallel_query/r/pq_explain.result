@@ -1,31 +1,145 @@
-### enable parallel query forcibly with maximum parallel degree = 4 and cost/records threshold = 0 ###
-CREATE TABLE t1 (a char(1));
-INSERT INTO t1 VALUES ('A'),('B'),('A'),('B'),('A'),('B'),(NULL),('a'),('b'),(NULL),('A'),('B'),(NULL);
+for master_1
+for child2
+child2_1
+child2_2
+child2_3
+for child3
+child3_1
+child3_2
+child3_3
+
+create databases
+create spider tables
+"Start to create spider tables"
+create table for child
+"create table on child2_1"
+CREATE TABLE t1(id int primary key auto_increment, a char(1)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+"create table on child2_2"
+CREATE TABLE t1(id int primary key auto_increment, a char(1)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+create table for master
+CREATE TABLE t1(id int primary key auto_increment, a char(1)) ENGINE=Spider DEFAULT CHARSET=utf8
+PARTITION BY LIST (id % 2)
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+    );
+"Create spider tables successfully."
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `a` char(1) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=SPIDER DEFAULT CHARSET=utf8mb3
+/*!50100 PARTITION BY LIST ((`id` % 2))
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"' ENGINE = SPIDER,
+ PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"' ENGINE = SPIDER) */
+INSERT INTO t1 (a) VALUES ('A'),('B'),('A'),('B'),('A'),('B'),(NULL),('a'),('b'),(NULL),('A'),('B'),(NULL);
 EXPLAIN ANALYZE SELECT a FROM t1 GROUP BY a;
 EXPLAIN
--> Table scan on <temporary>  (cost=0.20..2.66 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
-    -> Temporary table with deduplication  (cost=3.05..5.51 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
-        -> Gather (slice: 1, workers: 4)  (actual time=N.NNN..N.NNN rows=6 loops=1)
-            -> Table scan on <temporary>  (cost=0.20..2.66 rows=13) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
-                -> Temporary table with deduplication  (cost=3.05..5.51 rows=13) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
-                    -> Table scan on t1, with parallel scan ranges: 400  (cost=1.55 rows=13) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+-> Table scan on <temporary>  (cost=0.64..2.55 rows=4) (actual time=N.NNN..N.NNN rows=3 loops=1)
+    -> Temporary table with deduplication  (cost=2.44..4.35 rows=4) (actual time=N.NNN..N.NNN rows=3 loops=1)
+        -> Gather (slice: 1, workers: 2)  (actual time=N.NNN..N.NNN rows=6 loops=1)
+           Statement: select `t1`.`a` AS `a` from `t1` group by `t1`.`a`
+           Worker(1) (dataset = s_2_1) (actual time=N.NNN..N.NNN rows=3 loops=1)
+           Worker(2) (dataset = s_2_2) (actual time=N.NNN..N.NNN rows=3 loops=1)
 
-EXPLAIN ANALYZE SELECT /*+ parallel(1) */ a FROM t1 GROUP BY a;
+EXPLAIN ANALYZE SELECT a FROM t1 GROUP BY a;
 EXPLAIN
--> Table scan on <temporary>  (cost=0.20..2.66 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
-    -> Temporary table with deduplication  (cost=3.05..5.51 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
-        -> Gather (slice: 1, workers: 1)  (actual time=N.NNN..N.NNN rows=3 loops=1)
-            -> Table scan on <temporary>  (cost=0.20..2.66 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
-                -> Temporary table with deduplication  (cost=3.05..5.51 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
-                    -> Table scan on t1, with parallel scan ranges: 100  (cost=1.55 rows=13) (actual time=N.NNN..N.NNN rows=13 loops=1)
+-> Table scan on <temporary>  (cost=0.64..2.55 rows=4) (actual time=N.NNN..N.NNN rows=3 loops=1)
+    -> Temporary table with deduplication  (cost=2.44..4.35 rows=4) (actual time=N.NNN..N.NNN rows=3 loops=1)
+        -> Gather (slice: 1, workers: 2)  (actual time=N.NNN..N.NNN rows=6 loops=1)
+           Statement: select `t1`.`a` AS `a` from `t1` group by `t1`.`a`
+           Worker(1) (dataset = s_2_1) (actual time=N.NNN..N.NNN rows=3 loops=1)
+           Worker(2) (dataset = s_2_2) (actual time=N.NNN..N.NNN rows=3 loops=1)
+
+EXPLAIN ANALYZE SELECT count(*) FROM t1 GROUP BY a order by a;
+EXPLAIN
+-> Sort: t1.a  (actual time=N.NNN..N.NNN rows=3 loops=1)
+    -> Table scan on <temporary>  (actual time=N.NNN..N.NNN rows=3 loops=1)
+        -> Aggregate using temporary table  (actual time=N.NNN..N.NNN rows=3 loops=1)
+            -> Gather (slice: 1, workers: 2)  (actual time=N.NNN..N.NNN rows=6 loops=1)
+               Statement: select `t1`.`a` AS `a`,`t1`.`a` AS `a`,count(0) from `t1` group by `t1`.`a`
+               Worker(1) (dataset = s_2_1) (actual time=N.NNN..N.NNN rows=3 loops=1)
+               Worker(2) (dataset = s_2_2) (actual time=N.NNN..N.NNN rows=3 loops=1)
+
+EXPLAIN ANALYZE SELECT count(*) FROM t1 WHERE id > 5 GROUP BY a order by a;
+EXPLAIN
+-> Sort: t1.a  (actual time=N.NNN..N.NNN rows=3 loops=1)
+    -> Table scan on <temporary>  (actual time=N.NNN..N.NNN rows=3 loops=1)
+        -> Aggregate using temporary table  (actual time=N.NNN..N.NNN rows=3 loops=1)
+            -> Gather (slice: 1, workers: 2)  (actual time=N.NNN..N.NNN rows=6 loops=1)
+               Statement: select `t1`.`a` AS `a`,`t1`.`a` AS `a`,count(0) from `t1` where (`t1`.`id` > 5) group by `t1`.`a`
+               Worker(1) (dataset = s_2_1) (actual time=N.NNN..N.NNN rows=3 loops=1)
+               Worker(2) (dataset = s_2_2) (actual time=N.NNN..N.NNN rows=3 loops=1)
+
+EXPLAIN ANALYZE SELECT avg(id) FROM t1 WHERE id > 5 GROUP BY a order by a;
+EXPLAIN
+-> Sort: t1.a  (actual time=N.NNN..N.NNN rows=3 loops=1)
+    -> Table scan on <temporary>  (actual time=N.NNN..N.NNN rows=3 loops=1)
+        -> Aggregate using temporary table  (actual time=N.NNN..N.NNN rows=3 loops=1)
+            -> Gather (slice: 1, workers: 2)  (actual time=N.NNN..N.NNN rows=6 loops=1)
+               Statement: select `t1`.`a` AS `a`,`t1`.`a` AS `a`,sum(`t1`.`id`),count(`t1`.`id`) from `t1` where (`t1`.`id` > 5) group by `t1`.`a`
+               Worker(1) (dataset = s_2_1) (actual time=N.NNN..N.NNN rows=3 loops=1)
+               Worker(2) (dataset = s_2_2) (actual time=N.NNN..N.NNN rows=3 loops=1)
+
+EXPLAIN ANALYZE SELECT sum(id), count(id), avg(id) FROM t1 WHERE id > 5 GROUP BY a order by a;
+EXPLAIN
+-> Sort: t1.a  (actual time=N.NNN..N.NNN rows=3 loops=1)
+    -> Table scan on <temporary>  (actual time=N.NNN..N.NNN rows=3 loops=1)
+        -> Aggregate using temporary table  (actual time=N.NNN..N.NNN rows=3 loops=1)
+            -> Gather (slice: 1, workers: 2)  (actual time=N.NNN..N.NNN rows=6 loops=1)
+               Statement: select `t1`.`a` AS `a`,`t1`.`a` AS `a`,sum(`t1`.`id`) AS `id`,count(`t1`.`id`) AS `id`,sum(`t1`.`id`),count(`t1`.`id`) from `t1` where (`t1`.`id` > 5) group by `t1`.`a`
+               Worker(1) (dataset = s_2_1) (actual time=N.NNN..N.NNN rows=3 loops=1)
+               Worker(2) (dataset = s_2_2) (actual time=N.NNN..N.NNN rows=3 loops=1)
+
+EXPLAIN ANALYZE SELECT sum(id), count(id), avg(id) FROM t1 WHERE id > 5 GROUP BY a order by a LIMIT 1;
+EXPLAIN
+-> Limit: 1 row(s)  (actual time=N.NNN..N.NNN rows=1 loops=1)
+    -> Sort: t1.a, limit input to 1 row(s) per chunk  (actual time=N.NNN..N.NNN rows=1 loops=1)
+        -> Table scan on <temporary>  (actual time=N.NNN..N.NNN rows=3 loops=1)
+            -> Aggregate using temporary table  (actual time=N.NNN..N.NNN rows=3 loops=1)
+                -> Gather (slice: 1, workers: 2)  (actual time=N.NNN..N.NNN rows=6 loops=1)
+                   Statement: select `t1`.`a` AS `a`,`t1`.`a` AS `a`,sum(`t1`.`id`) AS `id`,count(`t1`.`id`) AS `id`,sum(`t1`.`id`),count(`t1`.`id`) from `t1` where (`t1`.`id` > 5) group by `t1`.`a`
+                   Worker(1) (dataset = s_2_1) (actual time=N.NNN..N.NNN rows=3 loops=1)
+                   Worker(2) (dataset = s_2_2) (actual time=N.NNN..N.NNN rows=3 loops=1)
 
 EXPLAIN format=tree SELECT * FROM t1 UNION SELECT * FROM t1;
 EXPLAIN
--> Table scan on <union temporary>  (cost=0.11..2.83 rows=26)
-    -> Union materialize with deduplication  (cost=5.81..8.53 rows=26)
-        -> Gather (slice: 1, workers: 4)  (cost=1.55 rows=13)
-            -> Table scan on t1, with parallel scan ranges: 400  (cost=1.55 rows=13)
-        -> Gather (slice: 1, workers: 4)  (cost=1.55 rows=13)
-            -> Table scan on t1, with parallel scan ranges: 400  (cost=1.55 rows=13)
+-> Table scan on <union temporary>  (cost=0.33..2.60 rows=8)
+    -> Union materialize with deduplication  (cost=3.92..6.20 rows=8)
+        -> Gather (slice: 1, workers: 2)  (cost=1.40 rows=4)
+           Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a` from `t1`
+           Execution datasets: s_2_1, s_2_2
+        -> Gather (slice: 1, workers: 2)  (cost=1.40 rows=4)
+           Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a` from `t1`
+           Execution datasets: s_2_1, s_2_2
 
-DROP TABLE t1;
+EXPLAIN ANALYZE SELECT * FROM t1 UNION SELECT * FROM t1;
+EXPLAIN
+-> Table scan on <union temporary>  (cost=0.33..2.60 rows=8) (actual time=N.NNN..N.NNN rows=13 loops=1)
+    -> Union materialize with deduplication  (cost=3.92..6.20 rows=8) (actual time=N.NNN..N.NNN rows=13 loops=1)
+        -> Gather (slice: 1, workers: 2)  (cost=1.40 rows=4) (actual time=N.NNN..N.NNN rows=13 loops=1)
+           Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a` from `t1`
+           Worker(1) (dataset = s_2_1) (actual time=N.NNN..N.NNN rows=6 loops=1)
+           Worker(2) (dataset = s_2_2) (actual time=N.NNN..N.NNN rows=7 loops=1)
+        -> Gather (slice: 1, workers: 2)  (cost=1.40 rows=4) (actual time=N.NNN..N.NNN rows=13 loops=1)
+           Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a` from `t1`
+           Worker(1) (dataset = s_2_1) (actual time=N.NNN..N.NNN rows=6 loops=1)
+           Worker(2) (dataset = s_2_2) (actual time=N.NNN..N.NNN rows=7 loops=1)
+
+"Start to drop spider tables"
+create table for child
+"drop table on child2_1"
+"drop table on child2_2"
+create table for master
+"drop table on master"
+"Drop spider tables successfully."
+for master_1
+for child2
+child2_1
+child2_2
+child2_3
+for child3
+child3_1
+child3_2
+child3_3

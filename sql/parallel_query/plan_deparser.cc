@@ -4,11 +4,14 @@
 #include "sql/item_sum.h"
 
 namespace pq {
-PlanDeparser::PlanDeparser(THD *thd, Query_block *query_block)
-    : m_deparse_fields(thd->mem_root), m_query_block(query_block) {}
+PlanDeparser::PlanDeparser(Query_block *query_block)
+    : m_query_block(query_block), m_deparse_fields(thd()->mem_root) {}
 
-bool PlanDeparser::deparse(THD *thd) {
+THD *PlanDeparser::thd() { return m_query_block->join->thd; }
+
+bool PlanDeparser::deparse() {
   auto *join = m_query_block->join;
+  THD *thd = join->thd;
   // transform fields, e.g. avg, min, max
   bool has_group_by = !join->group_list.empty();
 
@@ -51,6 +54,11 @@ bool PlanDeparser::deparse(THD *thd) {
           DeField::COUNT, nullptr, cur_item_index++, INVALID_FIELD_INDEX)))
     return true;
 
+  /*
+    Even for the explain analyze, it only needs to append "select" because it
+    only collects the analyze information of workers but not the details which
+    the worker executes in the data nodes.
+  */
   m_statement.append(STRING_WITH_LEN("select "));
   bool first = true;
   constexpr enum_query_type qt_deparse =

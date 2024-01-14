@@ -16,18 +16,24 @@
 extern MYSQL *SPIDER_CONN_get_mysql(SPIDER_CONN *spider_conn);
 extern int spider_db_query(SPIDER_CONN *conn, const char *query, uint length,
                            int quick_mode, int *need_mon);
+using namespace std;
 
 namespace pq {
 static constexpr uint spider_non_shardid = UINT_MAX;
 
 SPIDER_CONN *GetSpiderConn(THD *thd, TABLE *table, uint shardid) {
+  /*
+    For the noshardkey or shardkey with all sets, get the connection to the
+    first set.
+    TODO:
+      In the future, it can get the connection to the other set in order to
+    load balance or to insert/update/delete.
+  */
+  auto *file = table->file;
   SPIDER_CONN *spider_conn =
       shardid == spider_non_shardid
-          ? down_cast<ha_spider *>(table->file)->spider_get_conn_by_idx(0)
-          : down_cast<ha_spiderpart *>(table->file)
-                ->get_spider_conn_for_part(shardid);
-
-  if (!spider_conn) return spider_conn;
+          ? down_cast<ha_spider *>(file)->get_spider_conn_for_pq(0)
+          : down_cast<ha_spiderpart *>(file)->get_spider_conn_for_pq(shardid);
 
   spider_conn->thd = thd;
   spider_mta_conn_mutex_unlock(spider_conn);
@@ -35,36 +41,15 @@ SPIDER_CONN *GetSpiderConn(THD *thd, TABLE *table, uint shardid) {
   return spider_conn;
 }
 
-static bool conn_choose_by_part_info(TABLE *table) {
-  auto table_type = table->s->tdsql_table_type;
-  return table_type != tdsql::ddl::TD_NOSHARD_TABLE &&
-         table_type != tdsql::ddl::TD_ALLSET_TABLE;
+std::string GetSpiderNodeKey(TABLE *table, uint shardid) {
+  auto *file = table->file;
+  return shardid == spider_non_shardid
+             ? down_cast<ha_spider *>(file)->get_spider_conn_hashkey(0)
+             : down_cast<ha_spiderpart *>(file)->get_spider_conn_hashkey(
+                   shardid);
 }
 
-bool MySQLClientSpider::connect(THD *thd) {
-  uint part_id;
-  // For the spider table without shardkey or with all set, it only needs to
-  // get the connection to the first set. For the spider table with
-  // shardkey, there is one more partitions.
-  if (conn_choose_by_part_info(m_spider_table)) {
-    auto *part_info = m_spider_table->part_info;
-    part_id = part_info->get_first_used_partition();
-    uint part_index = m_part_index;
-    while (part_index-- > 0) {
-      part_id = part_info->get_next_used_partition(part_id);
-    }
-  } else
-    part_id = spider_non_shardid;
-
-  auto *spider_conn = GetSpiderConn(thd, m_spider_table, part_id);
-  if (!spider_conn) {
-    my_error(ER_CONNECT_TO_FOREIGN_DATA_SOURCE, MYF(0),
-             "Fail to get SPIDER_CONN");
-    return true;
-  }
-
-  m_spider_conn = spider_conn;
-
+bool MySQLClientSpider::connect(THD *) {
   m_mysql = SPIDER_CONN_get_mysql(m_spider_conn);
 
   assert(m_mysql);

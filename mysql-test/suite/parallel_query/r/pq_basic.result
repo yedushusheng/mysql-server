@@ -1,60 +1,95 @@
-### enable parallel query forcibly with maximum parallel degree = 4 and cost/records threshold = 0 ###
-CREATE TABLE t1(a int, b int, c int);
-INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
+for master_1
+for child2
+child2_1
+child2_2
+child2_3
+for child3
+child3_1
+child3_2
+child3_3
+
+create databases
+create spider tables
+"Start to create spider tables"
+create table for child
+"create table on child2_1"
+CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+"create table on child2_2"
+CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+create table for master
+CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int) ENGINE=Spider DEFAULT CHARSET=utf8
+PARTITION BY LIST (id % 2)
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+    );
+"Create spider tables successfully."
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `a` int DEFAULT NULL,
+  `b` int DEFAULT NULL,
+  `c` int DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=SPIDER DEFAULT CHARSET=utf8mb3
+/*!50100 PARTITION BY LIST ((`id` % 2))
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"' ENGINE = SPIDER,
+ PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"' ENGINE = SPIDER) */
+INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 ###
 ### some basic queries
 ###
 EXPLAIN format=tree SELECT * FROM t1;
 EXPLAIN
--> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
-    -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a`,`t1`.`b` AS `b`,`t1`.`c` AS `c` from `t1`
+   Execution datasets: s_2_1, s_2_2
 
 SELECT * FROM t1;
-a	b	c
-1	1	1
-1	1	1
-2	2	2
-2	2	2
-3	3	3
-3	3	3
-4	4	4
-4	4	4
-5	5	5
-5	5	5
+id	a	b	c
+1	1	1	1
+10	5	5	5
+2	2	2	2
+3	3	3	3
+4	4	4	4
+5	5	5	5
+6	1	1	1
+7	2	2	2
+8	3	3	3
+9	4	4	4
 EXPLAIN format=tree SELECT * FROM t1 where a > 1;
 EXPLAIN
--> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
-    -> Filter: (t1.a > 1)  (cost=N.NNN rows=NNN)
-        -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`id` AS `id`,`t1`.`a` AS `a`,`t1`.`b` AS `b`,`t1`.`c` AS `c` from `t1` where (`t1`.`a` > 1)
+   Execution datasets: s_2_1, s_2_2
 
 SELECT * FROM t1 where a > 1;
-a	b	c
-2	2	2
-2	2	2
-3	3	3
-3	3	3
-4	4	4
-4	4	4
-5	5	5
-5	5	5
+id	a	b	c
+10	5	5	5
+2	2	2	2
+3	3	3	3
+4	4	4	4
+5	5	5	5
+7	2	2	2
+8	3	3	3
+9	4	4	4
 EXPLAIN format=tree SELECT sum(a) FROM t1;
 EXPLAIN
 -> Aggregate: sum(a)  (cost=N.NNN rows=NNN)
-    -> Gather (slice: 1, workers: 4)
-        -> Aggregate: sum(t1.a)  (cost=N.NNN rows=NNN)
-            -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+    -> Gather (slice: 1, workers: 2)
+       Statement: select sum(`t1`.`a`) AS `a`,count(0) from `t1`
+       Execution datasets: s_2_1, s_2_2
 
 SELECT sum(a) FROM t1;
 sum(a)
 30
 EXPLAIN format=tree SELECT a FROM t1 GROUP BY a;
 EXPLAIN
--> Table scan on <temporary>  (cost=0.26..2.62 rows=10)
-    -> Temporary table with deduplication  (cost=2.51..4.88 rows=10)
-        -> Gather (slice: 1, workers: 4)
-            -> Table scan on <temporary>  (cost=0.26..2.62 rows=10)
-                -> Temporary table with deduplication  (cost=2.51..4.88 rows=10)
-                    -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+-> Table scan on <temporary>  (cost=0.64..2.55 rows=4)
+    -> Temporary table with deduplication  (cost=2.44..4.35 rows=4)
+        -> Gather (slice: 1, workers: 2)
+           Statement: select `t1`.`a` AS `a` from `t1` group by `t1`.`a`
+           Execution datasets: s_2_1, s_2_2
 
 SELECT a FROM t1 GROUP BY a;
 a
@@ -67,10 +102,9 @@ EXPLAIN format=tree SELECT sum(b) FROM t1 GROUP BY a;
 EXPLAIN
 -> Table scan on <temporary>
     -> Aggregate using temporary table
-        -> Gather (slice: 1, workers: 4)
-            -> Table scan on <temporary>
-                -> Aggregate using temporary table
-                    -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+        -> Gather (slice: 1, workers: 2)
+           Statement: select `t1`.`a` AS `a`,sum(`t1`.`b`) AS `b` from `t1` group by `t1`.`a`
+           Execution datasets: s_2_1, s_2_2
 
 SELECT sum(b) FROM t1 GROUP BY a;
 sum(b)
@@ -83,10 +117,9 @@ EXPLAIN format=tree SELECT a, sum(b) FROM t1 GROUP BY a;
 EXPLAIN
 -> Table scan on <temporary>
     -> Aggregate using temporary table
-        -> Gather (slice: 1, workers: 4)
-            -> Table scan on <temporary>
-                -> Aggregate using temporary table
-                    -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+        -> Gather (slice: 1, workers: 2)
+           Statement: select `t1`.`a` AS `a`,sum(`t1`.`b`) AS `b` from `t1` group by `t1`.`a`
+           Execution datasets: s_2_1, s_2_2
 
 SELECT a, sum(b) FROM t1 GROUP BY a;
 a	sum(b)
@@ -100,10 +133,9 @@ EXPLAIN
 -> Sort: `sum(b)`
     -> Table scan on <temporary>
         -> Aggregate using temporary table
-            -> Gather (slice: 1, workers: 4)
-                -> Table scan on <temporary>
-                    -> Aggregate using temporary table
-                        -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+            -> Gather (slice: 1, workers: 2)
+               Statement: select `t1`.`a` AS `a`,sum(`t1`.`b`) AS `b` from `t1` group by `t1`.`a`
+               Execution datasets: s_2_1, s_2_2
 
 SELECT a, sum(b) FROM t1 GROUP BY a order by 2;
 a	sum(b)
@@ -117,10 +149,9 @@ EXPLAIN
 -> Sort: (sum(b) + 1)
     -> Table scan on <temporary>
         -> Aggregate using temporary table
-            -> Gather (slice: 1, workers: 4)
-                -> Table scan on <temporary>
-                    -> Aggregate using temporary table
-                        -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+            -> Gather (slice: 1, workers: 2)
+               Statement: select sum(`t1`.`b`) AS `b`,`t1`.`a` AS `a` from `t1` group by `t1`.`a`
+               Execution datasets: s_2_1, s_2_2
 
 SELECT a, sum(b) + 1 FROM t1 GROUP BY a order by 2;
 a	sum(b) + 1
@@ -136,31 +167,12 @@ a	sum(b) + 1
 EXPLAIN format=tree SELECT SQL_BIG_RESULT a FROM t1 GROUP BY a;
 EXPLAIN
 -> Group (no aggregates)  (cost=N.NNN rows=NNN)
-    -> Gather (slice: 1, workers: 4) with merge sort: t1.a
-        -> Group (no aggregates)  (cost=N.NNN rows=NNN)
-            -> Sort: t1.a  (cost=N.NNN rows=NNN)
-                -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+    -> Gather (slice: 1, workers: 2)
+       Merge sort: t1.a
+       Statement: select `t1`.`a` AS `a` from `t1` group by `t1`.`a` order by `t1`.`a`
+       Execution datasets: s_2_1, s_2_2
 
 SELECT SQL_BIG_RESULT a FROM t1 GROUP BY a;
-a
-1
-2
-3
-4
-5
-### stream access path ###
-EXPLAIN format=tree SELECT DISTINCT SQL_BIG_RESULT a FROM t1 GROUP BY a,b ORDER BY a DESC;
-EXPLAIN
--> Sort: t1.a DESC, t1.b
-    -> Sort with duplicate removal: t1.a DESC
-        -> Stream results  (cost=N.NNN rows=NNN)
-            -> Group (no aggregates)  (cost=N.NNN rows=NNN)
-                -> Gather (slice: 1, workers: 4) with merge sort: t1.a DESC, t1.b
-                    -> Group (no aggregates)  (cost=N.NNN rows=NNN)
-                        -> Sort: t1.a DESC, t1.b  (cost=N.NNN rows=NNN)
-                            -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
-
-SELECT DISTINCT SQL_BIG_RESULT a FROM t1 GROUP BY a,b ORDER BY a DESC;
 a
 1
 2
@@ -174,75 +186,43 @@ EXPLAIN
     -> Temporary table with deduplication  (cost=2.50..2.50 rows=0)
         -> Table scan on <temporary>
             -> Aggregate using temporary table
-                -> Gather (slice: 1, workers: 4)
-                    -> Table scan on <temporary>
-                        -> Aggregate using temporary table
-                            -> Filter: (t1.b > 1)  (cost=N.NNN rows=NNN)
-                                -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+                -> Gather (slice: 1, workers: 2)
+                   Statement: select `t1`.`a` AS `a`,count(`t1`.`b`) AS `b` from `t1` where (`t1`.`b` > 1) group by `t1`.`a`
+                   Execution datasets: s_2_1, s_2_2
 
 SELECT DISTINCT (COUNT(b) + 1) AS c FROM t1 WHERE b > 1 GROUP BY a;
 c
 3
-### offset limit ###
-EXPLAIN format=tree SELECT * FROM t1 LIMIT 2 OFFSET 1;
-EXPLAIN
--> Limit/Offset: 2/1 row(s)  (cost=N.NNN rows=NNN)
-    -> Gather (slice: 1, workers: 4)
-        -> Limit: 3 row(s)  (cost=N.NNN rows=NNN)
-            -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
-
-include/assert.inc [result value must be in table]
-EXPLAIN format=tree SELECT * FROM t1 ORDER BY a LIMIT 2 OFFSET 1;
-EXPLAIN
--> Limit/Offset: 2/1 row(s)  (cost=N.NNN rows=NNN)
-    -> Gather (slice: 1, workers: 4) with merge sort: t1.a
-        -> Limit: 3 row(s)  (cost=N.NNN rows=NNN)
-            -> Sort: t1.a, limit input to 3 row(s) per chunk  (cost=N.NNN rows=NNN)
-                -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
-
-SELECT * FROM t1 ORDER BY a LIMIT 2 OFFSET 1;
-a	b	c
-1	1	1
-2	2	2
-### having ###
-EXPLAIN format=tree SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5;
-EXPLAIN
--> Filter: (sum(b) > 5)
-    -> Table scan on <temporary>
-        -> Aggregate using temporary table
-            -> Gather (slice: 1, workers: 4)
-                -> Table scan on <temporary>
-                    -> Aggregate using temporary table
-                        -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
-
-SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5;
-sum(b)
-10
-6
-8
-EXPLAIN format=tree SELECT sum(b) as sumb FROM t1 GROUP BY a HAVING sum(b) > 5 LIMIT 1 OFFSET 2;
-EXPLAIN
--> Limit/Offset: 1/2 row(s)
-    -> Filter: (sum(b) > 5)
-        -> Table scan on <temporary>
-            -> Aggregate using temporary table
-                -> Gather (slice: 1, workers: 4)
-                    -> Table scan on <temporary>
-                        -> Aggregate using temporary table
-                            -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
-
-include/assert.inc [value must be in query result]
-DROP TABLE t1;
+"Start to drop spider tables"
+create table for child
+"drop table on child2_1"
+"drop table on child2_2"
+create table for master
+"drop table on master"
+"Drop spider tables successfully."
 ###
 ### bottom access path type coverage
 ###
 ### index scan ###
-CREATE TABLE t1(a int, b int, c int, index(b));
-INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
+"Start to create spider tables"
+create table for child
+"create table on child2_1"
+CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int, index(b)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+"create table on child2_2"
+CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int, index(b)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+create table for master
+CREATE TABLE t1(id int primary key auto_increment, a int, b int, c int, index(b)) ENGINE=Spider DEFAULT CHARSET=utf8
+PARTITION BY LIST (id % 2)
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+    );
+"Create spider tables successfully."
+INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 EXPLAIN format=tree SELECT b FROM t1;
 EXPLAIN
--> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
-    -> Index scan on t1 using b, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`b` AS `b` from `t1`
+   Execution datasets: s_2_1, s_2_2
 
 SELECT b FROM t1;
 b
@@ -256,61 +236,12 @@ b
 4
 5
 5
-EXPLAIN format=tree SELECT b FROM t1 LIMIT 4;
-EXPLAIN
--> Limit: 4 row(s)  (cost=N.NNN rows=NNN)
-    -> Gather (slice: 1, workers: 4)
-        -> Limit: 4 row(s)  (cost=N.NNN rows=NNN)
-            -> Index scan on t1 using b, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
-
-include/assert.inc [result value must be in table]
-EXPLAIN format=tree SELECT b FROM t1 ORDER BY b LIMIT 4;
-EXPLAIN
--> Limit: 4 row(s)  (cost=N.NNN rows=NNN)
-    -> Gather (slice: 1, workers: 4) with merge sort: t1.b
-        -> Limit: 4 row(s)  (cost=N.NNN rows=NNN)
-            -> Index scan on t1 using b, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
-
-SELECT b FROM t1 ORDER BY b LIMIT 4;
-b
-1
-1
-2
-2
-EXPLAIN format=tree SELECT b FROM t1 GROUP BY b LIMIT 4;
-EXPLAIN
--> Limit: 4 row(s)  (cost=N.NNN rows=NNN)
-    -> Gather (slice: 1, workers: 4) with merge sort: t1.b
-        -> Limit: 4 row(s)  (cost=N.NNN rows=NNN)
-            -> Index range scan on t1 using index_for_group_by(b), with parallel scan ranges: 400, prefix: 1  (cost=N.NNN rows=NNN)
-
-SELECT b FROM t1 GROUP BY b LIMIT 4;
-b
-1
-2
-3
-4
-EXPLAIN format=tree SELECT count(a), b FROM t1 GROUP BY b ORDER BY 2,1 LIMIT 4;
-EXPLAIN
--> Limit: 4 row(s)
-    -> Sort: t1.b, `count(a)`, limit input to 4 row(s) per chunk
-        -> Stream results  (cost=N.NNN rows=NNN)
-            -> Group aggregate: count(a)  (cost=N.NNN rows=NNN)
-                -> Gather (slice: 1, workers: 4) with merge sort: t1.b
-                    -> Group aggregate: count(t1.a)  (cost=N.NNN rows=NNN)
-                        -> Index scan on t1 using b, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
-
-SELECT count(a), b FROM t1 GROUP BY b ORDER BY 2,1 LIMIT 4;
-count(a)	b
-2	1
-2	2
-2	3
-2	4
 ### range index scan ###
 EXPLAIN format=tree SELECT a FROM t1 WHERE b BETWEEN 2 AND 5;
 EXPLAIN
--> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
-    -> Index range scan on t1 using b, with index condition: (t1.b between 2 and 5), with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`a` AS `a` from `t1` where (`t1`.`b` between 2 and 5)
+   Execution datasets: s_2_1, s_2_2
 
 SELECT a FROM t1 WHERE b BETWEEN 2 AND 5;
 a
@@ -325,8 +256,9 @@ a
 ### ref scan ###
 EXPLAIN format=tree SELECT a FROM t1 WHERE b = 2;
 EXPLAIN
--> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
-    -> Index lookup on t1 using b (b=2), with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`a` AS `a` from `t1` where (`t1`.`b` = 2)
+   Execution datasets: s_2_1, s_2_2
 
 SELECT a FROM t1 WHERE b = 2;
 a
@@ -335,75 +267,123 @@ a
 ### ref or null scan ###
 EXPLAIN format=tree SELECT a FROM t1 WHERE b = 2 or b is NULL;
 EXPLAIN
--> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
-    -> Index lookup on t1 using b (b=2 or NULL), with index condition: ((t1.b = 2) or (t1.b is null)), with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`a` AS `a` from `t1` where ((`t1`.`b` = 2) or (`t1`.`b` is null))
+   Execution datasets: s_2_1, s_2_2
 
 SELECT a FROM t1 WHERE b = 2 or b is NULL;
 a
 2
 2
-DROP TABLE t1;
+"Start to drop spider tables"
+create table for child
+"drop table on child2_1"
+"drop table on child2_2"
+create table for master
+"drop table on master"
+"Drop spider tables successfully."
+"Start to create spider tables"
+create table for child
+"create table on child2_1"
+CREATE TABLE t1(c1 int primary key, c2 char(10)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+"create table on child2_2"
+CREATE TABLE t1(c1 int primary key, c2 char(10)) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+create table for master
+CREATE TABLE t1(c1 int primary key, c2 char(10)) ENGINE=Spider DEFAULT CHARSET=utf8
+PARTITION BY LIST (c1 % 2)
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "c1"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "c1"'
+    );
+"Create spider tables successfully."
+insert into t1 (c1, c2) values(1, 'sss'), (3, 'sss'), (4, 'rrr'), (6, 'rrr');
+EXPLAIN format=tree SELECT sum(c1), count(c1), avg(c1), c2 FROM t1 GROUP BY c2 order by c2;;
+EXPLAIN
+-> Sort: t1.c2
+    -> Table scan on <temporary>
+        -> Aggregate using temporary table
+            -> Gather (slice: 1, workers: 2)
+               Statement: select sum(`t1`.`c1`) AS `c1`,count(`t1`.`c1`) AS `c1`,sum(`t1`.`c1`),count(`t1`.`c1`),`t1`.`c2` AS `c2` from `t1` group by `t1`.`c2`
+               Execution datasets: s_2_1, s_2_2
+
+SELECT sum(c1), count(c1), avg(c1), c2 FROM t1 GROUP BY c2 order by c2;;
+sum(c1)	count(c1)	avg(c1)	c2
+10	2	5.0000	rrr
+4	2	2.0000	sss
+"Start to drop spider tables"
+create table for child
+"drop table on child2_1"
+"drop table on child2_2"
+create table for master
+"drop table on master"
+"Drop spider tables successfully."
 ### group min max scan ###
-CREATE TABLE t1 (
-a1 CHAR(64), a2 CHAR(64), b CHAR(16), c CHAR(16) not null, d CHAR(16), dummy CHAR(248) default ' '
-) charset latin1;
+"Start to create spider tables"
+create table for child
+"create table on child2_1"
+CREATE TABLE t1 (id int primary key auto_increment, a1 CHAR(64), a2 CHAR(64),
+b CHAR(16), c CHAR(16) not null, d CHAR(16),
+dummy CHAR(248) default ' ') ENGINE=InnoDB DEFAULT CHARSET=utf8;
+"create table on child2_2"
+CREATE TABLE t1 (id int primary key auto_increment, a1 CHAR(64), a2 CHAR(64),
+b CHAR(16), c CHAR(16) not null, d CHAR(16),
+dummy CHAR(248) default ' ') ENGINE=InnoDB DEFAULT CHARSET=utf8;
+create table for master
+CREATE TABLE t1 (id int primary key auto_increment, a1 CHAR(64), a2 CHAR(64),
+b CHAR(16), c CHAR(16) not null, d CHAR(16),
+dummy CHAR(248) default ' ') ENGINE=Spider DEFAULT CHARSET=utf8
+PARTITION BY LIST (id % 2)
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+    );
+"Create spider tables successfully."
 INSERT INTO t1 (a1, a2, b, c, d) VALUES
 ('a','a','a','a111','xy1'),('a','a','a','b111','xy2'),('a','a','a','c111','xy3'),('a','a','a','d111','xy4'),
 ('a','a','b','e112','xy1'),('a','a','b','f112','xy2'),('a','a','b','g112','xy3'),('a','a','b','h112','xy4');
+create index for child
+"sql: CREATE INDEX idx_t1_0 ON t1 (a1)"
 CREATE INDEX idx_t1_0 ON t1 (a1);
+CREATE INDEX idx_t1_0 ON t1 (a1);
+create table for master
+CREATE INDEX idx_t1_0 ON t1 (a1);
+"Create index for the spider tables successfully."
+create index for child
+"sql: CREATE INDEX idx_t1_1 ON t1 (a1,a2,b,c)"
 CREATE INDEX idx_t1_1 ON t1 (a1,a2,b,c);
+CREATE INDEX idx_t1_1 ON t1 (a1,a2,b,c);
+create table for master
+CREATE INDEX idx_t1_1 ON t1 (a1,a2,b,c);
+"Create index for the spider tables successfully."
+create index for child
+"sql: CREATE INDEX idx_t1_2 ON t1 (a1,a2,b)"
 CREATE INDEX idx_t1_2 ON t1 (a1,a2,b);
+CREATE INDEX idx_t1_2 ON t1 (a1,a2,b);
+create table for master
+CREATE INDEX idx_t1_2 ON t1 (a1,a2,b);
+"Create index for the spider tables successfully."
 EXPLAIN format=tree SELECT a1, MIN(a2),MAX(a2) FROM t1 GROUP BY a1;
 EXPLAIN
--> Gather (slice: 1, workers: 4) with merge sort: t1.a1  (cost=N.NNN rows=NNN)
-    -> Index range scan on t1 using index_for_group_by(idx_t1_1), with parallel scan ranges: 400, prefix: 1  (cost=N.NNN rows=NNN)
+-> Group aggregate: min(a2), max(a2)  (cost=N.NNN rows=NNN)
+    -> Gather (slice: 1, workers: 2)
+       Merge sort: t1.a1
+       Statement: select `t1`.`a1` AS `a1`,min(`t1`.`a2`) AS `a2`,max(`t1`.`a2`) AS `a2` from `t1` group by `t1`.`a1`
+       Execution datasets: s_2_1, s_2_2
 
 SELECT a1, MIN(a2),MAX(a2) FROM t1 GROUP BY a1;
 a1	MIN(a2)	MAX(a2)
 a	a	a
-DROP TABLE t1;
-### index skip scan ###
-CREATE TABLE t1(a INT, b INT, c INT, d INT, PRIMARY KEY(a, b, c, d), KEY(b, d));
-INSERT INTO t1 VALUES(1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5),(1,1,1,6),(2,2,2,6),(3,3,3,6),(4,4,4,6),(5,5,5,6);
-EXPLAIN format=tree SELECT /*+ SKIP_SCAN(t1) */ a, b, c, d FROM t1 WHERE a IN (1, 2, 3, 4, 5) AND b IN (1, 2, 3) AND d >= 4;
-EXPLAIN
--> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
-    -> Filter: ((t1.a in (1,2,3,4,5)) and (t1.b in (1,2,3)) and (t1.d >= 4))  (cost=N.NNN rows=NNN)
-        -> Index range scan on t1 using index_for_skip_scan(PRIMARY), with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
-
-SELECT /*+ SKIP_SCAN(t1) */ a, b, c, d FROM t1 WHERE a IN (1, 2, 3, 4, 5) AND b IN (1, 2, 3) AND d >= 4;
-a	b	c	d
-1	1	1	6
-2	2	2	6
-3	3	3	6
-DROP TABLE t1;
-### BLOB type ###
-CREATE TABLE t1(a INT, b TEXT, c TEXT, d TEXT);
-insert into t1 values (1, 'MySQL1', 'Ten1', '3cent');
-insert into t1 values (2, 'MySQL2', 'Ten2', '4cent');
-insert into t1 values (1, 'MySQLa', 'Tenx', 'ycent');
-insert into t1 values (2, 'MySQLa', 'Tenx', 'zcent');
-EXPLAIN format=tree SELECT c, d FROM t1;
-EXPLAIN
--> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
-    -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
-
-SELECT c, d FROM t1;
-c	d
-Ten1	3cent
-Ten2	4cent
-Tenx	ycent
-Tenx	zcent
-EXPLAIN format=tree SELECT d FROM t1 ORDER BY b, c, d DESC;
-EXPLAIN
--> Gather (slice: 1, workers: 4) with merge sort: t1.b, t1.c, t1.d DESC  (cost=N.NNN rows=NNN)
-    -> Sort: t1.b, t1.c, t1.d DESC  (cost=N.NNN rows=NNN)
-        -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
-
-SELECT d FROM t1 ORDER BY b, c, d DESC;
-d
-3cent
-4cent
-ycent
-zcent
-DROP TABLE t1;
+"Start to drop spider tables"
+create table for child
+"drop table on child2_1"
+"drop table on child2_2"
+create table for master
+"drop table on master"
+"Drop spider tables successfully."
+for master_1
+for child2
+child2_1
+child2_2
+child2_3
+for child3
+child3_1
+child3_2
+child3_3

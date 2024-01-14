@@ -8,6 +8,9 @@ class THD;
 class TABLE;
 class String;
 
+class st_spider_conn;
+typedef st_spider_conn SPIDER_CONN;
+
 namespace pq {
 namespace comm {
 class Event;
@@ -29,6 +32,7 @@ class MySQLClient {
     m_row = nullptr;
     return row;
   }
+  MYSQL_ROW row() { return m_row; }
   bool has_row() { return m_row != nullptr; }
   void reset_row() { m_row = nullptr; }
   MYSQL_RES *result() { return m_result; }
@@ -46,6 +50,13 @@ class MySQLClient {
 class MySQLClientSync : public MySQLClient {
  public:
   ~MySQLClientSync();
+  bool init();
+  int set_options(enum mysql_option option, const void *arg) {
+    return mysql_options(m_mysql, option, arg);
+  }
+  bool real_connect(const char *host, const char *user, const char *passwd,
+                    const char *db, uint port, const char *unix_socket,
+                    ulong client_flag);
   bool connect(THD *thd) override;
   bool send_query(const char *query, ulong length,
                   bool *send_complete) override;
@@ -88,7 +99,7 @@ class MySQLClientQueryExec {
   enum class Stage { None, Connected, QuerySending, RowReading, Done };
   MySQLClientQueryExec(PlanDeparser *deparser, TABLE *collector_table);
   ~MySQLClientQueryExec();
-  bool Init(THD *thd, TABLE *parallel_table, uint worker_id);
+  bool Init(THD *thd, SPIDER_CONN *spider_conn);
   bool ExecuteQuery();
   /// *nbytesp == 0 means rows read out, *datap = nullptr means WOULD_BLOCK.
   bool ReadNextRow(std::size_t *nbytesp, void **datap, bool nowait);

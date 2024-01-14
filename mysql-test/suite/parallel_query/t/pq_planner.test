@@ -318,10 +318,10 @@ INSERT INTO City VALUES('New York', 'USA', 1200 * 1000 * 1000);
 
 --echo # Not support semijoin materialization lookup
 --let $query = select /*+ semijoin(@q1 materialization) */ * from Country where Country.code IN (select /*+ qb_name(q1) */ City.Country from City where City.Population > 7*1000*1000) and Country.continent='Asia'
---source suite/parallel_query/include/explain_and_run.inc
+--source ../include/explain_and_run.inc
 --echo # Not support semijoin materialization scan
 --let $query = select /*+ semijoin(@q1 materialization) JOIN_SUFFIX(Country) */ * from Country where Country.code IN (select /*+ qb_name(q1) */ City.Country from City where City.Population > 7*1000*1000) and Country.continent='Asia'
---source suite/parallel_query/include/explain_and_run.inc
+--source ../include/explain_and_run.inc
 
 --echo # Not support parallel loose scan
 EXPLAIN FORMAT=tree select * from Country where Country.code in (select country_code from Satellite);

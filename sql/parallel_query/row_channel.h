@@ -1,5 +1,6 @@
 #ifndef PARALLEL_QUERY_ROW_CHANNEL_H
 #define PARALLEL_QUERY_ROW_CHANNEL_H
+#include <string>
 #include "sql/parallel_query/comm_types.h"
 class MEM_ROOT;
 
@@ -22,6 +23,8 @@ class RowChannel {
   // Call this function to send EOF after all rows are sent out.
   virtual void Close() = 0;
   virtual bool IsClosed() const = 0;
+
+  virtual std::string TimingString() const { return {}; }
 };
 
 RowChannel *CreateMemRowChannel(MEM_ROOT *mem_root, RowChannel *peer);

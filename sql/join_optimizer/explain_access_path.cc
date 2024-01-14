@@ -523,8 +523,11 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
       string ret(buff);
       Filesort *merge_sort = collector->MergeSort();
 
+      description.push_back(move(ret));
+
       if (merge_sort) {
-        ret += " with merge sort: ";
+        string str;
+        str += "Merge sort: ";
 
         bool first = true;
         for (unsigned i = 0; i < merge_sort->sort_order_length();
@@ -532,20 +535,25 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
           if (first) {
             first = false;
           } else {
-            ret += ", ";
+            str += ", ";
           }
 
           const st_sort_field *order = &merge_sort->sortorder[i];
-          ret += ItemToString(order->item);
+          str += ItemToString(order->item);
           if (order->reverse) {
-            ret += " DESC";
+            str += " DESC";
           }
         }
+        description.push_back(move(str));
       }
-      ret += ", statement: ";
-      ret += pq::ExplainDeparsedPlan(collector->partial_plan());
-      description.push_back(move(ret));
-      children.push_back({collector->PartialRootAccessPath()});
+
+      bool hide_partial_tree = false;
+      pq::ExplainPartialPlan(collector->partial_plan(), &description,
+                             &hide_partial_tree);
+
+      if (!hide_partial_tree)
+        children.push_back({collector->PartialRootAccessPath()});
+
       break;
     }
     case AccessPath::TABLE_VALUE_CONSTRUCTOR:

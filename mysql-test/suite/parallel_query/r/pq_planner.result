@@ -25,9 +25,9 @@ PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2
 INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 EXPLAIN format=tree SELECT a FROM t1 HAVING a = 1;
 EXPLAIN
--> Gather (slice: 1, workers: 2), statement: select `t1`.`a` AS `a` from `t1` where (`t1`.`a` = 1)  (cost=N.NNN rows=NNN)
-    -> Filter: (t1.a = 1)  (cost=N.NNN rows=NNN)
-        -> Table scan on t1, with parallel scan ranges: 2  (cost=N.NNN rows=NNN)
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN)
+   Statement: select `t1`.`a` AS `a` from `t1` where (`t1`.`a` = 1)
+   Execution datasets: s_2_1, s_2_2
 
 SELECT a FROM t1 HAVING a = 1;
 a
@@ -95,9 +95,9 @@ INSERT INTO t1 VALUES(1),(2);
 EXPLAIN format=tree SELECT max(a), max(concat("*", a, "*")) FROM t1;;
 EXPLAIN
 -> Aggregate: max(`max(concat('*',t1.a,'*'))`)  (cost=N.NNN rows=NNN)
-    -> Gather (slice: 1, workers: 2), statement: select max(`t1`.`a`) AS `a`,max(concat('*',`t1`.`a`,'*')),count(0) from `t1`
-        -> Aggregate: max(concat('*',t1.a,'*'))  (cost=N.NNN rows=NNN)
-            -> Index scan on t1 using PRIMARY, with parallel scan ranges: 2  (cost=N.NNN rows=NNN)
+    -> Gather (slice: 1, workers: 2)
+       Statement: select max(`t1`.`a`) AS `a`,max(concat('*',`t1`.`a`,'*')),count(0) from `t1`
+       Execution datasets: s_2_1, s_2_2
 
 SELECT max(a), max(concat("*", a, "*")) FROM t1;;
 max(a)	max(concat("*", a, "*"))
@@ -135,11 +135,9 @@ INSERT INTO t (a) VALUES(0xFF00F0F0), (NULL), (0xF0F0FF00);
 EXPLAIN format=tree SELECT SQL_BUFFER_RESULT HEX(BIT_AND(a)), HEX(BIT_OR(a)), HEX(BIT_XOR(a)) FROM t;
 EXPLAIN
 -> Aggregate: bit_xor(a), bit_or(a), bit_and(a)  (cost=2.54..4.75 rows=4)
-    -> Gather (slice: 1, workers: 2), statement: select bit_xor(`t`.`a`) AS `a`,bit_or(`t`.`a`) AS `a`,bit_and(`t`.`a`) AS `a`,count(0) from `t`
-        -> Aggregate: bit_xor(t.a), bit_or(t.a), bit_and(t.a)  (cost=2.54..4.75 rows=4)
-            -> Table scan on <temporary>  (cost=0.64..2.55 rows=4)
-                -> Temporary table  (cost=2.44..4.35 rows=4)
-                    -> Table scan on t, with parallel scan ranges: 2  (cost=N.NNN rows=NNN)
+    -> Gather (slice: 1, workers: 2)
+       Statement: select bit_xor(`t`.`a`) AS `a`,bit_or(`t`.`a`) AS `a`,bit_and(`t`.`a`) AS `a`,count(0) from `t`
+       Execution datasets: s_2_1, s_2_2
 
 SELECT SQL_BUFFER_RESULT HEX(BIT_AND(a)), HEX(BIT_OR(a)), HEX(BIT_XOR(a)) FROM t;
 HEX(BIT_AND(a))	HEX(BIT_OR(a))	HEX(BIT_XOR(a))
@@ -180,10 +178,10 @@ INSERT INTO t1 (i, d) VALUES (1, '2008-01-01'), (2, '2008-01-02'), (3, '2008-01-
 EXPLAIN format=tree SELECT COALESCE(d, d), IFNULL(d, d), IF(i, d, d), CASE i WHEN i THEN d ELSE d END, GREATEST(d, d), LEAST(d, d) FROM t1 ORDER BY RAND();
 EXPLAIN
 
-            -> Table scan on t1, with parallel scan ranges: 2  (cost=N.NNN rows=NNN)
-        -> Stream results  (cost=N.NNN rows=NNN)
-    -> Sort: `rand()`
--> Gather (slice: 1, workers: 2) with merge sort: `rand()`, statement: select rand(),coalesce(`t1`.`d`,`t1`.`d`) AS `COALESCE(d, d)`,ifnull(`t1`.`d`,`t1`.`d`) AS `IFNULL(d, d)`,if(`t1`.`i`,`t1`.`d`,`t1`.`d`) AS `IF(i, d, d)`,(case `t1`.`i` when `t1`.`i` then `t1`.`d` else `t1`.`d` end) AS `CASE i WHEN i THEN d ELSE d END`,greatest(`t1`.`d`,`t1`.`d`) AS `GREATEST(d, d)`,least(`t1`.`d`,`t1`.`d`) AS `LEAST(d, d)` from `t1` order by rand()
+   Execution datasets: s_2_1, s_2_2
+   Merge sort: `rand()`
+   Statement: select rand(),coalesce(`t1`.`d`,`t1`.`d`) AS `COALESCE(d, d)`,ifnull(`t1`.`d`,`t1`.`d`) AS `IFNULL(d, d)`,if(`t1`.`i`,`t1`.`d`,`t1`.`d`) AS `IF(i, d, d)`,(case `t1`.`i` when `t1`.`i` then `t1`.`d` else `t1`.`d` end) AS `CASE i WHEN i THEN d ELSE d END`,greatest(`t1`.`d`,`t1`.`d`) AS `GREATEST(d, d)`,least(`t1`.`d`,`t1`.`d`) AS `LEAST(d, d)` from `t1` order by rand()
+-> Gather (slice: 1, workers: 2)
 SELECT COALESCE(d, d), IFNULL(d, d), IF(i, d, d), CASE i WHEN i THEN d ELSE d END, GREATEST(d, d), LEAST(d, d) FROM t1 ORDER BY RAND();
 COALESCE(d, d)	IFNULL(d, d)	IF(i, d, d)	CASE i WHEN i THEN d ELSE d END	GREATEST(d, d)	LEAST(d, d)
 2008-01-01	2008-01-01	2008-01-01	2008-01-01	2008-01-01	2008-01-01
@@ -212,8 +210,8 @@ PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2
 INSERT INTO t1 (c1) VALUES(1),(2),(3);
 EXPLAIN (SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	PRIMARY	t1	pt0,pt1	ALL	NULL	NULL	NULL	NULL	4	100.00	Parallel scan (2 workers)
-2	UNION	t1	pt0,pt1	ALL	NULL	NULL	NULL	NULL	4	100.00	Parallel scan (2 workers)
+1	PRIMARY	t1	pt0,pt1	ALL	NULL	NULL	NULL	NULL	4	100.00	NULL
+2	UNION	t1	pt0,pt1	ALL	NULL	NULL	NULL	NULL	4	100.00	NULL
 (SELECT cN FROM tN) UNION ALL (SELECT cN FROM tN) LIMIT N;
 cN
 N
@@ -242,12 +240,10 @@ INSERT INTO t1 (a, b) VALUES (1, 'hello'), (2, 'world');
 EXPLAIN format=tree SELECT 1 FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1;
 EXPLAIN
 -> Limit: 1 row(s)
-    -> Gather (slice: 1, workers: 2) with merge sort: `concat(uuid(),t1.b)` DESC, statement: select concat(uuid(),`t1`.`b`) from `t1` order by concat(uuid(),`t1`.`b`) desc limit 1
-        -> Limit: 1 row(s)
-            -> Sort row IDs: `concat(uuid(),t1.b)` DESC, limit input to 1 row(s) per chunk
-                -> Table scan on <temporary>  (cost=0.64..2.55 rows=4)
-                    -> Temporary table  (cost=2.44..4.35 rows=4)
-                        -> Table scan on t1, with parallel scan ranges: 2  (cost=N.NNN rows=NNN)
+    -> Gather (slice: 1, workers: 2)
+       Merge sort: `concat(uuid(),t1.b)` DESC
+       Statement: select concat(uuid(),`t1`.`b`) from `t1` order by concat(uuid(),`t1`.`b`) desc limit 1
+       Execution datasets: s_2_1, s_2_2
 
 SELECT 1 FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1;
 1
