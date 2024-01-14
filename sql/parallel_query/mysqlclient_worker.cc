@@ -106,10 +106,17 @@ bool MySQLClientSync::send_query(const char *query, ulong length,
 
 bool MySQLClientSync::fetch_row(bool *fetch_complete) {
   // fetch_complete is null means it's in wait mode
-  if (fetch_complete && !is_readable()) {
-    if (m_row) m_row = nullptr;
+  assert(!fetch_complete || !(*fetch_complete));
+
+  // Row can be fetched in Worker::Start() then this function is called
+  // again in ReadNextRow(), so just return that row.
+  if (m_row) {
+    if (fetch_complete) *fetch_complete = true;
     return false;
   }
+
+  if (fetch_complete && !is_readable()) return false;
+
 
   m_row = mysql_fetch_row(m_result);
 
@@ -194,8 +201,8 @@ MySQLClientQueryExec::~MySQLClientQueryExec() {
   delete mysql;
 }
 
-bool MySQLClientQueryExec::Init(THD *thd, WorkerShareState *share_state) {
-  if (mysql->connect(thd, share_state, m_table)) {
+bool MySQLClientQueryExec::Init(THD *thd, TABLE *spider_table, WorkerShareState *share_state) {
+  if (mysql->connect(thd, share_state, spider_table)) {
     m_error = true;
     return true;
   }
@@ -271,6 +278,14 @@ bool MySQLClientQueryExec::ReadRow(bool nowait) {
   return false;
 }
 
+bool MySQLClientQueryExec::ResetRow() {
+  if (mysql->row() == nullptr) return false;
+
+  mysql->reset_row();
+
+  return true;
+}
+
 static double row_field_to_double(char *from, size_t len,
                                   const CHARSET_INFO *cs) {
   int conv_error;
@@ -312,7 +327,7 @@ bool MySQLClientQueryExec::ReadNextRow(std::size_t *nbytesp, void **datap,
   if (m_deparser->CountAppended() &&
       **(row + mysql_num_fields(result) - 1) == '0') {
     *nbytesp = 0;
-    m_stage = Stage::Done;
+    ResetRow();
     return false;
   }
 
@@ -353,6 +368,8 @@ bool MySQLClientQueryExec::ReadNextRow(std::size_t *nbytesp, void **datap,
   }
 
   *datap = m_table->record[0];
+
+  ResetRow();
 
   return false;
 }
@@ -459,7 +476,7 @@ class MySQLClientWorker : public Worker {
 };
 
 bool MySQLClientWorker::Init(comm::Event *comm_event) {
-  if (m_query_executor.Init(m_thd, m_share_state)) return true;
+  if (m_query_executor.Init(m_thd, m_parallel_table, m_share_state)) return true;
 
   if (!(m_receiver_channel = new (m_thd->mem_root)
             comm::MySQLClientChannel(&m_query_executor)) ||
@@ -483,7 +500,9 @@ bool MySQLClientWorker::IsRunning() {
   while (true) {
     if (m_query_executor.Exec(true) || m_query_executor.IsFinished())
       return false;
-    if (!m_query_executor.HasRowData()) return true;
+    // The socket would be block if it is not finished and ResetRow() return
+    // false.
+    if (!m_query_executor.ResetRow()) return true;
   }
 
   return !m_query_executor.IsFinished();

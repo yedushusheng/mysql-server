@@ -18,7 +18,8 @@ class WorkerShareState;
 class MySQLClient {
  public:
   virtual ~MySQLClient() {}
-  virtual bool connect(THD *thd, WorkerShareState *share_state, TABLE *table) = 0;
+  virtual bool connect(THD *thd, WorkerShareState *share_state,
+                       TABLE *table) = 0;
   virtual bool send_query(const char *query, ulong length,
                           bool *send_complete) = 0;
   virtual bool fetch_row(bool *fetch_complete) = 0;
@@ -26,6 +27,7 @@ class MySQLClient {
   virtual bool use_result();
   MYSQL *mysql() const { return m_mysql; }
   MYSQL_ROW row() { return m_row; }
+  void reset_row() { m_row = nullptr; }
   MYSQL_RES *result() { return m_result; }
 
  protected:
@@ -34,6 +36,7 @@ class MySQLClient {
 
   MYSQL *m_mysql{nullptr};
   MYSQL_RES *m_result{nullptr};
+  /// The m_row is reset after it is consumed.
   MYSQL_ROW m_row{nullptr};
 };
 
@@ -82,13 +85,16 @@ class MySQLClientQueryExec {
   enum class Stage { None, Connected, QuerySending, RowReading, Done };
   MySQLClientQueryExec(PlanDeparser *deparser, TABLE *table);
   ~MySQLClientQueryExec();
-  bool Init(THD *thd, WorkerShareState *m_share_state);
+  bool Init(THD *thd, TABLE *spider_table, WorkerShareState *m_share_state);
   bool SendQuery(bool nowait);
   bool ReadRow(bool nowait);
+  /// Return true if current row is not nullptr (that means it is actually
+  /// reset) .
+  bool ResetRow();
   bool Exec(bool nowait);
   bool IsFinished() const { return m_error || m_stage == Stage::Done; }
+  /// *nbytesp == 0 means rows read out, *datap = nullptr means WOULD_BLOCK.
   bool ReadNextRow(std::size_t *nbytesp, void **datap, bool nowait);
-  bool HasRowData() { return mysql->row() != nullptr; }
   void Terminate(THD *thd, comm::Event *state_event);
   bool IsConnected() const { return m_stage != Stage::None; }
   bool IsQuerySent() const { return m_stage >= Stage::QuerySending; }
