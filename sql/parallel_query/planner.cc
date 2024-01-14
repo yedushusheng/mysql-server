@@ -1,5 +1,6 @@
 #include "sql/parallel_query/planner.h"
 
+#include <atomic>
 #include "scope_guard.h"
 #include "sql/error_handler.h"
 #include "sql/filesort.h"
@@ -15,6 +16,38 @@
 #include "sql/sql_tmp_table.h"
 
 namespace pq {
+/// Maximum parallel workers of this instance is allowed
+uint max_parallel_workers = default_max_parallel_workers;
+/// current total parallel workers of this instance
+std::atomic<uint> total_parallel_workers;
+/// acquires @param count parallel workers, return actual workers acquired. The
+/// return value could be less than @param count unless @param strict is true.
+static uint AcquireParallelWorkers(uint count, bool strict) {
+  uint cur_total_workers =
+      total_parallel_workers.load(std::memory_order_relaxed);
+
+  while (cur_total_workers < max_parallel_workers) {
+    uint workers = max_parallel_workers - cur_total_workers;
+    if (workers > count)
+      workers = count;
+    else if ((workers == 1 && count > 1) ||  // (1)
+             (strict && workers < count)) {  // (2)
+      // (1) Workers must be greater than 1 unless user specifies.
+      // (2) require exact count workers
+      return 0;
+    }
+    if (total_parallel_workers.compare_exchange_strong(
+            cur_total_workers, cur_total_workers + workers))
+      return workers;
+  }
+
+  return 0;
+}
+
+static void ReleaseParallelWorkers(uint count) {
+  total_parallel_workers.fetch_sub(count, std::memory_order_release);
+}
+
 static bool ItemRefuseParallel(const Item *item, const char **cause) {
   assert(item);
   *cause = nullptr;
@@ -61,7 +94,7 @@ static void ChooseParallelPlan(JOIN *join) {
   THD *thd = join->thd;
   Opt_trace_context *const trace = &thd->opt_trace;
   Opt_trace_object wrapper(trace);
-          Opt_trace_object trace_choosing(trace, "considering");
+  Opt_trace_object trace_choosing(trace, "considering");
   bool chosen = false;
   const char *cause = nullptr;
   auto trace_set_guard =
@@ -69,6 +102,11 @@ static void ChooseParallelPlan(JOIN *join) {
         trace_choosing.add("chosen", chosen);
         if (!chosen) trace_choosing.add_alnum("cause", cause);
       });
+
+  if (max_parallel_workers == 0) {
+    cause = "disabled_by_zero_of_max_parallel_workers";
+    return;
+  }
 
   if (thd->lex->sql_command != SQLCOM_SELECT) {
     cause = "not_supported_sql_command";
@@ -124,6 +162,22 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
+  if (!specified_by_hint) {
+    // These "soft" limits are applied when user doesn't hint to use parallel
+
+    if (join->best_read < thd->variables.parallel_plan_cost_threshold) {
+      cause = "plan_cost_less_than_threshold";
+      return;
+    }
+    // This should be in table_parallel_degree() but currently we only support
+    // one table.
+    if (qt->position()->rows_fetched <
+        thd->variables.parallel_scan_records_threshold) {
+      cause = "table_records_less_than_threshold";
+      return;
+    }
+  }
+
   auto *table = qt->table();
   if (qt->type() != JT_ALL && qt->type() != JT_INDEX_SCAN) {
     cause = "access_type_is_not_table_scan_or_index_scan";
@@ -157,8 +211,16 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
+  if ((parallel_degree =
+           AcquireParallelWorkers(parallel_degree, specified_by_hint)) == 0)
+  {
+    cause = "too_many_parallel_workers";
+    return;
+  }
+
   chosen = true;
-  join->parallel_plan = new (thd->mem_root) ParallelPlan(join, parallel_degree);
+  if (!(join->parallel_plan = new (thd->mem_root) ParallelPlan(join, parallel_degree)))
+    ReleaseParallelWorkers(parallel_degree);
 }
 
 class ParallelPlanGenErrorIgnoreHandler : public Internal_error_handler {
@@ -345,7 +407,10 @@ ParallelPlan::ParallelPlan(JOIN *join, uint32 parallel_degree)
       m_source_plan_changed(join),
       m_parallel_degree(parallel_degree) {}
 
-ParallelPlan::~ParallelPlan() { DestroyCollector(thd()); }
+ParallelPlan::~ParallelPlan() {
+  ReleaseParallelWorkers(m_parallel_degree);
+  DestroyCollector(thd());
+}
 
 JOIN *ParallelPlan::PartialJoin() const {
   return m_partial_plan.Join();

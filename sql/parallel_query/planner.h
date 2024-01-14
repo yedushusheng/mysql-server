@@ -12,6 +12,8 @@ class Collector;
 class AccessPathChangesStore;
 
 constexpr uint default_max_parallel_degree = 0;
+constexpr uint default_max_parallel_workers = 10000;
+extern uint max_parallel_workers;
 
 class ItemRefCloneResolver : public Item_ref_clone_resolver {
  public:

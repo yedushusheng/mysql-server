@@ -423,6 +423,8 @@ struct System_variables {
   */
   uint select_into_disk_sync_delay;
   uint max_parallel_degree;
+  double parallel_plan_cost_threshold;
+  ulonglong parallel_scan_records_threshold;
 };
 
 /**
