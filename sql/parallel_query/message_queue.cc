@@ -23,8 +23,8 @@ MemMessageQueue::MemMessageQueue(std::size_t queue_size)
   assert(ALIGN_SIZE(queue_size) == queue_size);
 }
 
-bool MemMessageQueue::Init(THD *thd) {
-  if (!(m_buffer = (char *)thd->mem_root->Alloc(m_ring_size))) return true;
+bool MemMessageQueue::Init(MEM_ROOT *mem_root) {
+  if (!(m_buffer = (char *)mem_root->Alloc(m_ring_size))) return true;
 
   return false;
 }
@@ -65,10 +65,9 @@ void MemMessageQueue::IncreaseBytesWritten(std::size_t n) {
 /**
   Write bytes into the shared message queue.
 */
-MessageQueue::Result MemMessageQueue::SendBytes(std::size_t nbytes,
+MessageQueue::Result MemMessageQueue::SendBytes(THD *thd, std::size_t nbytes,
                                                 const void *data, bool nowait,
-                                                std::size_t *bytes_written,
-                                                THD *thd) {
+                                                std::size_t *bytes_written) {
   std::size_t sent = 0;
   std::size_t used;
   std::size_t available;
@@ -153,8 +152,8 @@ MessageQueue::Result MemMessageQueue::SendBytes(std::size_t nbytes,
   message queue, or until the buffer wraps around.
 */
 MessageQueue::Result MemMessageQueue::ReceiveBytes(
-    std::size_t bytes_needed, bool nowait, std::size_t *nbytesp, void **datap,
-    std::size_t *consume_pending, THD *thd) {
+    THD *thd, std::size_t bytes_needed, bool nowait, std::size_t *nbytesp,
+    void **datap, std::size_t *consume_pending) {
   std::size_t used;
   uint64_t written;
 
@@ -222,7 +221,7 @@ MessageQueue::Result MemMessageQueue::ReceiveBytes(
 /**
   Write a message into a shared message queue.
 */
-MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
+MessageQueue::Result MemMessageQueueHandle::Send(THD *thd, std::size_t nbytes,
                                                  const void *data,
                                                  bool nowait) {
   MessageQueue::Result res;
@@ -232,9 +231,9 @@ MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
   while (!m_length_word_complete) {
     assert(m_partial_bytes < sizeof(std::size_t));
 
-    res = queue->SendBytes(sizeof(std::size_t) - m_partial_bytes,
+    res = queue->SendBytes(thd, sizeof(std::size_t) - m_partial_bytes,
                            ((char *)&nbytes) + m_partial_bytes, nowait,
-                           &bytes_written, m_thd);
+                           &bytes_written);
 
     if (res != MessageQueue::Result::SUCCESS &&
         res != MessageQueue::Result::WOULD_BLOCK) {
@@ -258,9 +257,9 @@ MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
   /* Write the actual data bytes into the buffer. */
   assert(m_partial_bytes <= nbytes);
   do {
-    res = queue->SendBytes(nbytes - m_partial_bytes,
+    res = queue->SendBytes(thd, nbytes - m_partial_bytes,
                            static_cast<const char *>(data) + m_partial_bytes,
-                           nowait, &bytes_written, m_thd);
+                           nowait, &bytes_written);
 
     if (res != MessageQueue::Result::SUCCESS &&
         res != MessageQueue::Result::WOULD_BLOCK) {
@@ -307,7 +306,8 @@ MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
 /**
   Receive a message from a shared message queue.
 */
-MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
+MessageQueue::Result MemMessageQueueHandle::Receive(THD *thd,
+                                                    std::size_t *nbytesp,
                                                     void **datap, bool nowait) {
   MessageQueue::Result res;
   void *rawdata;
@@ -328,8 +328,8 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
   /* Try to read, or finish reading, the length word from the buffer. */
   while (!m_length_word_complete) {
     assert(m_partial_bytes < sizeof(std::size_t));
-    res = queue->ReceiveBytes(sizeof(std::size_t) - m_partial_bytes, nowait,
-                              &rb, &rawdata, &m_pending_bytes, m_thd);
+    res = queue->ReceiveBytes(thd, sizeof(std::size_t) - m_partial_bytes,
+                              nowait, &rb, &rawdata, &m_pending_bytes);
     if (res != MessageQueue::Result::SUCCESS) return res;
 
     if (m_partial_bytes == 0 && rb >= sizeof(std::size_t)) {
@@ -360,7 +360,7 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
 
       /* Message word is split; need buffer to reassemble. */
       if (!m_buffer) {
-        if (!(m_buffer = (char *)m_thd->mem_root->Alloc(initial_buffer_size)))
+        if (!(m_buffer = (char *)thd->mem_root->Alloc(initial_buffer_size)))
           return MessageQueue::Result::OOM;
 
         m_buflen = initial_buffer_size;
@@ -394,8 +394,8 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
       Try to obtain the whole message in a single chunk. If this works, we need
       not copy the data and can return a pointer directly into shared memory.
     */
-    res = queue->ReceiveBytes(nbytes, nowait, &rb, &rawdata, &m_pending_bytes,
-                              m_thd);
+    res = queue->ReceiveBytes(thd, nbytes, nowait, &rb, &rawdata,
+                              &m_pending_bytes);
     if (res != MessageQueue::Result::SUCCESS) return res;
 
     if (rb >= nbytes) {
@@ -423,7 +423,7 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
         m_buflen = 0;
       }
 
-      if (!(m_buffer = (char *)m_thd->mem_root->Alloc(newbuflen)))
+      if (!(m_buffer = (char *)thd->mem_root->Alloc(newbuflen)))
         return MessageQueue::Result::OOM;
       m_buflen = newbuflen;
     }
@@ -451,8 +451,8 @@ MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
 
     /* Wait for some more data */
     still_needed = nbytes - m_partial_bytes;
-    res = queue->ReceiveBytes(still_needed, nowait, &rb, &rawdata,
-                              &m_pending_bytes, m_thd);
+    res = queue->ReceiveBytes(thd, still_needed, nowait, &rb, &rawdata,
+                              &m_pending_bytes);
     if (res != MessageQueue::Result::SUCCESS) return res;
     if (rb > still_needed) rb = still_needed;
   }

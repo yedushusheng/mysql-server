@@ -77,7 +77,7 @@ class RowExchangeWriter : public RowExchangeContainer {
  public:
   RowExchangeWriter(RowExchange *row_exchange)
       : RowExchangeContainer(row_exchange) {}
-  Result Write(uchar *record, size_t nbytes);
+  Result Write(THD *thd, uchar *record, size_t nbytes);
   void WriteEOF();
 };
 
@@ -94,8 +94,8 @@ class RowExchangeMergeSortReader : public RowExchangeReader, MergeSortSource {
 
   bool IsChannelFinished(uint i) override { return IsQueueClosed(i); }
   void Wait(THD *thd) override { m_row_exchange->Wait(thd); }
-  MergeSort::Result ReadFromChannel(uint i, size_t *nbytes, void **data,
-                                    bool no_wait) override;
+  MergeSort::Result ReadFromChannel(THD *thd, uint i, size_t *nbytes,
+                                    void **data, bool no_wait) override;
 
  private:
   Filesort *m_filesort;
