@@ -6696,7 +6696,7 @@ end:
   */
   DBUG_ASSERT(thd->get_transaction()->is_empty(Transaction_ctx::STMT) ||
               (thd->state_flags & Open_tables_state::BACKUPS_AVAIL) ||
-              thd->in_sub_stmt);
+              thd->in_sub_stmt || thd->is_killed());
   close_thread_tables(thd);
   /* Don't keep locks for a failed statement. */
   thd->mdl_context.rollback_to_savepoint(mdl_savepoint);
