@@ -994,9 +994,7 @@ bool Explain_table_base::explain_extra_common(int quick_type, uint keyno) {
     }
 
     auto *parallel_plan = tab->join() ? tab->join()->parallel_plan : nullptr;
-    if (parallel_plan) {
-      // Currently, only support 1 primary table, this must be parallel scan
-      // table.
+    if (parallel_plan && tab->table() == parallel_plan->ParallelScanTable()) {
       char buf[16];
       snprintf(buf, sizeof(buf), "(%u workers)",
                parallel_plan->ParallelDegree());

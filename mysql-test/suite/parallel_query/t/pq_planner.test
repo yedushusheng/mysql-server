@@ -215,6 +215,130 @@ EXPLAIN FORMAT=tree select * from t2 force index(date_col) where    col1 + 10000
 let drop_table_name=t2;
 --source include/drop_spider_table.inc
 
+# JOIN is disabled since it is not supported
+--disable_testcase BUG#0000
+--echo # Don't support dynamic range access
+CREATE TABLE t1 (
+  c1 INT NOT NULL,
+  c2 VARCHAR(1) DEFAULT NULL,
+  PRIMARY KEY (c1)
+);
+
+CREATE TABLE t2 (
+  c1 INT NOT NULL,
+  c2 VARCHAR(1) DEFAULT NULL,
+  PRIMARY KEY (c1)
+);
+
+INSERT INTO t2 VALUES (10,'v');
+INSERT INTO t2 VALUES (11,'r');
+
+EXPLAIN FORMAT=tree SELECT t1.c2 FROM t2 STRAIGHT_JOIN t1 ON t1.c1 < t2.c1;
+
+DROP TABLE t1, t2;
+
+--echo # Don't support duplicateweedout semijoin
+CREATE TABLE t1 (
+  a int DEFAULT NULL,
+  b int DEFAULT NULL
+);
+INSERT INTO t1 VALUES(0, 0), (1, 1), (2, 2);
+
+CREATE TABLE t11 (
+  a int DEFAULT NULL,
+  b int DEFAULT NULL
+);
+
+EXPLAIN FORMAT=tree SELECT * FROM t1 WHERE a IN (SELECT /*+ semijoin(dupsweedout) */ a FROM t11);
+--echo # Don't support materialization (lookup) semijoin, yet
+EXPLAIN FORMAT=tree SELECT * FROM t1 WHERE a IN (SELECT /*+ semijoin(materialization) */ a FROM t11);
+
+DROP TABLE t1, t11;
+
+# Item_view_ref::first_inner_table clone support
+CREATE TABLE t1 (
+  i int DEFAULT NULL
+);
+CREATE TABLE t2 (
+  pk int NOT NULL,
+  PRIMARY KEY (`pk`)
+);
+
+CREATE VIEW v1 AS SELECT pk from t2;
+
+INSERT INTO t1 VALUES(1);
+INSERT INTO t2 VALUES(10);
+
+EXPLAIN FORMAT=tree SELECT v1.pk FROM t1 LEFT JOIN v1 ON t1.i = v1.pk  GROUP BY v1.pk;
+DROP TABLE t1, t2;
+DROP VIEW v1;
+
+# temporary table having is unsafe item
+CREATE TABLE t1 (
+col_varchar_key varchar(1) DEFAULT NULL,
+col_varchar_nokey varchar(1) DEFAULT NULL,
+KEY col_varchar_key (col_varchar_key))
+;
+INSERT INTO t1 VALUES
+('v','v'),('r','r');
+CREATE TABLE t2 (
+col_varchar_key varchar(1) DEFAULT NULL,
+col_varchar_nokey varchar(1) DEFAULT NULL,
+KEY col_varchar_key(col_varchar_key))
+;
+INSERT INTO t2 VALUES
+('r','r'),('c','c');
+CREATE VIEW v3 AS SELECT * FROM t2;
+
+EXPLAIN format=tree SELECT DISTINCT alias2.col_varchar_key
+FROM t1 AS alias1 JOIN v3 AS alias2
+ON alias2.col_varchar_key = alias1.col_varchar_key
+HAVING col_varchar_key IN (SELECT col_varchar_nokey FROM t2);
+DROP VIEW v3;
+DROP TABLE t1, t2;
+
+CREATE TABLE Country (
+  code char(3) DEFAULT NULL,
+  continent char(8) DEFAULT NULL,
+  KEY (continent)
+);
+
+CREATE TABLE City (
+  Name varchar(16),
+  Country char(3),
+  Population bigint,
+  KEY (Population)
+);
+CREATE TABLE Satellite(name varchar(32), country_code char(3), index(country_code));
+INSERT INTO Satellite values('Optus D1', 'CHN');
+
+INSERT INTO Country VALUES('CHN', 'Asia'), ('USA', 'American');
+INSERT INTO City VALUES('Beijing', 'CHN', 800 * 1000 * 1000);
+INSERT INTO City VALUES('New York', 'USA', 1200 * 1000 * 1000);
+
+--echo # Not support semijoin materialization lookup
+--let $query = select /*+ semijoin(@q1 materialization) */ * from Country where Country.code IN (select /*+ qb_name(q1) */ City.Country from City where City.Population > 7*1000*1000) and Country.continent='Asia'
+--source suite/parallel_query/include/explain_and_run.inc
+--echo # Not support semijoin materialization scan
+--let $query = select /*+ semijoin(@q1 materialization) JOIN_SUFFIX(Country) */ * from Country where Country.code IN (select /*+ qb_name(q1) */ City.Country from City where City.Population > 7*1000*1000) and Country.continent='Asia'
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo # Not support parallel loose scan
+EXPLAIN FORMAT=tree select * from Country where Country.code in (select country_code from Satellite);
+
+DROP TABLE Country, City, Satellite;
+
+--echo # Not support parallel scan in semijoin first match inner tables
+CREATE TABLE t1(a INT);
+CREATE TABLE t2(a INT);
+CREATE TABLE t6(a INT);
+INSERT INTO t1 VALUES(1);
+INSERT INTO t2 VALUES(5), (8);
+INSERT INTO t6 VALUES (7),(1),(0),(5),(1),(4);
+EXPLAIN FORMAT=tree SELECT * FROM t2 AS nt2 WHERE 1 IN (SELECT it1.a FROM t1 AS it1 JOIN t6 AS it3 ON it1.a=it3.a);
+DROP TABLE t1, t2, t6;
+--enable_testcase
+
 # clean env.
 --source ../include/deinit_spider.inc
 --enable_warnings

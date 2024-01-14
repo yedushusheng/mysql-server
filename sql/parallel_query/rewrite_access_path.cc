@@ -4,7 +4,9 @@
 #include "sql/filesort.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
+#include "sql/join_optimizer/relational_expression.h"
 #include "sql/opt_range.h"
+#include "sql/parallel_query/executor.h"
 #include "sql/parallel_query/planner.h"
 #include "sql/sql_optimizer.h"
 #include "sql/sql_tmp_table.h"
@@ -34,9 +36,9 @@ bool AccessPathRewriter::rewrite_materialize(AccessPath *in, AccessPath *out) {
   return false;
 }
 
-static AccessPath *accesspath_dup(AccessPath *path, MEM_ROOT *mem_root) {
+AccessPath *AccessPathRewriter::accesspath_dup(AccessPath *path) {
   return pointer_cast<AccessPath *>(
-      memdup_root(mem_root, path, sizeof(AccessPath)));
+      memdup_root(mem_root(), path, sizeof(AccessPath)));
 }
 
 /**
@@ -44,169 +46,238 @@ static AccessPath *accesspath_dup(AccessPath *path, MEM_ROOT *mem_root) {
   should use WalkAccessPaths(), but here we don't need to walk into some special
   paths, see caller of rewrite_temptable_scan_path().
  */
-bool AccessPathRewriter::do_rewrite(AccessPath *path) {
+bool AccessPathRewriter::do_rewrite(AccessPath *path, AccessPath *curjoin,
+                                    AccessPath *&out) {
   // Do a post-order traversal
+  AccessPath *outer_path = nullptr;
   switch (path->type) {
     case AccessPath::TABLE_SCAN:
     case AccessPath::INDEX_SCAN:
     case AccessPath::REF:
     case AccessPath::REF_OR_NULL:
     case AccessPath::EQ_REF:
+    case AccessPath::MRR:
+    // Note, bka_path is just used by bka iterator and it must be nullptr
+    // since the iterator is not created yet.
     case AccessPath::INDEX_RANGE_SCAN:
     case AccessPath::PARALLEL_COLLECTOR_SCAN:
       break;
+    case AccessPath::NESTED_LOOP_JOIN:
+      if (do_rewrite(path->nested_loop_join().outer, path, out)) return true;
+      outer_path = out;
+      if (do_rewrite(path->nested_loop_join().inner, path, out)) return true;
+      break;
+    case AccessPath::NESTED_LOOP_SEMIJOIN_WITH_DUPLICATE_REMOVAL:
+      if (do_rewrite(path->nested_loop_semijoin_with_duplicate_removal().outer,
+                     path, out))
+        return true;
+      outer_path = out;
+      if (do_rewrite(path->nested_loop_semijoin_with_duplicate_removal().inner,
+                     path, out))
+        return true;
+      break;
+    case AccessPath::BKA_JOIN:
+      if (do_rewrite(path->bka_join().outer, path, out)) return true;
+      outer_path = out;
+      if (do_rewrite(path->bka_join().inner, path, out)) return true;
+      break;
+    case AccessPath::HASH_JOIN:
+      if (do_rewrite(path->hash_join().outer, path, out)) return true;
+      outer_path = out;
+      if (do_rewrite(path->hash_join().inner, path, out)) return true;
+      break;
     case AccessPath::FILTER:
-      if (do_rewrite(path->filter().child)) return true;
+      if (do_rewrite(path->filter().child, curjoin, out)) return true;
       break;
     case AccessPath::SORT:
-      if (do_rewrite(path->sort().child)) return true;
+      if (do_rewrite(path->sort().child, curjoin, out)) return true;
       break;
     case AccessPath::AGGREGATE:
-      if (do_rewrite(path->aggregate().child)) return true;
+      if (do_rewrite(path->aggregate().child, curjoin, out)) return true;
       break;
     case AccessPath::TEMPTABLE_AGGREGATE:
-      if (do_rewrite(path->temptable_aggregate().subquery_path)) return true;
+      if (do_rewrite(path->temptable_aggregate().subquery_path, curjoin, out))
+        return true;
       break;
     case AccessPath::LIMIT_OFFSET:
-      if (do_rewrite(path->limit_offset().child)) return true;
+      if (do_rewrite(path->limit_offset().child, curjoin, out)) return true;
       break;
     case AccessPath::STREAM:
-      if (do_rewrite(path->stream().child)) return true;
+      if (do_rewrite(path->stream().child, curjoin, out)) return true;
       break;
     case AccessPath::MATERIALIZE: {
       assert(path->materialize().param->query_blocks.size() == 1);
       MaterializePathParameters::QueryBlock &query_block =
           path->materialize().param->query_blocks[0];
-      if (do_rewrite(query_block.subquery_path)) return true;
+      if (do_rewrite(query_block.subquery_path, curjoin, out)) return true;
       break;
     }
+    case AccessPath::REMOVE_DUPLICATES_ON_INDEX:
+      if (do_rewrite(path->remove_duplicates_on_index().child, curjoin, out))
+        return true;
+      break;
     default:
       assert(false);
   }
 
-  return rewrite_each_access_path(path);
+  return rewrite_each_access_path(path, curjoin, outer_path, out);
 }
 
-bool AccessPathRewriter::rewrite_each_access_path(AccessPath *path) {
+bool AccessPathRewriter::rewrite_each_access_path(AccessPath *path,
+                                                  AccessPath *curjoin,
+                                                  AccessPath *outer_path,
+                                                  AccessPath *&out) {
   // Do access path modification
-  AccessPath *out = nullptr;
+  AccessPath *dup = nullptr;
   switch (path->type) {
-    case AccessPath::TABLE_SCAN: {
+    case AccessPath::TABLE_SCAN:
       assert(!end_of_out_path());
-      out = accesspath_dup(path, mem_root());
-      if (rewrite_table_scan(path, out)) return true;
-      m_out_path = out;
+      dup = accesspath_dup(path);
+      if (rewrite_table_scan(path, dup)) return true;
       break;
-    }
-    case AccessPath::INDEX_SCAN: {
+    case AccessPath::INDEX_SCAN:
       assert(!end_of_out_path());
-      out = accesspath_dup(path, mem_root());
-      if (rewrite_index_scan(path, out)) return true;
-      m_out_path = out;
+      dup = accesspath_dup(path);
+      if (rewrite_index_scan(path, dup)) return true;
       break;
-    }
-    case AccessPath::REF: {
+    case AccessPath::REF:
       assert(!end_of_out_path());
-      out = accesspath_dup(path, mem_root());
-      if (rewrite_ref(path, out)) return true;
-      m_out_path = out;
+      dup = accesspath_dup(path);
+      if (rewrite_ref(path, dup)) return true;
       break;
-    }
-    case AccessPath::REF_OR_NULL: {
+    case AccessPath::REF_OR_NULL:
       assert(!end_of_out_path());
-      out = accesspath_dup(path, mem_root());
-      if (rewrite_ref_or_null(path, out)) return true;
-      m_out_path = out;
+      dup = accesspath_dup(path);
+      if (rewrite_ref_or_null(path, dup)) return true;
       break;
-    }
-    case AccessPath::EQ_REF: {
+    case AccessPath::EQ_REF:
       assert(!end_of_out_path());
-      out = accesspath_dup(path, mem_root());
-      if (rewrite_eq_ref(path, out)) return true;
-      m_out_path = out;
+      dup = accesspath_dup(path);
+      if (rewrite_eq_ref(path, dup)) return true;
       break;
-    }
-    case AccessPath::INDEX_RANGE_SCAN: {
+    case AccessPath::MRR:
       assert(!end_of_out_path());
-      out = accesspath_dup(path, mem_root());
-      if (rewrite_index_range_scan(path, out)) return true;
-      m_out_path = out;
+      dup = accesspath_dup(path);
+      if (rewrite_mrr(path, dup)) return true;
       break;
-    }
-    case AccessPath::FILTER: {
+    case AccessPath::INDEX_RANGE_SCAN:
+      assert(!end_of_out_path());
+      dup = accesspath_dup(path);
+      if (rewrite_index_range_scan(path, dup)) return true;
+      break;
+    case AccessPath::NESTED_LOOP_JOIN:
+      assert(!end_of_out_path());
+      dup = accesspath_dup(path);
+      dup->nested_loop_join().outer = outer_path;
+      dup->nested_loop_join().inner = out;
+      break;
+    case AccessPath::NESTED_LOOP_SEMIJOIN_WITH_DUPLICATE_REMOVAL:
+      assert(!end_of_out_path());
+      dup = accesspath_dup(path);
+      if (rewrite_nested_loop_semijoin_with_duplicate_removal(path, dup))
+        return true;
+      dup->nested_loop_semijoin_with_duplicate_removal().outer = outer_path;
+      dup->nested_loop_semijoin_with_duplicate_removal().inner = out;
+      break;
+    case AccessPath::BKA_JOIN:
+      assert(!end_of_out_path());
+      dup = accesspath_dup(path);
+      dup->bka_join().outer = outer_path;
+      dup->bka_join().inner = out;
+      break;
+    case AccessPath::HASH_JOIN:
+      assert(!end_of_out_path());
+      dup = accesspath_dup(path);
+      if (rewrite_hash_join(path, dup)) return true;
+      dup->hash_join().outer = outer_path;
+      dup->hash_join().inner = out;
+      break;
+    case AccessPath::FILTER:
       assert(!path->filter().materialize_subqueries);
       // HAVING is also a filter access path
-      out = end_of_out_path() ? nullptr : accesspath_dup(path, mem_root());
-      if (rewrite_filter(path, out)) return true;
-      if (out) out->filter().child = m_out_path;
+      dup = accesspath_dup_if_out(path);
+      if (rewrite_filter(path, dup)) return true;
+      if (dup) dup->filter().child = out;
       break;
-    }
-    case AccessPath::SORT: {
-      out = end_of_out_path() ? nullptr : accesspath_dup(path, mem_root());
-      if (rewrite_sort(path, out)) return true;
-      if (out) out->sort().child = m_out_path;
+    case AccessPath::SORT:
+      dup = accesspath_dup_if_out(path);
+      if (rewrite_sort(path, dup)) return true;
+      if (dup) dup->sort().child = out;
       break;
-    }
-    case AccessPath::AGGREGATE: {
+    case AccessPath::AGGREGATE:
       // We only push down plan nodes under group node
       if (end_of_out_path()) break;
 
-      out = accesspath_dup(path, mem_root());
-      if (rewrite_aggregate(path, out)) return true;
-      auto &out_aggregate = out->aggregate();
-      out_aggregate.child = m_out_path;
+      dup = accesspath_dup(path);
+      if (rewrite_aggregate(path, dup)) return true;
+      dup->aggregate().child = out;
       break;
-    }
-    case AccessPath::TEMPTABLE_AGGREGATE: {
+    case AccessPath::TEMPTABLE_AGGREGATE:
       assert(!end_of_out_path());
-      out = accesspath_dup(path, mem_root());
-      if (rewrite_temptable_aggregate(path, out)) return true;
-      auto &out_temptable_aggregate = out->temptable_aggregate();
-      out_temptable_aggregate.subquery_path = m_out_path;
+      dup = accesspath_dup(path);
+      if (rewrite_temptable_aggregate(path, dup)) return true;
+      dup->temptable_aggregate().subquery_path = out;
       break;
-    }
-    case AccessPath::LIMIT_OFFSET: {
+    case AccessPath::LIMIT_OFFSET:
       assert(!path->limit_offset().send_records_override);
-      out = end_of_out_path() ? nullptr : accesspath_dup(path, mem_root());
-      if (rewrite_limit_offset(path, out)) return true;
-      if (out) out->limit_offset().child = m_out_path;
+      dup = accesspath_dup_if_out(path);
+      if (rewrite_limit_offset(path, dup, curjoin != nullptr)) return true;
+      if (dup) dup->limit_offset().child = out;
       break;
-    }
-    case AccessPath::STREAM: {
-      out = end_of_out_path() ? nullptr : accesspath_dup(path, mem_root());
-      if (rewrite_stream(path, out)) return true;
-      if (out) out->stream().child = m_out_path;
+    case AccessPath::STREAM:
+      dup = accesspath_dup_if_out(path);
+      if (rewrite_stream(path, dup)) return true;
+      if (dup) dup->stream().child = out;
       break;
-    }
-    case AccessPath::MATERIALIZE: {
-      out = end_of_out_path() ? nullptr : accesspath_dup(path, mem_root());
-      if (rewrite_materialize(path, out)) return true;
-      if (out) {
-        auto &out_materialize = out->materialize();
-        out_materialize.param->query_blocks[0].subquery_path = m_out_path;
-      }
+    case AccessPath::MATERIALIZE:
+      dup = accesspath_dup_if_out(path);
+      if (rewrite_materialize(path, dup)) return true;
+      if (dup) dup->materialize().param->query_blocks[0].subquery_path = out;
       break;
-    }
+    // REMOVE_DUPLICATES is only used in hypergraph
+    case AccessPath::REMOVE_DUPLICATES_ON_INDEX:
+      assert(!end_of_out_path());
+      dup = accesspath_dup(path);
+      if (rewrite_remove_duplicates_on_index(path, dup)) return true;
+      dup->remove_duplicates_on_index().child = out;
+      break;
     default:
       assert(false);
   }
-  if (out) {
-    m_out_path = out;
-    post_rewrite_out_path(m_out_path);
+
+  if (dup) {
+    out = dup;
+    post_rewrite_out_path(out);
   }
+
   return false;
 }
+
 AccessPathParallelizer::AccessPathParallelizer(
     Item_clone_context *item_clone_context, JOIN *join_in,
     PartialPlan *partial_plan)
     : AccessPathRewriter(item_clone_context, join_in, partial_plan->Join()),
       m_partial_plan(partial_plan) {}
 
-AccessPath *AccessPathParallelizer::parallelize_access_path(AccessPath *in) {
-  if (do_rewrite(in)) return nullptr;
+AccessPath *AccessPathParallelizer::parallelize_access_path(
+    Collector *collector, AccessPath *in, AccessPath *&partial_path) {
+  THD *thd = m_join_out->thd;
+  m_collector_table = collector->CollectorTable();
+
+  partial_path = nullptr;
+  if (do_rewrite(in, nullptr, partial_path)) return nullptr;
+
+  AccessPath *collector_path =
+    NewParallelCollectorAccessPath(thd, collector, m_collector_table, true);
+
   // All plan is pushed down, so just replace whole plan with collector path
-  if (!collector_path_pos()) return collector_access_path();
-  *m_collector_path_pos = collector_access_path();
+  if (!collector_path_pos()) {
+    CopyBasicProperties(*partial_path, collector_path);
+    return collector_path;
+  }
+
+  *m_collector_path_pos = collector_path;
+
   return in;
 }
 
@@ -216,32 +287,36 @@ void AccessPathParallelizer::post_rewrite_out_path(AccessPath *out) {
 
 void AccessPathParallelizer::set_collector_path_pos(AccessPath **path) {
   m_collector_path_pos = path;
+  if (m_sorting_info.table) return;
   // collector always use collector table to sort
-  AccessPath *collector_path = collector_access_path();
-  if (!m_sorting_info.table)
-    set_sorting_info({collector_path->parallel_collector_scan().table,
-                      REF_SLICE_SAVED_BASE});
+  assert(m_collector_table);
+  set_sorting_info({m_collector_table, REF_SLICE_SAVED_BASE});
 }
 
-void AccessPathParallelizer::rewrite_index_access_path(
-    bool use_order, bool reverse) {
+void AccessPathParallelizer::rewrite_index_access_path(TABLE *table,
+                                                       bool use_order,
+                                                       bool reverse) {
   auto *join = m_join_in;
-  if (use_order) {
-    assert(join->m_ordered_index_usage != JOIN::ORDERED_INDEX_VOID);
-
+  if (use_order && join->m_ordered_index_usage != JOIN::ORDERED_INDEX_VOID) {
     merge_sort = join->m_ordered_index_usage == JOIN::ORDERED_INDEX_ORDER_BY
-      ? join->order.order : join->group_list.order;
+                     ? join->order.order
+                     : join->group_list.order;
+    /// Optimizer reset order and group_list of JOIN if it choose the
+    /// execution plan. We save it to merge_sort before optimizer reset it.
+    /// See also JOIN::make_tmp_tables_info().
     if (!merge_sort && !join->merge_sort.empty())
       merge_sort = join->merge_sort.order;
   }
-  if (reverse) m_partial_plan->SetTableParallelScanReverse();
+  if (reverse && table == m_partial_plan->ParallelScan().table)
+    m_partial_plan->SetTableParallelScanReverse();
 }
 
 bool AccessPathParallelizer::rewrite_index_scan(AccessPath *in, AccessPath *out
                                                 [[maybe_unused]]) {
   assert(out);
   auto &index_scan = in->index_scan();
-  rewrite_index_access_path(index_scan.use_order, index_scan.reverse);
+  rewrite_index_access_path(index_scan.table, index_scan.use_order,
+                            index_scan.reverse);
   return false;
 }
 
@@ -249,7 +324,7 @@ bool AccessPathParallelizer::rewrite_ref(AccessPath *in,
                                          AccessPath *out [[maybe_unused]]) {
   assert(out);
   auto &ref = in->ref();
-  rewrite_index_access_path(ref.use_order, ref.reverse);
+  rewrite_index_access_path(ref.table, ref.use_order, ref.reverse);
   return false;
 }
 
@@ -257,7 +332,7 @@ bool AccessPathParallelizer::rewrite_ref_or_null(AccessPath *in, AccessPath *out
                                                  [[maybe_unused]]) {
   assert(out);
   auto &ref_or_null = in->ref_or_null();
-  rewrite_index_access_path(ref_or_null.use_order, false);
+  rewrite_index_access_path(ref_or_null.table, ref_or_null.use_order, false);
   return false;
 }
 
@@ -266,7 +341,7 @@ bool AccessPathParallelizer::rewrite_eq_ref(AccessPath *in,
   assert(out);
   auto &eq_ref = in->eq_ref();
 
-  rewrite_index_access_path(eq_ref.use_order, false);
+  rewrite_index_access_path(eq_ref.table, eq_ref.use_order, false);
   return false;
 }
 
@@ -279,7 +354,7 @@ bool AccessPathParallelizer::rewrite_index_range_scan(AccessPath *in,
   assert(quick->head == index_range_scan.table);
 
   rewrite_index_access_path(
-      m_join_in->m_ordered_index_usage != JOIN::ORDERED_INDEX_VOID,
+      quick->head, m_join_in->m_ordered_index_usage != JOIN::ORDERED_INDEX_VOID,
       quick->reverse_sorted());
 
   return false;
@@ -476,7 +551,7 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
 
   if (out) {
     out->materialize().table_path =
-        accesspath_dup(in->materialize().table_path, mem_root());
+        accesspath_dup(in->materialize().table_path);
     post_rewrite_out_path(out->materialize().table_path);
   }
 
@@ -517,8 +592,7 @@ bool AccessPathParallelizer::rewrite_temptable_aggregate(
       JOIN::TemporaryTableToCleanup{table, tagg.temp_table_param});
 
   if (out) {
-    out->temptable_aggregate().table_path =
-        accesspath_dup(tagg.table_path, mem_root());
+    out->temptable_aggregate().table_path = accesspath_dup(tagg.table_path);
     post_rewrite_out_path(out->temptable_aggregate().table_path);
   }
 
@@ -626,30 +700,39 @@ bool AccessPathParallelizer::rewrite_aggregate(AccessPath *in, AccessPath *) {
 }
 
 bool AccessPathParallelizer::rewrite_limit_offset(AccessPath *in,
-                                                  AccessPath *out) {
+                                                  AccessPath *out,
+                                                  bool under_join) {
   if (!out) return false;
 
   assert(!collector_path_pos());
 
   // Don't push down offset to worker
   if (out->limit_offset().offset != 0) out->limit_offset().offset = 0;
-  set_collector_path_pos(&in->limit_offset().child);
-  m_pushed_limit_offset = true;
 
-  // Set it for plan deparser
-  m_join_out->m_select_limit = out->limit_offset().limit;
+  // See calls of NewLimitOffsetAccessPath(), Semi or Anti JOIN use
+  // limit_offset access path with limit = 1, gather should not be applied
+  // below that.
+  if (in->limit_offset().limit != 1 || !under_join) {
+    set_collector_path_pos(&in->limit_offset().child);
+    m_pushed_limit_offset = true;
 
+    // Set it for plan deparser
+    m_join_out->m_select_limit = out->limit_offset().limit;
+  }
   return false;
 }
 
-TABLE *PartialAccessPathRewriter::find_leaf_table(TABLE *) const {
+TABLE *PartialAccessPathRewriter::find_leaf_table(TABLE *table) const {
   Query_block *query_block = m_join_out->query_block;
-  auto *table_list = query_block->leaf_tables;
+  auto *tables = query_block->leaf_tables;
 
-  assert(!table_list->next_leaf);
-  assert(table_list->table);
+  for (TABLE_LIST *tl = tables; tl; tl = tl->next_leaf) {
+    if (tl->is_identical(table->pos_in_table_list)) return tl->table;
+  }
 
-  return table_list->table;
+  assert(false);
+
+  return nullptr;
 }
 
 /// XXX TDSQL seems that pushed_cond also is used in LIMIT pushdown, so
@@ -723,6 +806,10 @@ bool PartialAccessPathRewriter::rewrite_eq_ref(AccessPath *, AccessPath *out) {
   return rewrite_base_ref(out->eq_ref());
 }
 
+bool PartialAccessPathRewriter::rewrite_mrr(AccessPath *, AccessPath *out) {
+  return rewrite_base_ref(out->mrr());
+}
+
 bool PartialAccessPathRewriter::rewrite_index_range_scan(AccessPath *,
                                                          AccessPath *out) {
   auto &index_range_scan = out->index_range_scan();
@@ -738,6 +825,50 @@ bool PartialAccessPathRewriter::rewrite_index_range_scan(AccessPath *,
   index_range_scan.quick = quick;
 
   set_sorting_info({table, REF_SLICE_SAVED_BASE});
+  return false;
+}
+bool PartialAccessPathRewriter::
+    rewrite_nested_loop_semijoin_with_duplicate_removal(AccessPath *in,
+                                                        AccessPath *out) {
+  const TABLE *orig_table =
+      in->nested_loop_semijoin_with_duplicate_removal().table;
+  auto *orig_key = in->nested_loop_semijoin_with_duplicate_removal().key;
+  auto &nested_loop_semijoin =
+      out->nested_loop_semijoin_with_duplicate_removal();
+  int keyno = orig_key - orig_table->key_info;
+  auto *table = find_leaf_table(const_cast<TABLE *>(orig_table));
+  nested_loop_semijoin.table = table;
+  nested_loop_semijoin.key = table->key_info + keyno;
+  return false;
+}
+
+bool PartialAccessPathRewriter::rewrite_hash_join(AccessPath *,
+                                                  AccessPath *out) {
+  auto &hash_join = out->hash_join();
+  THD *thd = m_join_out->thd;
+  // See CreateHashJoinAccessPath(), It just use these fields in query
+  // execution.
+  const RelationalExpression *orig_expr = hash_join.join_predicate->expr;
+  RelationalExpression *expr = new (mem_root()) RelationalExpression(thd);
+  if (!expr) return true;
+  expr->left = expr->right = nullptr;
+  expr->type = orig_expr->type;
+  for (auto *item : orig_expr->join_conditions) {
+    auto *new_item = item->clone(m_item_clone_context);
+    if (!new_item || expr->join_conditions.push_back(new_item)) return true;
+  }
+  for (auto *item : orig_expr->equijoin_conditions) {
+    auto *new_item = item->clone(m_item_clone_context);
+    if (!new_item || expr->equijoin_conditions.push_back(
+                         down_cast<Item_func_eq *>(new_item)))
+      return true;
+  }
+
+  JoinPredicate *pred = new (thd->mem_root) JoinPredicate;
+  if (!pred) return true;
+
+  pred->expr = expr;
+  hash_join.join_predicate = pred;
   return false;
 }
 
@@ -780,10 +911,20 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
   m_join_out->temp_tables.push_back(
       JOIN::TemporaryTableToCleanup{table, temp_table_param});
   set_sorting_info({table, dest_param->ref_slice});
-  out->materialize().table_path =
-      accesspath_dup(out->materialize().table_path, mem_root());
+  out->materialize().table_path = accesspath_dup(out->materialize().table_path);
   rewrite_temptable_scan_path(out->materialize().table_path, table);
   post_rewrite_out_path(out->materialize().table_path);
+  return false;
+}
+
+bool PartialAccessPathRewriter::rewrite_remove_duplicates_on_index(
+    AccessPath *in, AccessPath *out) {
+  auto &ia = in->remove_duplicates_on_index();
+  auto &oa = out->remove_duplicates_on_index();
+  auto *table = find_leaf_table(ia.table);
+  int keyno = ia.key - ia.table->key_info;
+  oa.table = table;
+  oa.key = table->key_info + keyno;
   return false;
 }
 
@@ -808,7 +949,7 @@ bool PartialAccessPathRewriter::rewrite_temptable_aggregate(AccessPath *,
   m_join_out->temp_tables.push_back(
       JOIN::TemporaryTableToCleanup{tagg.table, tagg.temp_table_param});
 
-  tagg.table_path = accesspath_dup(tagg.table_path, mem_root());
+  tagg.table_path = accesspath_dup(tagg.table_path);
   rewrite_temptable_scan_path(tagg.table_path, tagg.table);
   post_rewrite_out_path(tagg.table_path);
   set_sorting_info({tagg.table, tagg.ref_slice});

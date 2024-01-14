@@ -48,7 +48,7 @@ class PartialPlan {
     m_parallel_scan_info.scan_desc.is_asc = false;
   }
 
-  ParallelScanInfo &TablesParallelScan() { return m_parallel_scan_info; }
+  ParallelScanInfo &ParallelScan() { return m_parallel_scan_info; }
   bool DeparsePlan(THD *thd);
   PlanDeparser *Deparser() const { return m_plan_deparser; }
   String *DeparsedStatement() const;
@@ -82,6 +82,7 @@ class ParallelPlan {
                             const parallel_scan_desc_t &psdesc) {
     m_partial_plan.SetTableParallelScan(table, suggested_ranges, psdesc);
   }
+  TABLE *ParallelScanTable() { return m_partial_plan.ParallelScan().table; }
 
  private:
   THD *thd() const;
@@ -90,7 +91,6 @@ class ParallelPlan {
   JOIN *SourceJoin() const;
   JOIN *PartialJoin() const;
 
-  AccessPath *CreateCollectorAccessPath(THD *thd);
   bool AddPartialLeafTables();
   bool ResolvePushdownFields(FieldsPushdownDesc *fields_pushdown_desc);
   bool GenPartialFields(Item_clone_context *context,
