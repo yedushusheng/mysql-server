@@ -7473,6 +7473,10 @@ int mysqld_main(int argc, char **argv)
     unireg_abort(MYSQLD_SUCCESS_EXIT);
   }
 
+  if (pq::comm::start_service_when_system_up && !opt_initialize &&
+      pq::comm::StartEventService())
+    unireg_abort(MYSQLD_ABORT_EXIT);
+
   start_handle_manager();
 
   create_compress_gtid_table_thread();

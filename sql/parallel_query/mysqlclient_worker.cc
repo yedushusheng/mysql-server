@@ -233,27 +233,38 @@ bool MySQLClientQueryExec::Init(THD *thd,
   return false;
 }
 
-bool MySQLClientQueryExec::AddSocketToEventService(comm::Event *event) {
-  if (added_to_event_service &&
-      comm::EventServiceRemoveFd(mysql_get_socket_descriptor(mysql->mysql())))
+bool MySQLClientQueryExec::AddSocketToEventService(THD *thd,
+                                                   comm::Event *event) {
+  // If have existed, remove it first.
+  RemoveSocketFromEventService();
+
+  if (!thd->m_pqcomm_event_session &&
+      !(thd->m_pqcomm_event_session = comm::RegisterEventSession()))
     return true;
+
   added_to_event_service = false;
-  if (comm::EventServiceAddFd(mysql_get_socket_descriptor(mysql->mysql()), event,
-                              true))
+  if (comm::EventServiceAddFd(thd->m_pqcomm_event_session,
+                              mysql_get_socket_descriptor(mysql->mysql()),
+                              event, true))
     return true;
+
+  if (!m_event_session) m_event_session = thd->m_pqcomm_event_session;
+  m_event = event;
   added_to_event_service = true;
   return false;
 }
 
 void MySQLClientQueryExec::RemoveSocketFromEventService() {
-  assert(added_to_event_service);
-  comm::EventServiceRemoveFd(mysql_get_socket_descriptor(mysql->mysql()));
+  if (!added_to_event_service) return;
+  comm::EventServiceRemoveFd(m_event_session,
+                             mysql_get_socket_descriptor(mysql->mysql()),
+                             m_event);
   added_to_event_service = false;
 }
 
 void MySQLClientQueryExec::Terminate(THD *thd, comm::Event *state_event) {
   if (m_stage == Stage::QuerySending || m_stage == Stage::RowReading) {
-    AddSocketToEventService(state_event);
+    AddSocketToEventService(thd, state_event);
     mysql->terminate(thd);
   }
 }
@@ -429,9 +440,9 @@ class MySQLClientChannel : public RowChannel {
   explicit MySQLClientChannel(MySQLClientQueryExec *query_exec)
       : m_query_exec(query_exec) {}
 
-  bool Init(THD *, Event *event, bool receiver [[maybe_unused]]) override {
+  bool Init(THD *thd, Event *event, bool receiver [[maybe_unused]]) override {
     assert(receiver);
-    return m_query_exec->AddSocketToEventService(event);
+    return m_query_exec->AddSocketToEventService(thd, event);
   }
 
   Result Send(std::size_t, const void *, bool) override {

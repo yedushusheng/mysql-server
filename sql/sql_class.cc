@@ -77,6 +77,7 @@
 #include "sql/mysqld.h"              // global_system_variables ...
 #include "sql/mysqld_thd_manager.h"  // Global_THD_manager
 #include "sql/parse_location.h"
+#include "sql/parallel_query/event_service.h"
 #include "sql/protocol.h"
 #include "sql/protocol_classic.h"
 #include "sql/psi_memory_key.h"
@@ -1084,6 +1085,7 @@ void THD::release_resources() {
   status_var_aggregated = true;
 
   mysql_mutex_unlock(&LOCK_status);
+  if (m_pqcomm_event_session) UnregisterEventSession(m_pqcomm_event_session);
 
   m_release_resources_done = true;
 }

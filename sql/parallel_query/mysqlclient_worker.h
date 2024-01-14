@@ -14,6 +14,7 @@ typedef st_spider_conn SPIDER_CONN;
 namespace pq {
 namespace comm {
 class Event;
+class EventSession;
 }
 class PlanDeparser;
 
@@ -109,7 +110,7 @@ class MySQLClientQueryExec {
   void Terminate(THD *thd, comm::Event *state_event);
   bool IsConnected() const { return m_stage != Stage::None; }
   bool IsQuerySent() const { return m_stage >= Stage::QuerySending; }
-  bool AddSocketToEventService(comm::Event *event);
+  bool AddSocketToEventService(THD *thd, comm::Event *event);
   void RemoveSocketFromEventService();
 
  private:
@@ -127,6 +128,8 @@ class MySQLClientQueryExec {
 
   PlanDeparser *m_deparser;
   bool added_to_event_service{false};
+  comm::Event *m_event{nullptr};
+  comm::EventSession *m_event_session{nullptr};
 };
 }  // namespace pq
 

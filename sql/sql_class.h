@@ -144,6 +144,12 @@ class Dictionary_client;
 class DD_kill_immunizer;
 }  // namespace dd
 
+namespace pq {
+namespace comm {
+class EventSession;
+}
+}  // namespace pq
+
 class Internal_error_handler;
 class Modification_plan;
 class Query_result;
@@ -930,6 +936,11 @@ class THD : public MDL_context_owner,
 
  public:
   THD *parallel_leader() const { return m_leader; }
+  /**
+    Event session of event service for parallel query, it saves reused event
+    slots for current session.
+  */
+  pq::comm::EventSession *m_pqcomm_event_session{nullptr};
 
  public:
   /* Used to execute base64 coded binlog events in MySQL server */

@@ -4,10 +4,15 @@
 namespace pq {
 namespace comm {
 class Event;
-int StartEventService();
+class EventSession;
+// SQLEngine (TDSQL 3.0) don't need event service in production environment.
+constexpr bool start_service_when_system_up{true};
+bool StartEventService();
 void StopEventService();
-bool EventServiceAddFd(int fd, Event *event, bool poll_in);
-bool EventServiceRemoveFd(int fd);
+EventSession *RegisterEventSession();
+void UnregisterEventSession(EventSession *es);
+bool EventServiceAddFd(EventSession *es, int fd, Event *event, bool poll_in);
+bool EventServiceRemoveFd(EventSession *es, int fd, Event *event);
 }  // namespace comm
 }  // namespace pq
 
