@@ -1626,6 +1626,11 @@ static void FreeState(CODE_STATE *cs, struct settings *state, int free_state) {
   if (!is_shared(state, functions)) FreeList(state->functions);
   if (!is_shared(state, processes)) FreeList(state->processes);
   if (!is_shared(state, p_functions)) FreeList(state->p_functions);
+  if (!cs) {
+    assert(free_state);
+    free((void *)state);
+    return;
+  }
 
   if (!is_shared(state, out_file))
     DBUGCloseFile(cs, state->out_file);
@@ -1638,6 +1643,51 @@ static void FreeState(CODE_STATE *cs, struct settings *state, int free_state) {
     (void)fflush(state->prof_file);
 
   if (free_state) free((void *)state);
+}
+
+/**
+  Copy current stack top from other cs @param from_stack if it is not
+  init_settings.
+*/
+static settings *_db_cs_cur_state_clone_(settings *from_stack) {
+  if (from_stack == &init_settings) return nullptr;
+  settings *new_stack;
+  new_stack = (settings *)DbugMalloc(sizeof(settings));
+  memset(new_stack, 0, sizeof(settings));
+  *new_stack = *from_stack;
+  new_stack->functions = ListCopy(from_stack->functions);
+  new_stack->p_functions = ListCopy(from_stack->p_functions);
+  new_stack->keywords = ListCopy(from_stack->keywords);
+  new_stack->processes = ListCopy(from_stack->processes);
+  new_stack->next = &init_settings;
+
+  return new_stack;
+}
+
+void CSStackClone::save_state() {
+  CODE_STATE *cs;
+  get_code_state_or_return;
+  m_state = _db_cs_cur_state_clone_(cs->stack);
+}
+
+CSStackClone::~CSStackClone() {
+  if (!m_state) return;
+
+  auto *state = static_cast<settings *>(m_state);
+  assert(state != &init_settings);
+  FreeState(nullptr, state, 1);
+}
+
+void CSStackClone::restore_state() {
+  CODE_STATE *cs;
+  settings *stack;
+  if (!m_state) return;
+
+  get_code_state_or_return;
+  if (!(stack = _db_cs_cur_state_clone_(static_cast<settings *>(m_state))))
+    return;
+  assert(stack->next == &init_settings);
+  cs->stack = stack;
 }
 
 /*

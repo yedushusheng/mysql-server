@@ -1687,6 +1687,8 @@ void JOIN::reset() {
 
   if (!executed) return;
 
+  if (parallel_plan) parallel_plan->ResetCollector();
+
   unit->offset_limit_cnt = (ha_rows)(
       select_lex->offset_limit ? select_lex->offset_limit->val_uint() : 0ULL);
 
@@ -1812,6 +1814,9 @@ void JOIN::destroy() {
     temp_tables.clear();
     sorting_paths.clear();
   }
+
+  if (parallel_plan) parallel_plan->DestroyCollector(thd);
+
   // The parallel query also depends on this cleanup because we recreate
   // temporary table on leader furthermore there is no qep_tab in partial plan.
   for (JOIN::TemporaryTableToCleanup cleanup : temp_tables) {
@@ -3683,6 +3688,8 @@ void JOIN::join_free() {
   bool can_unlock = full;
   DBUG_TRACE;
 
+  end_parallel_plan();
+
   cleanup();
 
   for (tmp_unit = select_lex->first_inner_unit(); tmp_unit;
@@ -3778,12 +3785,6 @@ void JOIN::cleanup() {
   for (JOIN::TemporaryTableToCleanup cleanup : temp_tables) {
       cleanup_table(cleanup.table);
   }
-
-  if (parallel_plan) parallel_plan->DestroyCollector();
-
-  /* Restore ref array to original state */
-  set_ref_item_slice(REF_SLICE_SAVED_BASE);
-}
 
   /* Restore ref array to original state */
   set_ref_item_slice(REF_SLICE_SAVED_BASE);

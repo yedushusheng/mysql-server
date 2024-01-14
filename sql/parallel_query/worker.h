@@ -4,10 +4,7 @@
 #include "sql/parallel_query/row_exchange.h"
 #include "sql/sql_class.h"
 
-class THD;
-class Diagnostics_area;
 namespace pq {
-class MessageQueue;
 class PartialPlan;
 
 /**
@@ -32,14 +29,20 @@ class Worker {
   void ThreadMainEntry();
   bool PrepareQueryPlan();
   void ExecuteQuery();
-  void Cleanup();
+  void EndQuery();
   bool is_error() { return m_thd.is_error(); }
 
   pq::MessageQueue *MessageQueue() const { return m_message_queue; }
   Diagnostics_area *stmt_da(ha_rows *found_rows, ha_rows *examined_rows);
+#if !defined(NDEBUG)
+  CSStackClone *dbug_cs_stack_clone;
+#endif
 
  private:
   void InitExecThdFromLeader();
+  /// Let row exchange reader side return, We need call this if there is a
+  /// failure before lex->result is set.
+  void NotifyAbort();
   /// Set worker state to @param state and broadcast "state cond" if
   /// State::Finished.
   void SetState(State state);

@@ -1,0 +1,14 @@
+enable parallel query with max_parallel_degree = 1
+CREATE TABLE t1(a int, b int, c int);
+INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
+EXPLAIN format=tree SELECT a FROM t1 HAVING a = 1;;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=1125002.50 rows=10000000)
+    -> Filter: (t1.a = 1)  (cost=1125002.50 rows=10000000)
+        -> Table scan on t1  (cost=1125002.50 rows=10000000)
+
+SELECT a FROM t1 HAVING a = 1;;
+a
+1
+1
+DROP TABLE t1;

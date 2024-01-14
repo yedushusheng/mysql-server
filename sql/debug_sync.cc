@@ -412,6 +412,7 @@ struct st_debug_sync_action {
   ulong hit_limit = 0;        /* hits before kill query */
   ulong execute = 0;          /* executes before self-clear */
   ulong timeout = 0;          /* wait_for timeout */
+  ulong eval_only = 0;        /* eval_only in eval thread #, 0 means unset */
   String signal;              /* signal to emit */
   String wait_for;            /* signal to wait for */
   String sync_point;          /* sync point name */
@@ -424,6 +425,7 @@ struct st_debug_sync_control {
   st_debug_sync_action *ds_action; /* array of actions */
   uint ds_active;                  /* # active actions */
   uint ds_allocated;               /* # allocated actions */
+  ulong ds_eval_id;                /* evaluation thread id to for EVAL_ONLY */
   ulonglong dsp_hits;              /* statistics */
   ulonglong dsp_executed;          /* statistics */
   ulonglong dsp_max_active;        /* statistics */
@@ -669,6 +671,69 @@ void debug_sync_init_thread(THD *thd) {
       debug_sync_emergency_disable(); /* purecov: tested */
     }
   }
+}
+
+/**
+   Clone debug sync actions from @param from_thd to @param thd
+*/
+bool debug_sync_clone_actions(THD *thd, THD *from_thd) {
+  DBUG_TRACE;
+  assert(thd && from_thd);
+
+  if (!opt_debug_sync_timeout) return false;
+
+  auto *from_ds_control = from_thd->debug_sync_control;
+  auto *ds_control = thd->debug_sync_control;
+
+  assert(ds_control->ds_action == NULL);
+
+  uint action_count = from_ds_control->ds_active;
+
+  if (action_count == 0) return false;
+
+  assert(from_ds_control->ds_action);
+
+  // Start to clone actions
+  void *actions =
+    my_malloc(key_debug_THD_debug_sync_control,
+              action_count * sizeof(st_debug_sync_action), MYF(MY_WME));
+
+  if (!actions) return true;
+
+  // Inialize and then do copy
+  std::uninitialized_fill_n((st_debug_sync_action *)actions, action_count,
+                            st_debug_sync_action());
+
+  auto *action = static_cast<st_debug_sync_action *>(actions);
+  for (uint i = 0; i < action_count; ++i) {
+    st_debug_sync_action *src = from_ds_control->ds_action + i;
+    st_debug_sync_action *dst = action + i;
+
+    // Copy the action's attributes
+    dst->activation_count = src->activation_count;
+    dst->hit_limit = src->hit_limit;
+    dst->execute = src->execute;
+    dst->timeout = src->timeout;
+    dst->eval_only = src->eval_only;
+    dst->need_sort = src->need_sort;
+    dst->clear_event = src->clear_event;
+    if (dst->sync_point.copy(src->sync_point) ||
+        dst->signal.copy(src->signal) || dst->wait_for.copy(src->wait_for))
+      return true;
+  }
+
+  ds_control->ds_action = (st_debug_sync_action *)actions;
+  ds_control->ds_allocated = action_count;
+  ds_control->ds_active = action_count;
+
+  return false;
+}
+
+void debug_sync_set_eval_id(THD *thd, ulong id) {
+  assert(thd);
+  if (!thd->debug_sync_control) return;
+
+  thd->debug_sync_control->ds_eval_id = id;
 }
 
 void debug_sync_claim_memory_ownership(THD *thd, bool claim) {
@@ -1580,6 +1645,20 @@ static bool debug_sync_eval_action(THD *thd, char *action_str) {
     if (!(ptr = debug_sync_token(&token, &token_length, ptr))) goto set_action;
   }
 
+  /*
+    Try EVAL_ONLY.
+  */
+  if (!my_strcasecmp(system_charset_info, token, "EVAL_ONLY")) {
+    /* Number must follow. */
+    if (!(ptr = debug_sync_number(&action->eval_only, ptr))) {
+      errmsg = "Missing valid number after EVAL_ONLY";
+      goto err;
+    }
+
+    /* Get next token. If none follows, set action. */
+    if (!(ptr = debug_sync_token(&token, &token_length, ptr))) goto set_action;
+  }  
+
   errmsg = "Illegal or out of order stuff: '%.*s'";
 
 err:
@@ -1931,6 +2010,8 @@ void debug_sync(THD *thd, const char *sync_point_name, size_t name_len) {
   if (ds_control->ds_active &&
       (action = debug_sync_find(ds_control->ds_action, ds_control->ds_active,
                                 sync_point_name, name_len)) &&
+      (action->eval_only == 0 ||
+       action->eval_only == ds_control->ds_eval_id) &&
       action->activation_count) {
     /* Sync point is active (action exists). */
     debug_sync_execute(thd, action);

@@ -708,6 +708,7 @@ class JOIN {
   bool with_json_agg;
 
   pq::ParallelPlan *parallel_plan{nullptr};
+  void end_parallel_plan();
 
   /// True if plan is const, ie it will return zero or one rows.
   bool plan_is_const() const { return const_tables == primary_tables; }
@@ -876,7 +877,7 @@ class JOIN {
   AccessPath *root_access_path() const { return m_root_access_path; }
   void set_root_access_path(AccessPath *path) { m_root_access_path = path; }
   bool clone_from(JOIN *from, Item_clone_context *context);
-  
+
  private:
   bool optimized{false};  ///< flag to avoid double optimization in EXPLAIN
 

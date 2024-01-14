@@ -1,4 +1,6 @@
 #include "sql/parallel_query/executor.h"
+
+#include "sql/debug_sync.h"  // DEBUG_SYNC
 #include "sql/filesort.h"
 #include "sql/parallel_query/planner.h"
 #include "sql/parallel_query/worker.h"
@@ -9,6 +11,7 @@
 #include "sql/table.h"
 
 namespace pq {
+
 Collector::Collector(uint num_workers, PartialPlan *partial_plan)
     : m_partial_plan(partial_plan), m_workers(num_workers) {
   mysql_mutex_init(PSI_INSTRUMENT_ME, &m_worker_state_lock, MY_MUTEX_INIT_FAST);
@@ -20,21 +23,18 @@ Collector::~Collector() {
     close_tmp_table(m_table);
     free_tmp_table(m_table);
   }
-  for (auto *worker : m_workers) destroy(worker);
   // tmp_buffer in Sort_param needs to destroy because it may contain alloced
   // memory.
   destroy(m_merge_sort);
 
-  destroy(m_merge_sort);
-  destroy(m_row_exchange_reader);
-  destroy(m_row_exchange);
+  Reset();
 
   mysql_mutex_destroy(&m_worker_state_lock);
   mysql_cond_destroy(&m_worker_state_cond);
 }
 
 bool Collector::CreateCollectorTable() {
-  Query_block *block = m_partial_plan->QueryBlock();
+  Query_block *block = partial_plan()->QueryBlock();
   JOIN *join = block->join;
   THD *thd = join->thd;
   Temp_table_param *tmp_table_param;
@@ -57,6 +57,12 @@ bool Collector::CreateCollectorTable() {
 
   return false;
 }
+
+void Collector::PrepareExecution(THD *thd) {
+  DBUG_SAVE_CSSTACK(&dbug_cs_stack_clone);
+}
+
+void Collector::Destroy(THD *thd) {}
 
 bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order) {
   THD *thd = join->thd;
@@ -91,10 +97,12 @@ bool Collector::CreateRowExchange(MEM_ROOT *mem_root) {
 }
 
 bool Collector::Init(THD *thd) {
-  uint i = 0;
+  // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
+  // you should use m_id - 1
+  uint wid = 1;
   for (auto *&worker : m_workers) {
     worker = new (thd->mem_root) Worker(
-        thd, i++, m_partial_plan, &m_worker_state_lock, &m_worker_state_cond);
+        thd, wid++, partial_plan(), &m_worker_state_lock, &m_worker_state_cond);
     if (!worker || worker->Init()) return true;
   }
 
@@ -105,6 +113,8 @@ bool Collector::Init(THD *thd) {
       }))
     return true;
 
+  DEBUG_SYNC(thd, "before_launch_pqworkers");
+
   bool has_failed_worker;
   if (LaunchWorkers(has_failed_worker)) return true;
 
@@ -112,9 +122,9 @@ bool Collector::Init(THD *thd) {
   if (has_failed_worker) {
     if (bitmap_init(&closed_queues, nullptr, NumWorkers())) return true;
     // Close the queues which workers are launched failed.
-    i = 0;
+    wid = 0;
     for (auto *worker : m_workers) {
-      if (worker->IsStartFailed()) bitmap_set_bit(&closed_queues, i++);
+      if (worker->IsStartFailed()) bitmap_set_bit(&closed_queues, wid++);
     }
   }
   // Initialize row exchange reader after workers are started. The reader with
@@ -126,11 +136,27 @@ bool Collector::Init(THD *thd) {
   return res;
 }
 
+void Collector::Reset() {
+  // Reset could be called multiple times without Collector::Init() calling, see
+  // subselect_hash_sj_engine::exec()
+  if (!m_row_exchange) return;
+  destroy(m_row_exchange_reader);
+  m_row_exchange_reader = nullptr;
+  destroy(m_row_exchange);
+  m_row_exchange = nullptr;
+
+  for (auto *&worker : m_workers) destroy(worker);
+}
+
 bool Collector::LaunchWorkers(bool &has_failed_worker) {
   bool all_start_error = true;
   int error = 0;
   has_failed_worker = false;
+
   for (auto *worker : m_workers) {
+#if !defined(NDEBUG)
+    worker->dbug_cs_stack_clone = &dbug_cs_stack_clone;
+#endif
     int res = worker->Start();
     if (!all_start_error) continue;
 
@@ -180,6 +206,7 @@ int Collector::Read(THD *thd, uchar *buf, ulong reclength) {
   switch (res) {
     case RowExchange::Result::SUCCESS:
       memcpy(buf, dataptr, reclength);
+      ++thd->status_var.pq_rows_exchanged;
       return 0;
     case RowExchange::Result::OOM:
       return HA_ERR_OUT_OF_MEM;
@@ -231,9 +258,20 @@ Diagnostics_area *Collector::combine_workers_stmt_da(THD *thd,
   return cond_da;
 }
 
+void Collector::CollectStatusFromWorkers(THD *thd) {
+  for (auto *worker : m_workers) {
+    auto *worker_thd = worker->thd();
+    add_to_status(&thd->status_var, &worker_thd->status_var);
+  }
+}
+
 void Collector::End(THD *thd, ha_rows *found_rows) {
   TerminateWorkers();
-  Diagnostics_area *combined_da = combine_workers_stmt_da(thd, found_rows);
+
+  // XXX moves this to elsewhere if we support multiple collector
+  CollectStatusFromWorkers(thd);
+
+  auto *combined_da = combine_workers_stmt_da(thd, found_rows);
   if (!combined_da) return;
 
   Diagnostics_area *da = thd->get_stmt_da();
@@ -252,11 +290,11 @@ void Collector::End(THD *thd, ha_rows *found_rows) {
 }
 
 JOIN *Collector::PartialJoin() const {
-  return m_partial_plan->Join();
+  return partial_plan()->Join();
 }
 
 AccessPath *Collector::PartialRootAccessPath() const {
-  return m_partial_plan->Join()->root_access_path();
+  return partial_plan()->Join()->root_access_path();
 }
 }  // namespace pq
 
@@ -288,4 +326,9 @@ int CollectorIterator::Read() {
   }
 
   return 0;
+}
+
+void JOIN::end_parallel_plan() {
+  if (!parallel_plan) return;
+  parallel_plan->EndCollector(thd, &send_records);
 }
