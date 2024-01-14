@@ -676,6 +676,7 @@ bool AccessPathParallelizer::rewrite_limit_offset(AccessPath *in,
   assert(!collector_path_pos());
 
   out->limit_offset().limit = in->limit_offset().limit;
+  m_join_out->m_select_limit = out->limit_offset().limit;
   // Don't push down offset to worker
   out->limit_offset().offset = 0;
   set_collector_path_pos(&in->limit_offset().child);
