@@ -48,4 +48,8 @@ SELECT id FROM t1 LIMIT 2;
 --replace_regex /\d+/N/
 SELECT SQL_CALC_FOUND_ROWS id FROM t1 GROUP BY id LIMIT 2;
 SELECT found_rows();
+
+# use clone_from() to clone str_value
+SELECT repeat('a', 2) FROM t1;
+
 DROP TABLE t1;
