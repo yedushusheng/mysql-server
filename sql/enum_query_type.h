@@ -103,6 +103,9 @@ enum enum_query_type {
     derived table), not the referenced (underlying) expression.
   */
   QT_DERIVED_TABLE_ORIG_FIELD_NAMES = (1 << 15),
+
+  // Print the sql for the parallel framework to deparse plan.
+  QT_PRINT_FOR_PLAN_DEPARSE = (1 << 18)
 };
 
 #endif  // ENUM_QUERY_TYPE_INCLUDED

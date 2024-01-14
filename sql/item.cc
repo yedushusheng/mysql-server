@@ -9021,12 +9021,13 @@ void Item_cache::store(Item *item) {
 
 void Item_cache::print(const THD *thd, String *str,
                        enum_query_type query_type) const {
-  str->append(STRING_WITH_LEN("<cache>("));
+  if (!(query_type & QT_PRINT_FOR_PLAN_DEPARSE))
+    str->append(STRING_WITH_LEN("<cache>("));
   if (example)
     example->print(thd, str, query_type);
   else
     Item::print(thd, str, query_type);
-  str->append(')');
+  if (!(query_type & QT_PRINT_FOR_PLAN_DEPARSE)) str->append(')');
 }
 
 bool Item_cache::walk(Item_processor processor, enum_walk walk, uchar *arg) {
