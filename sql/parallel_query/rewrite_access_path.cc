@@ -897,6 +897,8 @@ bool PartialAccessPathRewriter::
   auto *orig_key = in->nested_loop_semijoin_with_duplicate_removal().key;
   auto &nested_loop_semijoin =
       out->nested_loop_semijoin_with_duplicate_removal();
+  // Calculate key number (offset in key_info) then get corresponding index
+  // in partial plan.
   int keyno = orig_key - orig_table->key_info;
   auto *table = find_leaf_table(const_cast<TABLE *>(orig_table));
   nested_loop_semijoin.table = table;
