@@ -233,11 +233,7 @@ static void ChooseParallelPlan(JOIN *join) {
   if (!(table->file->ha_table_flags() & HA_CAN_PARALLEL_SCAN)) {
     cause = "table_does_not_support_parallel_scan";
     return;
-  }
-  if (is_system_table(table->s->db.str, table->s->table_name.str)) {
-    cause = "include_system_tables";
-    return;
-  }
+ }
   const char *item_refuse_cause;
   // Block parallel query based on item expressions
   for (Item *item : join->query_block->fields) {

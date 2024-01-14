@@ -213,9 +213,6 @@ void Worker::InitExecThdFromLeader() {
   thd->first_successful_insert_id_in_prev_stmt =
       from->first_successful_insert_id_in_prev_stmt;
 
-  //myrock_encode function need this.
-  thd->save_raw_record = from->save_raw_record;
-
   // Thank add_to_status(), Leader will count workers created
   thd->status_var.pq_workers_created = 1;
 }
@@ -251,7 +248,9 @@ void Worker::ThreadMainEntry() {
   thd->tx_isolation = leader_thd()->tx_isolation;
 
   // Clone snapshot always return false, currently
+#if 0
   ha_clone_consistent_snapshot(&m_thd, m_leader_thd);
+#endif
 
   ExecuteQuery();
 
