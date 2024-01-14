@@ -1,54 +1,83 @@
---source suite/parallel_query/include/pq_default.inc
+# support spceify shard_key in comment for spider
+--disable_warnings
+--source ../include/init_spider.inc
+--source ../include/pq_default.inc
 
-CREATE TABLE t1(a INT, b INT, c INT);
-INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
+let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, a INT, b INT, c INT);
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1 (a, b, c) VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 --let $query = SELECT a FROM t1 HAVING a = 1
---source suite/parallel_query/include/explain_and_run.inc
-DROP TABLE t1;
+--source ../include/explain_and_run.inc
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
 
+--disable_testcase BUG#000
 # Item_ref clone should set Item::context because create_tmp_table use it see sort_copy_func().
-CREATE TABLE t1(a INT);
-INSERT INTO t1 VALUES(1),(2),(3);
+let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, a INT);
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1 (a) VALUES(1),(2),(3);
 --let $query = SELECT IF( a = 1, a, a ) AS `b` FROM t1 ORDER BY field( `b` + 1, 1 )
---source suite/parallel_query/include/explain_and_run.inc
-DROP TABLE t1;
+--source ../include/explain_and_run.inc
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
+--enable_testcase
 
 # Inner-most query block's condition refer to temp table field of outer block
 # with condition()->used_tables() = 1 (should return a value with bit
 # OUTER_REF_TABLE_BIT set.)
-CREATE TABLE t1 (f1 INTEGER);
+let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, f1 INT);
+let shardkey=id;
+--source include/create_spider_table.inc
 --let $query = SELECT (SELECT COUNT(*) + (SELECT COUNT(*) FROM t1 WHERE f1 = c.f2) FROM t1) FROM (SELECT 555 AS f2) AS c
---source suite/parallel_query/include/explain_and_run.inc
-DROP TABLE t1;
+--source ../include/explain_and_run.inc
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
 
 # max() was optimized to const item, see optimize_aggregated_query() in opt_sum.cc
-CREATE TABLE t1(a INT NOT NULL, PRIMARY KEY(a));
+let create_table_sql=CREATE TABLE t1(a INT NOT NULL, PRIMARY KEY(a));
+let shardkey=a;
+--source include/create_spider_table.inc
 INSERT INTO t1 VALUES(1),(2);
 --let $query = SELECT max(a), max(concat("*", a, "*")) FROM t1;
---source suite/parallel_query/include/explain_and_run.inc
-DROP TABLE t1;
+--source ../include/explain_and_run.inc
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
 
+--disable_testcase BUG#000
 # group list can be empty in aggregate access path
-CREATE TABLE t1 (
+let create_table_sql=CREATE TABLE t1(
+  id int primary key auto_increment,
   Period smallint(4) unsigned zerofill DEFAULT '0000' NOT NULL,
   Varor_period smallint(4) unsigned DEFAULT '0' NOT NULL
 );
-
-INSERT INTO t1 VALUES (9410,9412);
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1 (Period, Varor_period) VALUES (9410,9412);
 --let $query = SELECT 1+1 AS summa FROM t1 GROUP BY summa LIMIT 1
---source suite/parallel_query/include/explain_and_run.inc
-DROP TABLE t1;
+--source ../include/explain_and_run.inc
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
+--enable_testcase
 
 # sum_func arg 1 replaced by a temporary table Item_field, we saved origial arg to orig_args.
-CREATE TABLE `t` (
+let create_table_sql=CREATE TABLE t (
+  id int primary key auto_increment,
   `a` varbinary(10) DEFAULT NULL
 );
-INSERT INTO t VALUES(0xFF00F0F0), (NULL), (0xF0F0FF00);
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t (a) VALUES(0xFF00F0F0), (NULL), (0xF0F0FF00);
 --let $query = SELECT SQL_BUFFER_RESULT HEX(BIT_AND(a)), HEX(BIT_OR(a)), HEX(BIT_XOR(a)) FROM t
---source suite/parallel_query/include/explain_and_run.inc
-DROP TABLE t;
+--source ../include/explain_and_run.inc
+let drop_table_name=t;
+--source include/drop_spider_table.inc
 
-CREATE TABLE t (group_id int, a varbinary(10));
+--disable_testcase BUG#0000
+let create_table_sql=CREATE TABLE t(id int primary key auto_increment, group_id int, a varbinary(10));
+let shardkey=id;
+--source include/create_spider_table.inc
 INSERT INTO t(group_id, a) VALUES
 (1, 0x34567101ABFF00F0F0),
 (2, NULL),
@@ -70,62 +99,114 @@ GROUP BY group_id;
 SELECT group_id, HEX(BIT_AND(a)), BIT_AND(192), BIT_AND(0x303233), BIT_AND(binary "foo")
 FROM t
 GROUP BY group_id;
-DROP TABLE t;
+
+# Issue #1341 save base_ref_items for EXECUTE
+PREPARE s1
+FROM "SELECT HEX(BIT_AND(a)),HEX(BIT_OR(a)),HEX(BIT_XOR(a)) FROM t WHERE group_id = 5";
+EXECUTE s1;
+EXECUTE s1;
+DEALLOCATE PREPARE s1;
+
+let drop_table_name=t;
+--source include/drop_spider_table.inc
+--enable_testcase
 
 # access path STREAM could be pushed to workers
-CREATE TABLE `t1` (
+let create_table_sql=CREATE TABLE t1(
+  id int primary key auto_increment,
   `i` int DEFAULT NULL,
   `d` date DEFAULT NULL
 );
-INSERT INTO t1 VALUES (1, '2008-01-01'), (2, '2008-01-02'), (3, '2008-01-03');
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1 (i, d) VALUES (1, '2008-01-01'), (2, '2008-01-02'), (3, '2008-01-03');
  # force filesort
 --sorted_result
 --let $query = SELECT COALESCE(d, d), IFNULL(d, d), IF(i, d, d), CASE i WHEN i THEN d ELSE d END, GREATEST(d, d), LEAST(d, d) FROM t1 ORDER BY RAND()
---source suite/parallel_query/include/explain_and_run.inc
-DROP TABLE t1;
+--source ../include/explain_and_run.inc
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
 
-CREATE TABLE t1(c1 INT);
-INSERT INTO t1 VALUES(1),(2),(3);
+let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, c1 INT);
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1 (c1) VALUES(1),(2),(3);
 --let $query = (SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2
 --eval EXPLAIN $query
 --replace_regex /\d+/N/
 --eval $query
-DROP TABLE t1;
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
 
+--disable_testcase BUG#0000
 # Json sum functions support
-CREATE TABLE t1 (ckey  VARCHAR(8), grp VARCHAR(8), val VARCHAR(8));
-
-INSERT INTO t1 VALUES ("key1", "g1", "v1"), ("key2", "g1", "v2"), ("key3", "g2", "v3");
+let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, ckey VARCHAR(8), grp VARCHAR(8), val VARCHAR(8));
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1 (ckey, grp, val) VALUES ("key1", "g1", "v1"), ("key2", "g1", "v2"), ("key3", "g2", "v3");
 --let $query = SELECT JSON_ARRAYAGG(ckey) AS ckeys FROM t1
---source suite/parallel_query/include/explain_and_run.inc
+--source ../include/explain_and_run.inc
 --let $query = SELECT grp, JSON_ARRAYAGG(ckey) AS keys_grouped FROM t1 GROUP BY grp
---source suite/parallel_query/include/explain_and_run.inc
+--source ../include/explain_and_run.inc
 --let $query = SELECT JSON_OBJECTAGG(ckey, val) AS key_val FROM t1
---source suite/parallel_query/include/explain_and_run.inc
+--source ../include/explain_and_run.inc
 --let $query = SELECT grp, JSON_OBJECTAGG(ckey, val) AS key_val_grouped FROM t1 GROUP BY grp
---source suite/parallel_query/include/explain_and_run.inc
-
-DROP TABLE t1;
+--source ../include/explain_and_run.inc
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
+--enable_testcase
 
 # Sort through a temporary table
-CREATE TABLE t1(a INT, b TEXT);
-INSERT INTO t1 VALUES (1, 'hello'), (2, 'world');
+let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, a INT, b TEXT);
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1 (a, b) VALUES (1, 'hello'), (2, 'world');
 --let $query = SELECT 1 FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1
---source suite/parallel_query/include/explain_and_run.inc
-DROP TABLE t1;
+--source ../include/explain_and_run.inc
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
 
+--disable_testcase BUG#0000
 # Issue #1212 GROUP BY sorting with DISTINCT, wrong save_sum_fields and
 # items_to_copy
-CREATE TABLE t1(a INT, b INT);
-INSERT INTO t1 VALUES(1, 1),(1, 3),(2, 2);
+let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, a INT, b INT);
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1 (a, b) VALUES(1, 1),(1, 3),(2, 2);
 --let $query = SELECT SQL_BIG_RESULT DISTINCT (AVG(a) + 1) AS avg_a  FROM t1 GROUP BY a
---source suite/parallel_query/include/explain_and_run.inc
+--source ../include/explain_and_run.inc
 --let $query = SELECT DISTINCT (AVG(a) + 1) AS avg_a, JSON_ARRAYAGG(a) as ja FROM t1 GROUP BY a
---source suite/parallel_query/include/explain_and_run.inc
-DROP TABLE t1;
+--source ../include/explain_and_run.inc
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
+--enable_testcase
 
 # inconsistent reclength between collector table and and worker row sender temptable
-CREATE TABLE t1(a INT, b VARCHAR(20));
-INSERT INTO t1 VALUES(1, 'a'), (2, 'b'), (3, 'c'), (3, 'c'), (4, 'c');
+let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, a INT, b VARCHAR(20));
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1 (a, b) VALUES(1, 'a'), (2, 'b'), (3, 'c'), (3, 'c'), (4, 'c');
 SELECT DISTINCT a FROM t1 GROUP BY b,a ORDER BY 1;
-DROP TABLE t1;
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
+
+# Issue #1341 save base_ref_items for EXECUTE
+let create_table_sql=CREATE TABLE t1(id int primary key auto_increment, track varchar(15));
+let shardkey=id;
+--source include/create_spider_table.inc
+INSERT INTO t1(track) VALUES ('CAD'), ('CAD');
+PREPARE STMT FROM
+"SELECT 1 FROM t1
+  WHERE
+        track IN (SELECT track FROM t1
+                                    GROUP BY track
+                                      HAVING track>='CAD')";
+EXECUTE STMT;
+EXECUTE STMT;
+DEALLOCATE PREPARE STMT;
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
+
+# clean env.
+--source ../include/deinit_spider.inc
+--enable_warnings
