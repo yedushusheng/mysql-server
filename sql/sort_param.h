@@ -338,6 +338,11 @@ class Sort_param {
   /// circumstances (see NewWeedoutAccessPathForTables()).
   void clear_addon_fields();
 
+  /// Set a fake addon fields status which identify it used by merge sort.
+  void set_addon_fields_using_merge_sort() {
+    m_addon_fields_status = Addon_fields_status::using_by_merge_sort;
+  }
+
   /**
     Initialize this struct for filesort() usage.
     @see description of record layout above
