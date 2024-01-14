@@ -80,7 +80,7 @@ bool LocalWorker::Init(comm::Event *comm_event) {
 
   DBUG_EXECUTE_IF("pq_use_tcp_row_channel",
                   { row_channel_type = comm::RowChannel::Type::TCP; });
-  DBUG_EXECUTE_IF("pq_use_mixed_row_channel", {
+  DBUG_EXECUTE_IF("pq_use_mem_mixed_tcp_row_channel", {
     row_channel_type = m_id % 2 == 0 ? comm::RowChannel::Type::MEM
                                      : comm::RowChannel::Type::TCP;
   });

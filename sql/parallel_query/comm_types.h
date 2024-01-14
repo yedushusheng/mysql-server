@@ -38,6 +38,9 @@ class Event {
     mysql_mutex_unlock(&m_mutex);
   }
 
+  // Note: If the param thd is nullptr, then kill session will not be
+  // able to wake up the waiting session and exit Wait. Therefore, it
+  // should only be used when the waiting time is relatively short.
   void Wait(THD *thd, bool auto_reset = true);
 
  private:
