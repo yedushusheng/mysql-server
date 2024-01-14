@@ -1425,6 +1425,7 @@ void MDL_map::remove_random_unused(MDL_context *ctx, LF_PINS *pins,
 
 MDL_context::MDL_context()
     : m_owner(nullptr),
+      m_group_leader(nullptr),
       m_needs_thr_lock_abort(false),
       m_force_dml_deadlock_weight(false),
       m_waiting_for(nullptr),
@@ -2389,7 +2390,18 @@ bool MDL_lock::can_grant_lock(enum_mdl_type type_arg,
   bool can_grant = false;
   bitmap_t waiting_incompat_map = incompatible_waiting_types_bitmap()[type_arg];
   bitmap_t granted_incompat_map = incompatible_granted_types_bitmap()[type_arg];
-
+  auto *group_leader = requestor_ctx->get_group_leader();
+  if (group_leader) {
+    Ticket_iterator it(m_granted);
+    MDL_ticket *ticket;
+    while ((ticket = it++)) {
+      auto *ctx = ticket->get_ctx();
+      if (ctx != requestor_ctx && ctx->get_group_leader() == group_leader) {
+        can_grant = true;
+        return can_grant;
+      }
+    }
+  }
   /*
     New lock request can be satisfied iff:
     - There are no incompatible types of satisfied requests
@@ -2876,7 +2888,8 @@ bool MDL_context::try_acquire_lock_impl(MDL_request *mdl_request,
     as well for MDL_object_lock::notify_conflicting_locks() to work
     properly.
   */
-  force_slow = !unobtrusive_lock_increment || m_needs_thr_lock_abort;
+  force_slow = !unobtrusive_lock_increment || m_needs_thr_lock_abort ||
+               m_group_leader != nullptr;
 
   /*
     If "obtrusive" lock is requested we need to "materialize" all fast

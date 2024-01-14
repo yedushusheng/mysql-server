@@ -1,0 +1,24 @@
+--source include/have_debug_sync.inc
+--source suite/parallel_query/include/pq_default.inc
+
+CREATE TABLE t1(a INT, b INT);
+INSERT INTO t1 VALUES(1,1),(2,2);
+
+--echo ###
+--echo ### scenario 1: share lock with leader, before launching workers there is
+--echo ### a DDL waiting table lock.
+--echo ###
+EXPLAIN FORMAT=tree SELECT * FROM t1;
+SET debug_sync = 'before_launch_pqworkers wait_for ddl_stmt';
+# launching a parallel query which will wait for a DDL
+--send SELECT * FROM t1
+
+# execute a ddl statement an another connection.
+connect (con1,localhost,root,,);
+SET debug_sync='mdl_acquire_lock_wait signal ddl_stmt';
+ALTER TABLE t1 ADD COLUMN c INT DEFAULT 0;
+
+connection default;
+--reap
+SET debug_sync = 'reset';
+DROP TABLE t1;

@@ -1,0 +1,21 @@
+enable parallel query with max_parallel_degree = 1
+CREATE TABLE t1(a INT, b INT);
+INSERT INTO t1 VALUES(1,1),(2,2);
+###
+### scenario 1: share lock with leader, before launching workers there is
+### a DDL waiting table lock.
+###
+EXPLAIN FORMAT=tree SELECT * FROM t1;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=1125002.50 rows=10000000)
+    -> Table scan on t1  (cost=1125002.50 rows=10000000)
+
+SET debug_sync = 'before_launch_pqworkers wait_for ddl_stmt';
+SELECT * FROM t1;
+SET debug_sync='mdl_acquire_lock_wait signal ddl_stmt';
+ALTER TABLE t1 ADD COLUMN c INT DEFAULT 0;
+a	b
+1	1
+2	2
+SET debug_sync = 'reset';
+DROP TABLE t1;

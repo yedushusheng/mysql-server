@@ -60,9 +60,11 @@ bool Collector::CreateCollectorTable() {
 
 void Collector::PrepareExecution(THD *thd) {
   DBUG_SAVE_CSSTACK(&dbug_cs_stack_clone);
+
+  thd->mdl_context.init_lock_group();
 }
 
-void Collector::Destroy(THD *thd) {}
+void Collector::Destroy(THD *thd) { thd->mdl_context.deinit_lock_group(); }
 
 bool Collector::CreateMergeSort(JOIN *join, ORDER *merge_order) {
   THD *thd = join->thd;

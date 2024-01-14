@@ -1,4 +1,4 @@
-SET max_parallel_degree = 1;
+enable parallel query with max_parallel_degree = 1
 CREATE TABLE t1(a int, b int, c int);
 INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 ###
