@@ -14,24 +14,31 @@ using MessageReassembleBuffer = MessageBuffer;
 
 class MessageQueueEndpointInfo {
  public:
-  MessageQueueEndpointInfo(THD *thd, MessageQueueEvent *self_event)
-      : m_thd(thd), m_self_event(self_event) {}
-
+  MessageQueueEndpointInfo() = default;
   inline void NotifyPeer() {
     assert(m_peer_event);
     m_peer_event->Set();
   }
-  inline void Wait() { m_self_event->Wait(m_thd); }
+  inline void Wait() {
+    assert(m_thd && m_self_event);
+    m_self_event->Wait(m_thd);
+  }
   inline bool IsKilled() const;
-  inline THD *thd() const { return m_thd; }
+  inline void SetSelfEvent(THD *wait_thd, MessageQueueEvent *self_event) {
+    assert(!m_thd && wait_thd);
+    assert(!m_peer_event || m_peer_event != self_event);
+    m_thd = wait_thd;
+    m_self_event = self_event;
+  }
   inline void SetPeerEvent(MessageQueueEvent *peer_event) {
-    assert(m_self_event && peer_event != m_self_event);
+    assert(!m_self_event || peer_event != m_self_event);
     m_peer_event = peer_event;
   }
 
  private:
-  THD *m_thd;
-  MessageQueueEvent *m_self_event;
+  /// Event wait thd, call its enter_cond() when waiting
+  THD *m_thd{nullptr};
+  MessageQueueEvent *m_self_event{nullptr};
   MessageQueueEvent *m_peer_event{nullptr};
 };
 
@@ -78,8 +85,7 @@ class MessageQueue {
 class MessageQueueHandle {
  public:
   using Result = MessageQueue::Result;
-  MessageQueueHandle(MessageQueue *smq, THD *thd, MessageQueueEvent *self_event)
-      : m_queue(smq), m_endpoint_info(thd, self_event) {}
+  MessageQueueHandle(MessageQueue *smq) : m_queue(smq) {}
   MessageQueueHandle(const MessageQueueHandle &) = delete;
 
   Result Send(std::size_t nbytes, const void *data, bool nowait);
@@ -88,9 +94,7 @@ class MessageQueueHandle {
   /**
     Notify counterparty that we're detaching from shared message queue.
   */
-  void Detach() {
-    m_queue->Detach(&m_endpoint_info);
-  }
+  void Detach() { m_queue->Detach(&m_endpoint_info); }
 
   /**
     Sender will call this, tell counter-party no messages any more.
@@ -99,10 +103,9 @@ class MessageQueueHandle {
   void SetPeerEvent(MessageQueueEvent *peer_event) {
     m_endpoint_info.SetPeerEvent(peer_event);
   }
-
- protected:
-  MessageQueue *m_queue;
-  MessageQueueEndpointInfo m_endpoint_info;
+  void SetSelfEvent(THD *thd, MessageQueueEvent *self_event) {
+    m_endpoint_info.SetSelfEvent(thd, self_event);
+  }
 
  private:
   /**
@@ -113,6 +116,9 @@ class MessageQueueHandle {
   std::size_t m_partial_bytes{0};
   std::size_t m_expected_bytes{0};
   bool m_length_word_complete{false};
+
+  MessageQueue *m_queue;
+  MessageQueueEndpointInfo m_endpoint_info;
 };
 }  // namespace comm
 }  // namespace pq
