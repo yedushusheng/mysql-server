@@ -7,7 +7,9 @@
 
 class THD;
 namespace pq {
+namespace comm {
 struct RowDataInfo;
+}
 class MergeSortSource;
 class MergeSortElement;
 
@@ -39,7 +41,7 @@ class MergeSort {
   /// For first time fetch, populate PQ with one record from each channel.
   bool Populate(THD *thd);
   /// Read one row of sorted data
-  Result Read(uchar **buf, RowDataInfo *&rowdata);
+  Result Read(uchar **buf, comm::RowDataInfo *&rowdata);
 
  private:
   /**
@@ -88,7 +90,7 @@ class MergeSortElement {
 
     return num_recs == (std::uint64_t)m_allocated_records;
   }
-  uchar *CurrentRecord(RowDataInfo **rowdata) const;
+  uchar *CurrentRecord(comm::RowDataInfo **rowdata) const;
 
   /// Pop a record for next read. The top record is ready to read. @return false
   /// if no record left.
@@ -112,7 +114,7 @@ class MergeSortElement {
   // The record buffer related properties
   /// Records buffer
   uchar *m_records_buffer{nullptr};
-  RowDataInfo *m_row_data{nullptr};
+  comm::RowDataInfo *m_row_data{nullptr};
   std::uint64_t m_cur_read{0};  // Next read record index
   // Next write record index, the buffer empty if it equals to cur_read.
   std::uint64_t m_cur_write{0};
@@ -133,7 +135,7 @@ class MergeSortSource {
   /// @param bytes, can do a block read if @param no_wait is true.
   virtual MergeSort::Result ReadFromChannel(uint index, uchar *dest,
                                             size_t nbytes, bool no_wait,
-                                            RowDataInfo *rowdata) = 0;
+                                            comm::RowDataInfo *rowdata) = 0;
 };
 
 }  // namespace pq

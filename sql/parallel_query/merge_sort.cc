@@ -2,7 +2,7 @@
 
 #include "sql/filesort.h"
 #include "sql/item.h"
-#include "sql/parallel_query/row_exchange.h"
+#include "sql/parallel_query/row_segment.h"
 #include "sql/sql_class.h"
 #include "sql/table.h"
 
@@ -40,8 +40,8 @@ bool MergeSortElement::Init(size_t index, THD *thd, size_t key_size,
   if (!(m_records_buffer = static_cast<uchar *>(
             thd->mem_root->Alloc(m_record_length * m_allocated_records))))
     return true;
-  if (!(m_row_data = AllocRowDataInfoArray(thd->mem_root, m_allocated_records,
-                                           row_segments)))
+  if (!(m_row_data = comm::AllocRowDataInfoArray(
+            thd->mem_root, m_allocated_records, row_segments)))
     return true;
 
   return false;
@@ -122,7 +122,7 @@ bool MergeSort::Init(THD *thd, Filesort *filesort, uint nelements) {
   return false;
 }
 
-uchar *MergeSortElement::CurrentRecord(RowDataInfo **rowdata) const {
+uchar *MergeSortElement::CurrentRecord(comm::RowDataInfo **rowdata) const {
   assert(m_cur_read < m_cur_write &&
          m_cur_write <= m_cur_read + (std::uint64_t)m_allocated_records);
 
@@ -257,7 +257,7 @@ MergeSort::Result MergeSort::FillElementBuffer(MergeSortElement *elem,
   return Result::SUCCESS;
 }
 
-MergeSort::Result MergeSort::Read(uchar **buf, RowDataInfo *&rowdata) {
+MergeSort::Result MergeSort::Read(uchar **buf, comm::RowDataInfo *&rowdata) {
   // Return end if nothing is pushed in Populate().
   if (m_priority_queue->size() == 0) return Result::END;
 

@@ -6,6 +6,7 @@
 #include "my_dbug.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
+#include "sql/parallel_query/row_exchange.h"
 #include "sql/row_iterator.h"
 
 class Diagnostics_area;
@@ -14,8 +15,6 @@ class Filesort;
 struct ORDER;
 
 namespace pq {
-class RowExchange;
-class RowExchangeReader;
 class PartialPlan;
 class Worker;
 
@@ -58,8 +57,9 @@ class Collector {
   PartialPlan *m_partial_plan;
   TABLE *m_table{nullptr};
   Filesort *m_merge_sort{nullptr};
-  RowExchange *m_row_exchange{nullptr};
-  RowExchangeReader *m_row_exchange_reader{nullptr};
+  comm::RowExchange m_receiver_exchange;
+  comm::RowExchangeReader *m_row_exchange_reader{nullptr};
+
   std::vector<Worker *> m_workers;
 
   mysql_mutex_t m_worker_state_lock;

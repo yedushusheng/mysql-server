@@ -5,6 +5,7 @@
 #include "sql/join_optimizer/explain_access_path.h"
 #include "sql/mysqld.h"
 #include "sql/parallel_query/planner.h"
+#include "sql/parallel_query/row_channel.h"
 #include "sql/query_result.h"
 #include "sql/sql_optimizer.h"
 #include "sql/sql_tmp_table.h"
@@ -22,19 +23,25 @@ constexpr uint message_queue_ring_size = 65536;
 
 class Query_result_to_collector : public Query_result_interceptor {
  private:
-  RowExchangeWriter *m_row_exchange_writer;
+  comm::RowChannel *m_row_channel;
+  comm::RowExchangeWriter *m_row_exchange_writer;
   Temp_table_param *m_tmp_table_param;
   TABLE *m_table{nullptr};
 
  public:
-  Query_result_to_collector(RowExchangeWriter *row_exchange_writer,
+  Query_result_to_collector(comm::RowChannel *row_channel,
+                            comm::RowExchangeWriter *row_exchange_writer,
                             Temp_table_param *tmp_table_param)
-      : m_row_exchange_writer(row_exchange_writer),
+      : m_row_channel(row_channel),
+        m_row_exchange_writer(row_exchange_writer),
         m_tmp_table_param(tmp_table_param) {}
 
   void cleanup(THD *thd) override {
     Query_result_interceptor::cleanup(thd);
-    m_row_exchange_writer->WriteEOF();
+    if (!m_row_channel->IsClosed()) {
+      m_row_exchange_writer->WriteEOF();
+      m_row_channel->Close();
+    }
     if (m_table) {
       close_tmp_table(m_table);
       free_tmp_table(m_table);
@@ -80,10 +87,10 @@ class Query_result_to_collector : public Query_result_interceptor {
     auto res = m_row_exchange_writer->Write(m_table->record[0],
                                             (size_t)m_table->s->reclength);
 
-    assert(res != RowExchange::Result::ERROR &&
-           res != RowExchange::Result::END);
+    assert(res != comm::RowExchange::Result::ERROR &&
+           res != comm::RowExchange::Result::END);
 
-    if (unlikely(res != RowExchange::Result::SUCCESS)) return true;
+    if (unlikely(res != comm::RowExchange::Result::SUCCESS)) return true;
 
     thd->inc_sent_row_count(1);
 
@@ -99,6 +106,7 @@ class Query_result_to_collector : public Query_result_interceptor {
 
   bool send_eof(THD *) override {
     m_row_exchange_writer->WriteEOF();
+    m_row_channel->Close();
     return false;
   }
 };
@@ -109,24 +117,36 @@ Worker::Worker(THD *thd, uint worker_id, PartialPlan *plan,
       m_thd(true, m_leader_thd),
       m_id(worker_id),
       m_query_plan(plan),
-      m_row_exchange_writer(&m_row_exchange),
+      m_row_exchange_writer(&m_sender_exchange),
       m_state_lock(state_lock),
       m_state_cond(state_cond) {}
 
-bool Worker::Init(MessageQueueEvent *peer_event) {
+Worker::~Worker() { destroy(m_receiver_channel); }
+
+bool Worker::Init(comm::Event *comm_event) {
 #if defined(ENABLED_DEBUG_SYNC)
   debug_sync_set_eval_id(&m_thd, m_id);
   debug_sync_clone_actions(&m_thd, m_leader_thd);
 #endif
-  // Allocate all communication facilities in leader's thd mem_root
-  if (!(m_message_queue = new (m_leader_thd->mem_root)
-            MemMessageQueue(message_queue_ring_size)) ||
-      m_message_queue->Init(m_leader_thd->mem_root) ||
-      m_row_exchange.Init(m_leader_thd->mem_root,
-                          [this](uint) { return m_message_queue; }) ||
-      m_row_exchange_writer.Init(m_leader_thd->mem_root, nullptr, &m_thd,
-                                 [peer_event](uint) { return peer_event; }))
+
+  // Parameter nullptr means allocating message queue in leader's mem_root,
+  // This assures leader can read message queue when workers exit.
+  if (!(m_receiver_channel =
+            comm::CreateMemRowChannel(m_leader_thd->mem_root, nullptr)) ||
+      m_receiver_channel->Init(m_leader_thd, comm_event) ||
+      !(m_sender_channel =
+            comm::CreateMemRowChannel(m_thd.mem_root, m_receiver_channel)) ||
+      m_sender_channel->Init(&m_thd, m_sender_exchange.event()))
     return true;
+
+  if (m_sender_exchange.Init(m_leader_thd->mem_root, 1,
+                             [this](uint) { return m_sender_channel; }))
+    return true;
+
+  comm::SetPeerEventForMemChannel(m_receiver_channel,
+                                  m_sender_exchange.event());
+  comm::SetPeerEventForMemChannel(m_sender_channel, comm_event);
+
   if (m_leader_thd->lex->is_explain_analyze)
     m_query_plan_timing_data.reset(new std::string);
 
@@ -210,6 +230,12 @@ void Worker::InitExecThdFromLeader() {
 
   // Thank add_to_status(), Leader will count workers created
   thd->status_var.pq_workers_created = 1;
+}
+
+void Worker::CleanupThdResources() {
+  m_sender_exchange.Reset();
+  destroy(m_sender_channel);
+  m_sender_channel = nullptr;
 }
 
 void Worker::ThreadMainEntry() {
@@ -347,7 +373,7 @@ bool Worker::PrepareQueryPlan() {
   auto *from_query_block = m_query_plan->QueryBlock();
   auto *from_join = from_query_block->join;
   auto *query_result = new (thd->mem_root) Query_result_to_collector(
-      &m_row_exchange_writer, &from_join->tmp_table_param);
+      m_sender_channel, &m_row_exchange_writer, &from_join->tmp_table_param);
 
   DBUG_EXECUTE_IF("pq_simulate_worker_prepare_query_plan_error_1", {
     my_error(ER_DA_UNKNOWN_ERROR_NUMBER, MYF(0), 2);
@@ -468,10 +494,15 @@ void Worker::EndQuery() {
   thd->lex->sql_command = SQLCOM_END;
 
   thd->release_resources();
+
+  CleanupThdResources();
   thd->mem_root->Clear();
 }
 
-void Worker::NotifyAbort() { m_row_exchange_writer.WriteEOF(); }
+void Worker::NotifyAbort() {
+  m_row_exchange_writer.WriteEOF();
+  m_sender_channel->Close();
+}
 
 Diagnostics_area *Worker::stmt_da(ha_rows *found_rows, ha_rows *examined_rows) {
   assert(!IsRunning(true));
