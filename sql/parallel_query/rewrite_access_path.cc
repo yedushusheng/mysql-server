@@ -369,45 +369,35 @@ bool AccessPathParallelizer::rewrite_index_range_scan(AccessPath *in,
   return false;
 }
 
-/// Just DO NOT use this for other purpose. it just clone TABLE* and index no of
-/// QEP_TAB
-static QEP_TAB *minimal_clone_qep_tab(
-    QEP_TAB *qt_source, uint tables, MEM_ROOT *mem_root,
-    std::function<TABLE *(TABLE *)> get_table) {
-  auto *qs = new (mem_root) QEP_shared[tables];
-  auto *qep_tab = new (mem_root) QEP_TAB[tables];
-  if (!qs || !qep_tab) return nullptr;
-
+static Mem_root_array<std::pair<TABLE *, uint>> *
+get_tables_for_unqualified_count(QEP_TAB *qep_tab, uint tables,
+                                 MEM_ROOT *mem_root) {
+  auto *count_tables =
+      new (mem_root) Mem_root_array<std::pair<TABLE *, uint>>(mem_root);
+  if (!count_tables) return nullptr;
   for (uint i = 0; i < tables; i++) {
-    auto *src = &qt_source[i];
     auto *qt = &qep_tab[i];
-    qt->set_qs(&qs[i]);
-    auto *table = get_table(src->table());
-    qt->set_table(table);
-    qt->set_type(src->type());
-    qt->set_index(src->index());
+    // See get_exact_record_count() for keyno usage.
+    uint keyno =
+        qt->type() == JT_ALL ||
+                (qt->effective_index() == qt->table()->s->primary_key &&
+                 qt->table()->file->primary_key_is_clustered())
+            ? MAX_KEY
+            : qt->effective_index();
 
-    // Just used in select_count, There is no condition pushed down.
-    assert(!table->file->pushed_idx_cond);
-
-    // See QEP_TAB::effective_index(), we depends that function in
-    // get_exact_record_count()
-    if (src->ref().key != -1) qt->ref().key = src->ref().key;
-    // We don't want clone quick(), use QEP_TAB's index instead.
-    if (src->quick()) qt->set_index(src->quick()->index);
+    if (count_tables->push_back(std::make_pair(qt->table(), keyno)))
+      return nullptr;
   }
 
-  return qep_tab;
+  return count_tables;
 }
 
 bool AccessPathParallelizer::rewrite_unqualified_count(AccessPath *&in,
-                                                       AccessPath *) {
+                                                       AccessPath *out) {
   // Create QEP_TABs for get_exact_record_count() calling.
-  if (!(m_join_out->qep_tab = minimal_clone_qep_tab(
-            m_join_in->qep_tab, m_join_in->primary_tables, mem_root(),
-            [](auto *table) { return table; })))
+  if (!(out->unqualified_count().tables = get_tables_for_unqualified_count(
+            m_join_in->qep_tab, m_join_in->primary_tables, mem_root())))
     return true;
-  m_join_out->tables = m_join_out->primary_tables = m_join_in->primary_tables;
 
   auto *aggregate_path = NewAggregateAccessPath(m_join_out->thd, in, false);
   set_collector_path_pos(&aggregate_path->aggregate().child);
@@ -883,13 +873,18 @@ bool PartialAccessPathRewriter::rewrite_index_range_scan(AccessPath *,
   return false;
 }
 
-bool PartialAccessPathRewriter::rewrite_unqualified_count(AccessPath *&,
-                                                          AccessPath *) {
-  if (!(m_join_out->qep_tab = minimal_clone_qep_tab(
-            m_join_in->qep_tab, m_join_in->primary_tables, mem_root(),
-            [this](TABLE *table) { return find_leaf_table(table); })))
-    return true;
-  m_join_out->tables = m_join_out->primary_tables = m_join_in->primary_tables;
+bool PartialAccessPathRewriter::rewrite_unqualified_count(AccessPath *&in,
+                                                          AccessPath *out) {
+  auto *src_tables = in->unqualified_count().tables;
+  auto *count_tables =
+      new (mem_root()) Mem_root_array<std::pair<TABLE *, uint>>(mem_root());
+  for (auto it : *src_tables) {
+    TABLE *orig_table = it.first;
+    TABLE *table = find_leaf_table(orig_table);
+    uint keyno = it.second;
+    if (count_tables->push_back(std::make_pair(table, keyno))) return true;
+  }
+  out->unqualified_count().tables = count_tables;
 
   return false;
 }

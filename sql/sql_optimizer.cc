@@ -1268,10 +1268,7 @@ uint QEP_TAB::effective_index() const {
       return MAX_KEY;
 
     case JT_RANGE:
-      // PQ: This function just used in select_count pushed down, Avoid to clone
-      // quick(), we use index() instead.
-      return quick() ? quick()->index : index();
-
+      return quick()->index;
     case JT_ALL:
     default:
       // @todo Check why JT_UNKNOWN is a valid value here.

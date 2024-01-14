@@ -461,7 +461,8 @@ unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
       break;
     }
     case AccessPath::UNQUALIFIED_COUNT:
-      iterator = NewIterator<UnqualifiedCountIterator>(thd, join);
+      iterator = NewIterator<UnqualifiedCountIterator>(
+          thd, join, path->unqualified_count().tables);
       break;
     case AccessPath::NESTED_LOOP_JOIN: {
       const auto &param = path->nested_loop_join();
