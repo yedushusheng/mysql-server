@@ -36,8 +36,7 @@ bool PlanDeparser::deparse(THD *thd) {
   if (m_count_appended)
     m_deparse_fields.push_back(new (thd->mem_root) DeField(cur_item_index++));
 
-  // TODO: Remove no_parallel hint
-  m_statement.append(STRING_WITH_LEN("select /*+ no_parallel */ "));
+  m_statement.append(STRING_WITH_LEN("select "));
   bool first = true;
   constexpr enum_query_type qt_deparse =
       enum_query_type(QT_NO_DEFAULT_DB | QT_PRINT_FOR_PLAN_DEPARSE);
@@ -82,6 +81,10 @@ bool PlanDeparser::deparse(THD *thd) {
     m_statement.append(STRING_WITH_LEN(" order by "));
     m_query_block->print_order(thd, &m_statement, join->order.order,
                                qt_deparse);
+  }
+  if (join->m_select_limit) {
+     m_statement.append(STRING_WITH_LEN(" limit "));
+     m_statement.append_ulonglong(join->m_select_limit);
   }
 
   return false;
