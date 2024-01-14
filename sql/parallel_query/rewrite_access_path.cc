@@ -361,7 +361,9 @@ bool AccessPathParallelizer::rewrite_eq_ref(AccessPath *in,
   return false;
 }
 
-bool AccessPathParallelizer::rewrite_index_range_scan(AccessPath *in, AccessPath *out) {
+bool AccessPathParallelizer::rewrite_index_range_scan(AccessPath *in,
+                                                      AccessPath *out
+                                                      [[maybe_unused]]) {
   assert(out);
   auto &index_range_scan = in->index_range_scan();
   auto *quick = index_range_scan.quick;
@@ -638,7 +640,8 @@ bool AccessPathParallelizer::rewrite_stream(AccessPath *in, AccessPath *out) {
   return do_stream_rewrite(m_join_in, in);
 }
 
-bool AccessPathParallelizer::rewrite_filter(AccessPath *in, AccessPath *) {
+bool AccessPathParallelizer::rewrite_filter(AccessPath *in [[maybe_unused]],
+                                            AccessPath *) {
   // XXX clone condition to partial plan
   assert(in->filter().condition->parallel_safe() == Item_parallel_safe::Safe);
   return false;

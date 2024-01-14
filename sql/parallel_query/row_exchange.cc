@@ -30,8 +30,9 @@ bool RowExchange::Init(MEM_ROOT *mem_root, uint num_channels,
 }
 
 static RowChannel::Result ReadOneRow(RowChannel *channel, uchar *dest,
-                                     std::size_t nbytes, bool nowait,
-                                     bool buffer_all, RowDataInfo *rowdata,
+                                     std::size_t nbytes [[maybe_unused]],
+                                     bool nowait, bool buffer_all,
+                                     RowDataInfo *rowdata,
                                      RowSegmentCodec *segcodec) {
   auto segments = rowdata->num_segments();
   auto *curseg = rowdata->segment(0);
