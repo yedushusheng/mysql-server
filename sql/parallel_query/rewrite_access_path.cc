@@ -501,7 +501,10 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
       for (; i < m_join_in->tables; i++) {
         if (m_join_in->qep_tab[i].table() == src->table) break;
       }
-      assert(m_join_in->qep_tab[i].needs_duplicate_removal);
+      // See (5) of need_tmp_before_win setting, a complicated sorting could
+      // create a tmp table.
+      assert(m_join_in->qep_tab[i].needs_duplicate_removal ||
+             m_join_in->qep_tab[i].filesort);
     }
 #endif
     return false;

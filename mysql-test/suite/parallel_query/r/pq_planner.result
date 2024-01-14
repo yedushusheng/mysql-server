@@ -186,7 +186,7 @@ EXPLAIN
 
 SELECT grp, JSON_ARRAYAGG(ckey) AS keys_grouped FROM t1 GROUP BY grp;
 grp	keys_grouped
-g1	["key2", "key1"]
+g1	["key1", "key2"]
 g2	["key3"]
 EXPLAIN format=tree SELECT JSON_OBJECTAGG(ckey, val) AS key_val FROM t1;
 EXPLAIN
@@ -210,4 +210,20 @@ SELECT grp, JSON_OBJECTAGG(ckey, val) AS key_val_grouped FROM t1 GROUP BY grp;
 grp	key_val_grouped
 g1	{"key1": "v1", "key2": "v2"}
 g2	{"key3": "v3"}
+DROP TABLE t1;
+CREATE TABLE t1(a INT, b TEXT);
+INSERT INTO t1 VALUES (1, 'hello'), (2, 'world');
+EXPLAIN format=tree SELECT 1 FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1;
+EXPLAIN
+-> Limit: 1 row(s)
+    -> Gather (slice: 1, workers: 4) with merge sort: `concat(convert(uuid() using utf8mb4),t1.b)` DESC
+        -> Limit: 1 row(s)
+            -> Sort row IDs: `concat(convert(uuid() using utf8mb4),t1.b)` DESC, limit input to 1 row(s) per chunk
+                -> Table scan on <temporary>  (cost=1.26..2.52 rows=2)
+                    -> Temporary table  (cost=1.91..3.17 rows=2)
+                        -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
+
+SELECT 1 FROM t1 ORDER BY concat(uuid(), b) DESC LIMIT 1;
+1
+1
 DROP TABLE t1;
