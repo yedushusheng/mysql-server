@@ -233,6 +233,7 @@ void MySQLClientQueryExec::Terminate(THD *thd, comm::Event *state_event) {
     mysql->terminate(thd);
   }
 }
+bool MySQLClientQueryExec::ExecuteQuery() { return Exec(true); }
 
 bool MySQLClientQueryExec::SendQuery(bool nowait) {
   assert(m_stage == Stage::QuerySending);
@@ -263,7 +264,7 @@ bool MySQLClientQueryExec::ReadRow(bool nowait) {
   assert(m_stage == Stage::RowReading);
   // Row can be fetched in Worker::Start() then this function is called
   // again in ReadNextRow(), so just return that row.
-  if (mysql->row()) return false;
+  if (mysql->has_row()) return false;
 
   bool fetch_complete = !nowait;
 
@@ -274,17 +275,9 @@ bool MySQLClientQueryExec::ReadRow(bool nowait) {
 
   assert(nowait || fetch_complete);
 
-  if (fetch_complete && !mysql->row()) m_stage = Stage::Done;
+  if (fetch_complete && !mysql->has_row()) m_stage = Stage::Done;
 
   return false;
-}
-
-bool MySQLClientQueryExec::ResetRow() {
-  if (mysql->row() == nullptr) return false;
-
-  mysql->reset_row();
-
-  return true;
 }
 
 static double row_field_to_double(char *from, size_t len,
@@ -316,7 +309,7 @@ bool MySQLClientQueryExec::ReadNextRow(std::size_t *nbytesp, void **datap,
   }
 
   *nbytesp = m_table->s->reclength;
-  auto row = mysql->row();
+  auto row = mysql->take_row();
 
   if (!row) {
     *datap = nullptr;  // would block;
@@ -328,7 +321,6 @@ bool MySQLClientQueryExec::ReadNextRow(std::size_t *nbytesp, void **datap,
   if (m_deparser->CountAppended() &&
       **(row + mysql_num_fields(result) - 1) == '0') {
     *nbytesp = 0;
-    ResetRow();
     return false;
   }
 
@@ -370,7 +362,16 @@ bool MySQLClientQueryExec::ReadNextRow(std::size_t *nbytesp, void **datap,
 
   *datap = m_table->record[0];
 
-  ResetRow();
+  return false;
+}
+
+bool MySQLClientQueryExec::DrainOutRows() {
+  while (!IsFinished()) {
+    if (Exec(true)) return true;
+
+    // The socket would be blocked if it is not finished and take no row
+    if (!mysql->take_row()) return IsFinished();
+  }
 
   return false;
 }
@@ -486,7 +487,7 @@ bool MySQLClientWorker::Init(comm::Event *comm_event) {
   return false;
 }
 
-bool MySQLClientWorker::Start() { return m_query_executor.Exec(true); }
+bool MySQLClientWorker::Start() { return m_query_executor.ExecuteQuery(); }
 
 void MySQLClientWorker::Terminate() {
   m_query_executor.Terminate(m_thd, m_state_event);
@@ -498,15 +499,7 @@ bool MySQLClientWorker::IsRunning() {
     return false;
 
   // Could be LIMIT and roll stage to finish, drain out data
-  while (true) {
-    if (m_query_executor.Exec(true) || m_query_executor.IsFinished())
-      return false;
-    // The socket would be blocked if it is not finished and ResetRow() return
-    // false.
-    if (!m_query_executor.ResetRow()) return true;
-  }
-
-  return !m_query_executor.IsFinished();
+  return !m_query_executor.DrainOutRows();
 }
 
 Worker *CreateMySQLClientWorker(uint id, comm::Event *state_event, THD *thd,

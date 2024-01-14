@@ -24,7 +24,12 @@ class MySQLClient {
   virtual void terminate(THD *thd) = 0;
   virtual bool use_result();
   MYSQL *mysql() const { return m_mysql; }
-  MYSQL_ROW row() { return m_row; }
+  MYSQL_ROW take_row() {
+    auto row = m_row;
+    m_row = nullptr;
+    return row;
+  }
+  bool has_row() { return m_row != nullptr; }
   void reset_row() { m_row = nullptr; }
   MYSQL_RES *result() { return m_result; }
 
@@ -84,15 +89,12 @@ class MySQLClientQueryExec {
   MySQLClientQueryExec(PlanDeparser *deparser, TABLE *collector_table);
   ~MySQLClientQueryExec();
   bool Init(THD *thd, TABLE *parallel_table, uint worker_id);
-  bool SendQuery(bool nowait);
-  bool ReadRow(bool nowait);
-  /// Return true if current row is not nullptr (that means it is actually
-  /// reset) .
-  bool ResetRow();
-  bool Exec(bool nowait);
-  bool IsFinished() const { return m_error || m_stage == Stage::Done; }
+  bool ExecuteQuery();
   /// *nbytesp == 0 means rows read out, *datap = nullptr means WOULD_BLOCK.
   bool ReadNextRow(std::size_t *nbytesp, void **datap, bool nowait);
+  bool IsFinished() const { return m_error || m_stage == Stage::Done; }
+  /// Drain out rows in a non-block mode, @return true if out of rows
+  bool DrainOutRows();
   void Terminate(THD *thd, comm::Event *state_event);
   bool IsConnected() const { return m_stage != Stage::None; }
   bool IsQuerySent() const { return m_stage >= Stage::QuerySending; }
@@ -100,6 +102,10 @@ class MySQLClientQueryExec {
   void RemoveSocketFromEventService();
 
  private:
+  bool Exec(bool nowait);
+  bool SendQuery(bool nowait);
+  bool ReadRow(bool nowait);
+
   MySQLClient *mysql{nullptr};
   Stage m_stage{Stage::None};
 
