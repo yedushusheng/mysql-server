@@ -2220,6 +2220,63 @@ void calc_length_and_keyparts(Key_use *keyuse, JOIN_TAB *tab, const uint key,
   *keyparts_out = keyparts;
 }
 
+TABLE_REF *TABLE_REF::clone(TABLE *table,
+                            table_map const_tables,
+                            Item_clone_context *context) {
+  assert(key >= 0 && key_copy);
+  THD *thd = context->thd();
+  TABLE_REF *ref = new (thd->mem_root) TABLE_REF;
+
+  if (init_ref(thd, key_parts, key_length, key, ref)) return nullptr;
+
+  ref->key_err = key_err;
+  ref->depend_map = depend_map;
+  ref->use_count = use_count;
+  ref->disable_cache = disable_cache;
+  // TODO: keypart_hash copy
+  assert(!keypart_hash);
+
+  KEY *const keyinfo = table->key_info + key;
+  assert(keyinfo);
+
+  uchar *keypart_buff = ref->key_buff;
+  for (uint part_no = 0; part_no < key_parts; part_no++) {
+    // Don't support cond_guards, yet
+    assert(cond_guards[part_no] == nullptr);
+    Item *item;
+    if (!(item = items[part_no]->clone(context))) return nullptr;
+
+    table_map used_tables = item->used_tables();
+    const KEY_PART_INFO *keypart_info = &keyinfo->key_part[part_no];
+    if (init_ref_part(thd, part_no, item, nullptr,
+                      ((key_part_map)1 << part_no & null_rejecting),
+                      const_tables, used_tables, keypart_info->null_bit,
+                      keypart_info, keypart_buff, ref))
+      return nullptr;
+    table->mark_column_used(keypart_info->field, thd->mark_used_columns);
+
+    keypart_buff += keypart_info->store_length;
+  }
+
+  if (null_ref_key)
+    ref->null_ref_key = ref->key_buff + (null_ref_key - key_buff);
+
+  return ref;
+}
+
+Item_parallel_safe TABLE_REF::parallel_safe(TABLE *table) const {
+  auto safe = Item_parallel_safe::Safe;
+
+  if (!key_copy) return safe;
+  if (!(table->key_info + key)) return safe;
+
+  for (uint part_no = 0; part_no < key_parts; part_no++) {
+    auto item_safe = items[part_no]->parallel_safe();
+    if (item_safe > safe) safe = item_safe;
+  }
+  return safe;
+}
+
 /**
   Setup a ref access for looking up rows via an index (a key).
 

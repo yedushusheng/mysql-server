@@ -29,3 +29,11 @@ DROP TABLE t1, t2;
 CREATE TABLE t1(a int);
 SELECT 1 FROM t1 WHERE 1 > ALL(SELECT 1 FROM t1 WHERE a);
 DROP TABLE t1;
+
+# Don't choose parallel plan if table ref items is not parallel safe
+CREATE TABLE t1(a INT, b INT, INDEX(b));
+insert into t1 values (1, 1),(2, 2);
+CREATE FUNCTION f1() RETURNS INT DETERMINISTIC RETURN 1;
+EXPLAIN FORMAT=tree SELECT * FROM t1 WHERE b = f1();
+DROP TABLE t1;
+DROP FUNCTION f1;

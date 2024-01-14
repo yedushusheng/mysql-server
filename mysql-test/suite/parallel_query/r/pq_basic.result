@@ -280,7 +280,7 @@ b
 EXPLAIN format=tree SELECT b FROM t1 GROUP BY b LIMIT 4;
 EXPLAIN
 -> Limit: 4 row(s)  (cost=N.NNN rows=NNN)
-    -> Gather (slice: 1, workers: 4)
+    -> Gather (slice: 1, workers: 4) with merge sort: t1.b
         -> Limit: 4 row(s)  (cost=N.NNN rows=NNN)
             -> Index range scan on t1 using index_for_group_by(b)  (cost=N.NNN rows=NNN)
 
@@ -322,6 +322,26 @@ a
 4
 5
 5
+### ref scan ###
+EXPLAIN format=tree SELECT a FROM t1 WHERE b = 2;
+EXPLAIN
+-> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
+    -> Index lookup on t1 using b (b=2)  (cost=N.NNN rows=NNN)
+
+SELECT a FROM t1 WHERE b = 2;
+a
+2
+2
+### ref or null scan ###
+EXPLAIN format=tree SELECT a FROM t1 WHERE b = 2 or b is NULL;
+EXPLAIN
+-> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
+    -> Index lookup on t1 using b (b=2 or NULL), with index condition: ((t1.b = 2) or (t1.b is null))  (cost=N.NNN rows=NNN)
+
+SELECT a FROM t1 WHERE b = 2 or b is NULL;
+a
+2
+2
 DROP TABLE t1;
 ### group min max scan ###
 CREATE TABLE t1 (
@@ -335,7 +355,7 @@ CREATE INDEX idx_t1_1 ON t1 (a1,a2,b,c);
 CREATE INDEX idx_t1_2 ON t1 (a1,a2,b);
 EXPLAIN format=tree SELECT a1, MIN(a2),MAX(a2) FROM t1 GROUP BY a1;
 EXPLAIN
--> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
+-> Gather (slice: 1, workers: 4) with merge sort: t1.a1  (cost=N.NNN rows=NNN)
     -> Index range scan on t1 using index_for_group_by(idx_t1_1)  (cost=N.NNN rows=NNN)
 
 SELECT a1, MIN(a2),MAX(a2) FROM t1 GROUP BY a1;

@@ -165,6 +165,13 @@ struct TABLE_REF {
     }
     return false;
   }
+
+  /**
+    return a cloned new TABLE_REF for @param table
+  */
+  TABLE_REF *clone(TABLE *table, table_map const_tables,
+                   Item_clone_context *context);
+  Item_parallel_safe parallel_safe(TABLE *table) const;
 };
 
 struct CACHE_FIELD;

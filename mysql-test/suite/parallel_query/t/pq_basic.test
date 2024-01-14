@@ -90,6 +90,14 @@ INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,
 --let $query=SELECT a FROM t1 WHERE b BETWEEN 2 AND 5
 --source suite/parallel_query/include/explain_and_run.inc
 
+--echo ### ref scan ###
+--let $query=SELECT a FROM t1 WHERE b = 2
+--source suite/parallel_query/include/explain_and_run.inc
+
+--echo ### ref or null scan ###
+--let $query=SELECT a FROM t1 WHERE b = 2 or b is NULL
+--source suite/parallel_query/include/explain_and_run.inc
+
 DROP TABLE t1;
 
 --echo ### group min max scan ###

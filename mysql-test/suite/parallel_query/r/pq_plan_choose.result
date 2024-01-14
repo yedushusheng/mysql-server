@@ -17,7 +17,8 @@ EXPLAIN
 
 EXPLAIN FORMAT=tree SELECT a, b FROM t1 WHERE b = 1;
 EXPLAIN
--> Index lookup on t1 using b (b=1)  (cost=0.35 rows=1)
+-> Gather (slice: 1, workers: 4)  (cost=0.35 rows=1)
+    -> Index lookup on t1 using b (b=1)  (cost=0.35 rows=1)
 
 EXPLAIN FORMAT=tree SELECT b FROM t1 WHERE b between 1 and 2;
 EXPLAIN
@@ -41,3 +42,12 @@ CREATE TABLE t1(a int);
 SELECT 1 FROM t1 WHERE 1 > ALL(SELECT 1 FROM t1 WHERE a);
 1
 DROP TABLE t1;
+CREATE TABLE t1(a INT, b INT, INDEX(b));
+insert into t1 values (1, 1),(2, 2);
+CREATE FUNCTION f1() RETURNS INT DETERMINISTIC RETURN 1;
+EXPLAIN FORMAT=tree SELECT * FROM t1 WHERE b = f1();
+EXPLAIN
+-> Index lookup on t1 using b (b=f1())  (cost=0.35 rows=1)
+
+DROP TABLE t1;
+DROP FUNCTION f1;

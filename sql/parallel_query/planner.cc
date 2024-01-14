@@ -103,6 +103,22 @@ static bool IsAccessRangeSupported(QEP_TAB *qt) {
          quick_type == QUICK_SELECT_I::QS_TYPE_GROUP_MIN_MAX;
 }
 
+static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
+  auto typ = qt->type();
+  // JT_EQ_REF used by subselect or join between tables
+  if (typ < JT_EQ_REF || typ > JT_REF_OR_NULL || typ == JT_FT)
+    return "table_access_type_is_not_supported";
+
+  if (qt->type() == JT_RANGE && !IsAccessRangeSupported(qt))
+    return "unsupported_access_range_type";
+
+  if (qt->type() == JT_REF &&
+      qt->ref().parallel_safe(qt->table()) != Item_parallel_safe::Safe)
+    return "has_unsafe_items_in_table_ref";
+
+  return nullptr;
+}
+
 static void ChooseParallelPlan(JOIN *join) {
   THD *thd = join->thd;
   Opt_trace_context *const trace = &thd->opt_trace;
@@ -194,15 +210,7 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  if (qt->type() != JT_ALL && qt->type() != JT_INDEX_SCAN &&
-      qt->type() != JT_RANGE) {
-    cause = "table_access_type_is_not_supported";
-    return;
-  }
-  if (qt->type() == JT_RANGE && !IsAccessRangeSupported(qt)) {
-    cause = "unsupported_access_range_type";
-    return;
-  }
+  if ((cause = TableAccessTypeRefuseParallel(qt))) return;
 
   bool specified_by_hint;
   uint32 parallel_degree =
@@ -1067,6 +1075,9 @@ bool Query_block::clone_from(THD *thd, Query_block *from,
 }
 
 bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
+  // TABLE_REF clone use this, see TABLE_REF::clone().
+  const_table_map = from->const_table_map;
+
   zero_result_cause = from->zero_result_cause;
   select_count = from->select_count;
 
