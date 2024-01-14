@@ -609,11 +609,10 @@ bool AccessPathRewriter::do_stream_rewrite(JOIN *join, AccessPath *path) {
                                   &stream.temp_table_param))
     return true;
 
-  // XXX see setup_tmptable_write_func(), do some refactor for this. Also
-  // the case OT_MATERIALIZE and precomputed_group_by process
-
+  // See setup_tmptable_write_func(), stream aggregation and precomputed
+  // GROUP BY needs this hack for aggregation functions.
   Temp_table_param *const tmp_tbl = stream.temp_table_param;
-  if (join->streaming_aggregation && !tmp_tbl->precomputed_group_by) {
+  if (join->streaming_aggregation || tmp_tbl->precomputed_group_by) {
     for (Item_sum **func_ptr = join->sum_funcs; *func_ptr != nullptr;
          ++func_ptr) {
       tmp_tbl->items_to_copy->push_back(
