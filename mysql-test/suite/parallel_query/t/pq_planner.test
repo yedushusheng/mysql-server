@@ -207,6 +207,14 @@ DEALLOCATE PREPARE STMT;
 let drop_table_name=t1;
 --source include/drop_spider_table.inc
 
+# make sure pushed_idx_cond is parallel safe
+let create_table_sql=CREATE TABLE t2 (id int primary key auto_increment, date_col datetime NOT NULL, col1 int, filler varchar(255), KEY date_col (date_col, col1));
+let shardkey=id;
+--source include/create_spider_table.inc
+EXPLAIN FORMAT=tree select * from t2 force index(date_col) where    col1 + 10000000 > (@cnt:=@cnt+1) and date_col >= date('2014-04-01');
+let drop_table_name=t2;
+--source include/drop_spider_table.inc
+
 # clean env.
 --source ../include/deinit_spider.inc
 --enable_warnings
