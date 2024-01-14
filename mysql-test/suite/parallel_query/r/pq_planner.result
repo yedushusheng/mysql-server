@@ -1,5 +1,5 @@
-enable parallel query with max_parallel_degree = 1
-CREATE TABLE t1(a int, b int, c int);
+enable parallel query forcibly with max_parallel_degree = 1 and cost/records threshold = 0
+CREATE TABLE t1(a INT, b INT, c INT);
 INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 EXPLAIN format=tree SELECT a FROM t1 HAVING a = 1;
 EXPLAIN
@@ -11,4 +11,127 @@ SELECT a FROM t1 HAVING a = 1;
 a
 1
 1
+DROP TABLE t1;
+CREATE TABLE t1(a INT);
+INSERT INTO t1 VALUES(1),(2),(3);
+EXPLAIN format=tree SELECT IF( a = 1, a, a ) AS `b` FROM t1 ORDER BY field( `b` + 1, 1 );
+EXPLAIN
+-> Gather (slice: 1, workers: 1) with merge sort: `field((b + 1),1)`  (cost=1127.50 rows=10000)
+    -> Sort: field((b + 1),1)  (cost=1127.50 rows=10000)
+        -> Table scan on t1  (cost=1127.50 rows=10000)
+
+SELECT IF( a = 1, a, a ) AS `b` FROM t1 ORDER BY field( `b` + 1, 1 );
+b
+1
+2
+3
+DROP TABLE t1;
+CREATE TABLE t1 (f1 INTEGER);
+EXPLAIN format=tree SELECT (SELECT COUNT(*) + (SELECT COUNT(*) FROM t1 WHERE f1 = c.f2) FROM t1) FROM (SELECT 555 AS f2) AS c;
+EXPLAIN
+-> Rows fetched before execution  (cost=0.00..0.00 rows=1)
+-> Select #2 (subquery in projection; dependent)
+    -> Aggregate: count(0)  (cost=2127.50 rows=10000)
+        -> Table scan on t1  (cost=1127.50 rows=10000)
+    -> Select #3 (subquery in projection; dependent)
+        -> Aggregate: count(0)  (cost=1227.50 rows=1000)
+            -> Filter: (t1.f1 = '555')  (cost=1127.50 rows=1000)
+                -> Table scan on t1  (cost=1127.50 rows=10000)
+    -> Select #3 (subquery in projection; dependent)
+        -> Aggregate: count(0)  (cost=1227.50 rows=1000)
+            -> Filter: (t1.f1 = '555')  (cost=1127.50 rows=1000)
+                -> Table scan on t1  (cost=1127.50 rows=10000)
+
+Warnings:
+Note	1276	Field or reference 'c.f2' of SELECT #3 was resolved in SELECT #1
+SELECT (SELECT COUNT(*) + (SELECT COUNT(*) FROM t1 WHERE f1 = c.f2) FROM t1) FROM (SELECT 555 AS f2) AS c;
+(SELECT COUNT(*) + (SELECT COUNT(*) FROM t1 WHERE f1 = c.f2) FROM t1)
+0
+DROP TABLE t1;
+CREATE TABLE t1(a INT NOT NULL, PRIMARY KEY(a));
+INSERT INTO t1 VALUES(1),(2);
+EXPLAIN format=tree SELECT max(a), max(concat("*", a, "*")) FROM t1;;
+EXPLAIN
+-> Aggregate: max(`max(concat('*',t1.a,'*'))`)  (cost=2127.50 rows=10000)
+    -> Gather (slice: 1, workers: 1)
+        -> Aggregate: max(concat('*',t1.a,'*'))  (cost=2127.50 rows=10000)
+            -> Index scan on t1 using PRIMARY  (cost=1127.50 rows=10000)
+
+SELECT max(a), max(concat("*", a, "*")) FROM t1;;
+max(a)	max(concat("*", a, "*"))
+2	*2*
+DROP TABLE t1;
+CREATE TABLE t1 (
+Period smallint(4) unsigned zerofill DEFAULT '0000' NOT NULL,
+Varor_period smallint(4) unsigned DEFAULT '0' NOT NULL
+);
+Warnings:
+Warning	1681	The ZEROFILL attribute is deprecated and will be removed in a future release. Use the LPAD function to zero-pad numbers, or store the formatted numbers in a CHAR column.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+INSERT INTO t1 VALUES (9410,9412);
+EXPLAIN format=tree SELECT 1+1 AS summa FROM t1 GROUP BY summa LIMIT 1;
+EXPLAIN
+-> Limit: 1 row(s)  (cost=2127.50 rows=1)
+    -> Group (no aggregates)  (cost=2127.50 rows=10000)
+        -> Gather (slice: 1, workers: 1)
+            -> Group (no aggregates)  (cost=2127.50 rows=10000)
+                -> Table scan on t1  (cost=1127.50 rows=10000)
+
+SELECT 1+1 AS summa FROM t1 GROUP BY summa LIMIT 1;
+summa
+2
+DROP TABLE t1;
+CREATE TABLE `t` (
+`a` varbinary(10) DEFAULT NULL
+);
+INSERT INTO t VALUES(0xFF00F0F0), (NULL), (0xF0F0FF00);
+EXPLAIN format=tree SELECT SQL_BUFFER_RESULT HEX(BIT_AND(a)), HEX(BIT_OR(a)), HEX(BIT_XOR(a)) FROM t;
+EXPLAIN
+-> Aggregate: bit_xor(a), bit_or(a), bit_and(a)  (cost=2127.61..3255.00 rows=10000)
+    -> Gather (slice: 1, workers: 1)
+        -> Aggregate: bit_xor(t.a), bit_or(t.a), bit_and(t.a)  (cost=2127.61..3255.00 rows=10000)
+            -> Table scan on <temporary>  (cost=0.01..127.50 rows=10000)
+                -> Temporary table  (cost=2127.51..2255.00 rows=10000)
+                    -> Table scan on t  (cost=1127.50 rows=10000)
+
+SELECT SQL_BUFFER_RESULT HEX(BIT_AND(a)), HEX(BIT_OR(a)), HEX(BIT_XOR(a)) FROM t;
+HEX(BIT_AND(a))	HEX(BIT_OR(a))	HEX(BIT_XOR(a))
+F000F000	FFF0FFF0	0FF00FF0
+DROP TABLE t;
+CREATE TABLE `t1` (
+`i` int DEFAULT NULL,
+`d` date DEFAULT NULL
+);
+INSERT INTO t1 VALUES (1, '2008-01-01'), (2, '2008-01-02'), (3, '2008-01-03');
+EXPLAIN format=tree SELECT COALESCE(d, d), IFNULL(d, d), IF(i, d, d), CASE i WHEN i THEN d ELSE d END, GREATEST(d, d), LEAST(d, d) FROM t1 ORDER BY RAND();
+EXPLAIN
+
+            -> Table scan on t1  (cost=1127.50 rows=10000)
+        -> Stream results  (cost=1127.50 rows=10000)
+    -> Sort: `rand()`
+-> Gather (slice: 1, workers: 1) with merge sort: `rand()`
+SELECT COALESCE(d, d), IFNULL(d, d), IF(i, d, d), CASE i WHEN i THEN d ELSE d END, GREATEST(d, d), LEAST(d, d) FROM t1 ORDER BY RAND();
+COALESCE(d, d)	IFNULL(d, d)	IF(i, d, d)	CASE i WHEN i THEN d ELSE d END	GREATEST(d, d)	LEAST(d, d)
+2008-01-01	2008-01-01	2008-01-01	2008-01-01	2008-01-01	2008-01-01
+2008-01-02	2008-01-02	2008-01-02	2008-01-02	2008-01-02	2008-01-02
+2008-01-03	2008-01-03	2008-01-03	2008-01-03	2008-01-03	2008-01-03
+DROP TABLE t1;
+CREATE TABLE t1(c1 INT);
+INSERT INTO t1 VALUES(1),(2),(3);
+EXPLAIN format=tree (SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2;
+EXPLAIN
+-> Limit: 2 row(s)
+    -> Append
+        -> Stream results  (cost=1127.50 rows=10000)
+            -> Gather (slice: 1, workers: 1)  (cost=1127.50 rows=10000)
+                -> Table scan on t1  (cost=1127.50 rows=10000)
+        -> Stream results  (cost=1127.50 rows=10000)
+            -> Gather (slice: 1, workers: 1)  (cost=1127.50 rows=10000)
+                -> Table scan on t1  (cost=1127.50 rows=10000)
+
+(SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2;
+c1
+1
+2
 DROP TABLE t1;

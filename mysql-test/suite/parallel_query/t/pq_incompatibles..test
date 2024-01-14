@@ -1,0 +1,12 @@
+--source suite/parallel_query/include/pq_default.inc
+
+# the case comes from alter_table.test, an extra warning is reported due to
+# different execution path in Query_result_to_collector::send_data()
+CREATE TABLE t(a INT);
+INSERT INTO t VALUES ();
+# SQLEngine: rocksdb don't support generated column, yet.
+# --error ER_UNSUPPORTED_ACTION_ON_GENERATED_COLUMN
+# ALTER TABLE t
+# ADD COLUMN d DATE GENERATED ALWAYS AS (NULL) VIRTUAL NOT NULL;
+SELECT * FROM t;
+DROP TABLE t;

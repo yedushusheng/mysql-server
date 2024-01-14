@@ -1,9 +1,67 @@
 --source suite/parallel_query/include/pq_default.inc
 
-CREATE TABLE t1(a int, b int, c int);
+CREATE TABLE t1(a INT, b INT, c INT);
 INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
-
 --let $query = SELECT a FROM t1 HAVING a = 1
 --source suite/parallel_query/include/explain_and_run.inc
+DROP TABLE t1;
 
+# Item_ref clone should set Item::context because create_tmp_table use it see sort_copy_func().
+CREATE TABLE t1(a INT);
+INSERT INTO t1 VALUES(1),(2),(3);
+--let $query = SELECT IF( a = 1, a, a ) AS `b` FROM t1 ORDER BY field( `b` + 1, 1 )
+--source suite/parallel_query/include/explain_and_run.inc
+DROP TABLE t1;
+
+# Inner-most query block's condition refer to temp table field of outer block
+# with condition()->used_tables() = 1 (should return a value with bit
+# OUTER_REF_TABLE_BIT set.)
+CREATE TABLE t1 (f1 INTEGER);
+--let $query = SELECT (SELECT COUNT(*) + (SELECT COUNT(*) FROM t1 WHERE f1 = c.f2) FROM t1) FROM (SELECT 555 AS f2) AS c
+--source suite/parallel_query/include/explain_and_run.inc
+DROP TABLE t1;
+
+# max() was optimized to const item, see optimize_aggregated_query() in opt_sum.cc
+CREATE TABLE t1(a INT NOT NULL, PRIMARY KEY(a));
+INSERT INTO t1 VALUES(1),(2);
+--let $query = SELECT max(a), max(concat("*", a, "*")) FROM t1;
+--source suite/parallel_query/include/explain_and_run.inc
+DROP TABLE t1;
+
+# group list can be empty in aggregate access path
+CREATE TABLE t1 (
+  Period smallint(4) unsigned zerofill DEFAULT '0000' NOT NULL,
+  Varor_period smallint(4) unsigned DEFAULT '0' NOT NULL
+);
+
+INSERT INTO t1 VALUES (9410,9412);
+--let $query = SELECT 1+1 AS summa FROM t1 GROUP BY summa LIMIT 1
+--source suite/parallel_query/include/explain_and_run.inc
+DROP TABLE t1;
+
+# sum_func arg 1 replaced by a temporary table Item_field, we saved origial arg to orig_args.
+CREATE TABLE `t` (
+  `a` varbinary(10) DEFAULT NULL
+);
+INSERT INTO t VALUES(0xFF00F0F0), (NULL), (0xF0F0FF00);
+--let $query = SELECT SQL_BUFFER_RESULT HEX(BIT_AND(a)), HEX(BIT_OR(a)), HEX(BIT_XOR(a)) FROM t
+--source suite/parallel_query/include/explain_and_run.inc
+DROP TABLE t;
+
+# access path STREAM could be pushed to workers
+CREATE TABLE `t1` (
+  `i` int DEFAULT NULL,
+  `d` date DEFAULT NULL
+);
+INSERT INTO t1 VALUES (1, '2008-01-01'), (2, '2008-01-02'), (3, '2008-01-03');
+ # force filesort
+--sorted_result
+--let $query = SELECT COALESCE(d, d), IFNULL(d, d), IF(i, d, d), CASE i WHEN i THEN d ELSE d END, GREATEST(d, d), LEAST(d, d) FROM t1 ORDER BY RAND()
+--source suite/parallel_query/include/explain_and_run.inc
+DROP TABLE t1;
+
+CREATE TABLE t1(c1 INT);
+INSERT INTO t1 VALUES(1),(2),(3);
+--let $query = (SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2
+--source suite/parallel_query/include/explain_and_run.inc
 DROP TABLE t1;

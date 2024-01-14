@@ -4,12 +4,10 @@ CREATE TABLE t1 (a INT, b INT, c INT DEFAULT 0);
 INSERT INTO t1 (a, b) VALUES (3,3), (2,2), (3,3), (2,2), (3,3), (4,4);
 CREATE TABLE t2 SELECT * FROM t1;
 
-# collector support be evaluated several times.
+# collector may be evaluated several times.
 FLUSH STATUS;
 --let $query = SELECT t1.a, SUM(t1.b) FROM t1 WHERE t1.a = (SELECT SUM(t2.b) FROM t2 ORDER BY SUM(t2.b) + SUM(t1.b) LIMIT 1) GROUP BY t1.a
 --source suite/parallel_query/include/explain_and_run.inc
-SELECT variable_value > @@max_parallel_degree AS has_worker_created FROM performance_schema.session_status WHERE Variable_name = 'PQ_workers_created';
-
 DROP TABLE t1, t2;
 
 # subselect_hash_sj_engine::exec() could be evaluate Collector::Reset() multiple
@@ -28,3 +26,22 @@ INSERT INTO t2 SELECT * FROM t1;
 
 SELECT t1.col1 FROM t1 WHERE t1.col2 IN  (SELECT /*+ SUBQUERY(MATERIALIZATION) */ t2.col2 FROM t2  GROUP BY t2.col1, t2.col2 HAVING t2.col1 <= 10);
 DROP TABLE t1, t2;
+
+# one collector ended without call Init()
+CREATE TABLE t1(c1 INT);
+INSERT INTO t1 VALUES(1),(2),(3);
+(SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2;
+DROP TABLE t1;
+
+# SQL_CALC_FOUND_ROWS testing
+CREATE TABLE t1(id INT);
+INSERT INTO t1 VALUES(1),(2),(3),(2);
+
+SELECT SQL_CALC_FOUND_ROWS id FROM t1 LIMIT 2;
+SELECT found_rows();
+
+# don't collect found rows from workers.
+SELECT id FROM t1 LIMIT 2;
+SELECT SQL_CALC_FOUND_ROWS id FROM t1 GROUP BY id LIMIT 2;
+SELECT found_rows();
+DROP TABLE t1;

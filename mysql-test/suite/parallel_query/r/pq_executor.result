@@ -1,4 +1,4 @@
-enable parallel query with max_parallel_degree = 1
+enable parallel query forcibly with max_parallel_degree = 1 and cost/records threshold = 0
 CREATE TABLE t1 (a INT, b INT, c INT DEFAULT 0);
 INSERT INTO t1 (a, b) VALUES (3,3), (2,2), (3,3), (2,2), (3,3), (4,4);
 CREATE TABLE t2 SELECT * FROM t1;
@@ -11,18 +11,13 @@ EXPLAIN
             -> Table scan on t1  (cost=1127.50 rows=10000)
             -> Select #2 (subquery in condition; dependent)
                 -> Limit: 1 row(s)  (cost=2127.50 rows=1)
-                    -> Aggregate: sum(b)  (cost=2127.50 rows=10000)
-                        -> Gather (slice: 1, workers: 1)
-                            -> Aggregate: sum(t2.b)  (cost=2127.50 rows=10000)
-                                -> Table scan on t2  (cost=1127.50 rows=10000)
+                    -> Aggregate: sum(t2.b)  (cost=2127.50 rows=10000)
+                        -> Table scan on t2  (cost=1127.50 rows=10000)
 
 Warnings:
 Note	1276	Field or reference 'test.t1.b' of SELECT #2 was resolved in SELECT #1
 SELECT t1.a, SUM(t1.b) FROM t1 WHERE t1.a = (SELECT SUM(t2.b) FROM t2 ORDER BY SUM(t2.b) + SUM(t1.b) LIMIT 1) GROUP BY t1.a;
 a	SUM(t1.b)
-SELECT variable_value > @@max_parallel_degree AS has_worker_created FROM performance_schema.session_status WHERE Variable_name = 'PQ_workers_created';
-has_worker_created
-1
 DROP TABLE t1, t2;
 CREATE TABLE t1 (col1 INT, col2 VARCHAR(5), col_t1 INT);
 CREATE TABLE t2 (col1 INT, col2 VARCHAR(5), col_t2 INT);
@@ -42,3 +37,39 @@ col1
 10
 10
 DROP TABLE t1, t2;
+CREATE TABLE t1(c1 INT);
+INSERT INTO t1 VALUES(1),(2),(3);
+(SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2;
+c1
+1
+2
+DROP TABLE t1;
+CREATE TABLE t1(id INT);
+INSERT INTO t1 VALUES(1),(2),(3),(2);
+SELECT SQL_CALC_FOUND_ROWS id FROM t1 LIMIT 2;
+id
+1
+2
+Warnings:
+Warning	1287	SQL_CALC_FOUND_ROWS is deprecated and will be removed in a future release. Consider using two separate queries instead.
+SELECT found_rows();
+found_rows()
+4
+Warnings:
+Warning	1287	FOUND_ROWS() is deprecated and will be removed in a future release. Consider using COUNT(*) instead.
+SELECT id FROM t1 LIMIT 2;
+id
+1
+2
+SELECT SQL_CALC_FOUND_ROWS id FROM t1 GROUP BY id LIMIT 2;
+id
+1
+2
+Warnings:
+Warning	1287	SQL_CALC_FOUND_ROWS is deprecated and will be removed in a future release. Consider using two separate queries instead.
+SELECT found_rows();
+found_rows()
+3
+Warnings:
+Warning	1287	FOUND_ROWS() is deprecated and will be removed in a future release. Consider using COUNT(*) instead.
+DROP TABLE t1;

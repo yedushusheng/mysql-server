@@ -1,17 +1,21 @@
-enable parallel query with max_parallel_degree = 1
+enable parallel query forcibly with max_parallel_degree = 1 and cost/records threshold = 0
 CREATE TABLE t1(a INT);
 INSERT INTO t1 VALUES(1), (2);
-# worker initialization failure tests
+### worker initialization failure tests ###
 SELECT * FROM t1;
 a
 1
 2
-SET debug = 'd,pq_simulate_worker_init_exec_state_error';
+SET debug = 'd,pq_simulate_worker_prepare_query_plan_error_1';
 SELECT * FROM t1;
 ERROR HY000: Got unknown error: 2
-SET debug = '-d,pq_simulate_worker_init_exec_state_error';
+SET debug = '-d,pq_simulate_worker_prepare_query_plan_error_1';
+SET debug = 'd,pq_simulate_worker_prepare_query_plan_error_2';
+SELECT * FROM t1;
+ERROR HY000: Got unknown error: 3
+SET debug = '-d,pq_simulate_worker_prepare_query_plan_error_2';
 INSERT INTO t1 WITH RECURSIVE gen(a) AS (SELECT 1 UNION ALL SELECT a + 1 FROM gen WHERE a < 20) SELECT * FROM gen;
-# one worker send partial result to leader
+### one worker send partial result to leader ###
 SET debug = 'd,pq_simulate_one_worker_part_result_error';
 SELECT * FROM t1 ORDER BY a LIMIT 2 OFFSET 20;
 ERROR HY000: Got unknown error: 1
