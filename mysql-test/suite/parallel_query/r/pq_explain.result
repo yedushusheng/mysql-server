@@ -5,7 +5,7 @@ EXPLAIN ANALYZE SELECT a FROM t1 GROUP BY a;
 EXPLAIN
 -> Table scan on <temporary>  (cost=0.20..2.66 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
     -> Temporary table with deduplication  (cost=3.05..5.51 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
-        -> Gather (slice: 1, workers: 4)  (actual time=N.NNN..N.NNN rows=8 loops=1)
+        -> Gather (slice: 1, workers: 4)  (actual time=N.NNN..N.NNN rows=6 loops=1)
             -> Table scan on <temporary>  (cost=0.20..2.66 rows=13) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
                 -> Temporary table with deduplication  (cost=3.05..5.51 rows=13) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
                     -> Table scan on t1, with parallel scan ranges: 400  (cost=1.55 rows=13) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
@@ -18,5 +18,14 @@ EXPLAIN
             -> Table scan on <temporary>  (cost=0.20..2.66 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
                 -> Temporary table with deduplication  (cost=3.05..5.51 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
                     -> Table scan on t1, with parallel scan ranges: 100  (cost=1.55 rows=13) (actual time=N.NNN..N.NNN rows=13 loops=1)
+
+EXPLAIN format=tree SELECT * FROM t1 UNION SELECT * FROM t1;
+EXPLAIN
+-> Table scan on <union temporary>  (cost=0.11..2.83 rows=26)
+    -> Union materialize with deduplication  (cost=5.81..8.53 rows=26)
+        -> Gather (slice: 1, workers: 4)  (cost=1.55 rows=13)
+            -> Table scan on t1, with parallel scan ranges: 400  (cost=1.55 rows=13)
+        -> Gather (slice: 1, workers: 4)  (cost=1.55 rows=13)
+            -> Table scan on t1, with parallel scan ranges: 400  (cost=1.55 rows=13)
 
 DROP TABLE t1;

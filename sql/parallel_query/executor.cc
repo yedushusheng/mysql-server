@@ -444,7 +444,9 @@ class FakeTimingIterator : public RowIterator {
 
 std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   std::string str;
-  if (!join->partial_plan) return str;
+  // For the union temporary scan, join is nullptr
+  if (!join || !join->partial_plan) return str;
+
   auto &scaninfo = join->partial_plan->TablesParallelScan();
   if (table != scaninfo.table) return str;
 

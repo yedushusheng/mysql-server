@@ -8,4 +8,8 @@ INSERT INTO t1 VALUES ('A'),('B'),('A'),('B'),('A'),('B'),(NULL),('a'),('b'),(NU
 EXPLAIN ANALYZE SELECT a FROM t1 GROUP BY a;
 --replace_regex /time=\d+\.\d+\.\.\d+\.\d+/time=N.NNN..N.NNN/
 EXPLAIN ANALYZE SELECT /*+ parallel(1) */ a FROM t1 GROUP BY a;
+
+# issue #1186: crash EXPLAIN tree for query with UNION
+EXPLAIN format=tree SELECT * FROM t1 UNION SELECT * FROM t1;
+
 DROP TABLE t1;
