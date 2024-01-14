@@ -5,8 +5,6 @@
 #include "my_base.h"
 #include "my_dbug.h"
 #include "my_sqlcommand.h"
-#include "mysql/psi/mysql_cond.h"
-#include "mysql/psi/mysql_mutex.h"
 #include "sql/parallel_query/row_exchange.h"
 #include "sql/row_iterator.h"
 #include "sql/handler.h"
@@ -51,7 +49,7 @@ class Collector {
 
  private:
   bool LaunchWorkers(THD *thd, bool *has_failed_worker);
-  void TerminateWorkers();
+  void TerminateWorkers(THD *thd);
   void CollectStatusFromWorkers(THD *thd);
   bool InitParallelScan();
   Diagnostics_area *combine_workers_stmt_da(THD *thd, ha_rows *found_rows);
@@ -66,8 +64,7 @@ class Collector {
 
   std::vector<Worker *> m_workers;
 
-  mysql_mutex_t m_worker_state_lock;
-  mysql_cond_t m_worker_state_cond;
+  comm::Event m_worker_state_event;
   bool is_ended{false};
 };
 

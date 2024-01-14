@@ -19,10 +19,7 @@
 namespace pq {
 
 Collector::Collector(uint num_workers, PartialPlan *partial_plan)
-    : m_partial_plan(partial_plan), m_workers(num_workers) {
-  mysql_mutex_init(PSI_INSTRUMENT_ME, &m_worker_state_lock, MY_MUTEX_INIT_FAST);
-  mysql_cond_init(PSI_INSTRUMENT_ME, &m_worker_state_cond);
-}
+    : m_partial_plan(partial_plan), m_workers(num_workers) {}
 
 Collector::~Collector() {
   if (m_table) {
@@ -34,9 +31,6 @@ Collector::~Collector() {
   destroy(m_merge_sort);
 
   Reset();
-
-  mysql_mutex_destroy(&m_worker_state_lock);
-  mysql_cond_destroy(&m_worker_state_cond);
 }
 
 bool Collector::CreateCollectorTable() {
@@ -105,8 +99,8 @@ bool Collector::Init(THD *thd) {
   // you should use m_id - 1
   uint wid = 1;
   for (auto *&worker : m_workers) {
-    worker = CreateLocalWorker(wid++, thd, partial_plan(), &m_worker_state_lock,
-                               &m_worker_state_cond);
+    worker =
+      CreateLocalWorker(wid++, &m_worker_state_event, thd, partial_plan());
     if (!worker || worker->Init(m_receiver_exchange.event())) return true;
   }
 
@@ -172,24 +166,22 @@ bool Collector::LaunchWorkers(THD *thd, bool *has_failed_worker) {
   return false;
 }
 
-void Collector::TerminateWorkers() {
+void Collector::TerminateWorkers(THD *thd) {
   // Note, worker could fail to allocate see Init()
   for (auto *worker : m_workers) {
-      if (!worker) continue;
-      worker->Terminate();
+    if (!worker) continue;
+    worker->Terminate();
   }
-  // Wait all workers to exit.
-  mysql_mutex_lock(&m_worker_state_lock);
+  // Wait all workers to exit, NOTE, Don't check killed here otherwise
+  // some workers would lost control.
   while (true) {
     uint left_workers = m_workers.size();
     for (auto *worker : m_workers) {
-      if (!worker || !worker->IsRunning(false)) --left_workers;
+      if (!worker || !worker->IsRunning()) --left_workers;
     }
     if (left_workers == 0) break;
-    mysql_cond_wait(&m_worker_state_cond, &m_worker_state_lock);
+    m_worker_state_event.Wait(thd);
   }
-
-  mysql_mutex_unlock(&m_worker_state_lock);
 }
 
 Collector::CollectResult Collector::Read(THD *thd) {
@@ -250,7 +242,7 @@ void Collector::CollectStatusFromWorkers(THD *thd) {
 
 void Collector::End(THD *thd, ha_rows *found_rows) {
   if (is_ended) return;
-  TerminateWorkers();
+  TerminateWorkers(thd);
 
   // XXX moves this to elsewhere if we support multiple collector
   CollectStatusFromWorkers(thd);

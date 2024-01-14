@@ -9,15 +9,19 @@
 // A helper function of worker thread enter entry
 
 namespace pq {
- constexpr uint message_queue_ring_size = 65536;
+constexpr uint message_queue_ring_size = 65536;
 
 /**
   Class has a instance of THD, needs call destroy if allocated in MEM_ROOT
 */
 class LocalWorker : public Worker {
  public:
-  LocalWorker(uint d, THD *thd,  PartialPlan *plan,
-              mysql_mutex_t *state_lock, mysql_cond_t *state_cond);
+  LocalWorker(uint id, comm::Event *state_event, THD *thd, PartialPlan *plan)
+      : Worker(id, state_event),
+        m_leader_thd(thd),
+        m_thd(true, m_leader_thd),
+        m_executor(&m_thd, plan, [this]() { SetState(State::Cleaning); }) {}
+
   /// The receiver row channel created inside of worker, @param comm_event
   /// is for receiver waiting.
   bool Init(comm::Event *comm_event) override;
@@ -37,7 +41,7 @@ class LocalWorker : public Worker {
   void ThreadMainEntry();
 
  protected:
-   State state(bool need_state_lock = true) const override;
+  State state() const override;
   /// Set worker state to @param state and broadcast "state cond" if
   /// State::Finished.
   void SetState(State state) override;
@@ -56,22 +60,15 @@ class LocalWorker : public Worker {
 
   PartialExecutor m_executor;
 
-  State m_state{State::None};
-  mysql_mutex_t *m_state_lock;
-  mysql_cond_t *m_state_cond;
+  std::atomic<State> m_state{State::None};
   bool m_terminate_requested{false};
 };
 
 Worker::~Worker() { destroy(m_receiver_channel); }
 
-LocalWorker::LocalWorker(uint id, THD *thd, PartialPlan *plan,
-                         mysql_mutex_t *state_lock, mysql_cond_t *state_cond)
-    : Worker(id),
-      m_leader_thd(thd),
-      m_thd(true, m_leader_thd),
-      m_executor(&m_thd, plan, [this]() { SetState(State::Cleaning); }),
-      m_state_lock(state_lock),
-      m_state_cond(state_cond) {}
+void Worker::SetState(State state) {
+  if (state == State::Finished) m_state_event->Set();
+}
 
 bool LocalWorker::Init(comm::Event *comm_event) {
 #if defined(ENABLED_DEBUG_SYNC)
@@ -145,20 +142,14 @@ bool LocalWorker::Start() {
   return false;
 }
 
-Worker::State LocalWorker::state(bool need_state_lock) const {
-  if (need_state_lock) mysql_mutex_lock(m_state_lock);
-  mysql_mutex_assert_owner(m_state_lock);
-  auto cur_state = m_state;
-  if (need_state_lock) mysql_mutex_unlock(m_state_lock);
-
+Worker::State LocalWorker::state() const {
+  auto cur_state = m_state.load();
   return cur_state;
 }
 
 void LocalWorker::SetState(State state) {
-  mysql_mutex_lock(m_state_lock);
   m_state = state;
-  if (state == State::Finished) mysql_cond_broadcast(m_state_cond);
-  mysql_mutex_unlock(m_state_lock);
+  Worker::SetState(state);
 }
 
 void LocalWorker::CollectStatusVars(THD *target_thd) {
@@ -170,9 +161,7 @@ void LocalWorker::Terminate() {
 
   if (m_terminate_requested || thd->killed) return;
 
-  mysql_mutex_lock(m_state_lock);
-  bool need_send_kill = IsRunning(false) && m_state != State::Cleaning;
-  mysql_mutex_unlock(m_state_lock);
+  bool need_send_kill = IsRunning() && m_state != State::Cleaning;
   if (!need_send_kill) return;
 
   mysql_mutex_lock(&thd->LOCK_thd_data);
@@ -254,7 +243,7 @@ Diagnostics_area *LocalWorker::stmt_da(bool finished_collect,
   THD* thd = &m_thd;
   if (!finished_collect) return thd->get_stmt_da();
 
-  assert(!IsRunning(true));
+  assert(!IsRunning());
 
   *found_rows = thd->previous_found_rows;
   *examined_rows = thd->get_examined_row_count();
@@ -274,10 +263,8 @@ Diagnostics_area *LocalWorker::stmt_da(bool finished_collect,
   return da;
 }
 
-Worker *CreateLocalWorker(uint id, THD *thd, PartialPlan *plan,
-                          mysql_mutex_t *state_lock, mysql_cond_t *state_cond) {
-  auto *worker =
-      new (thd->mem_root) LocalWorker(id, thd, plan, state_lock, state_cond);
-  return worker;
+Worker *CreateLocalWorker(uint id, comm::Event *state_event, THD *thd,
+                          PartialPlan *plan) {
+  return new (thd->mem_root) LocalWorker(id, state_event, thd, plan);
 }
 }  // namespace pq
