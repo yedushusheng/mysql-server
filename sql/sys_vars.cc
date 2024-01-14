@@ -7067,5 +7067,5 @@ static Sys_var_uint Sys_max_parallel_degree(
     "Define maximum active parallel degree for one query. "
     "This variable is used to limit parallel execution cpu resources",
     HINT_UPDATEABLE SESSION_VAR(max_parallel_degree), CMD_LINE(REQUIRED_ARG),
-    VALID_RANGE(0, pq::max_parallel_degree_limit),
+    VALID_RANGE(0, max_parallel_degree_limit),
     DEFAULT(pq::default_max_parallel_degree), BLOCK_SIZE(1));

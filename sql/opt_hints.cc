@@ -84,6 +84,7 @@ struct st_opt_hint_info opt_hint_info[] = {
     {"GROUP_INDEX", false, false, false},
     {"ORDER_INDEX", false, false, false},
     {"DERIVED_CONDITION_PUSHDOWN", true, true, false},
+    {"PARALLEL", true, false, false},
     {nullptr, false, false, false}};
 
 /**
@@ -190,6 +191,7 @@ void Opt_hints::check_unresolved(THD *thd) {
 
 PT_hint *Opt_hints_global::get_complex_hints(opt_hints_enum type) {
   if (type == MAX_EXEC_TIME_HINT_ENUM) return max_exec_time;
+  if (type == PARALLEL_HINT_ENUM) return parallel_hint;
 
   DBUG_ASSERT(0);
   return nullptr;
@@ -216,6 +218,7 @@ PT_hint *Opt_hints_qb::get_complex_hints(opt_hints_enum type) {
   if (type == SEMIJOIN_HINT_ENUM) return semijoin_hint;
 
   if (type == SUBQUERY_HINT_ENUM) return subquery_hint;
+  if (type == PARALLEL_HINT_ENUM) return parallel_hint;
 
   DBUG_ASSERT(0);
   return nullptr;
@@ -578,6 +581,7 @@ bool is_compound_hint(opt_hints_enum type_arg) {
 }
 
 PT_hint *Opt_hints_table::get_complex_hints(opt_hints_enum type) {
+  if (type == PARALLEL_HINT_ENUM) return parallel_scan;
   DBUG_ASSERT(is_compound_hint(type));
   return get_compound_key_hint(type)->get_pt_hint();
 }

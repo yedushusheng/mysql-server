@@ -9523,6 +9523,12 @@ ER_WARN_ASYNC_CONN_FAILOVER_NETWORK_NAMESPACE
 ER_STARTING_PARALLEL_QUERY_THREAD
   eng "The parallel query worker threads failed to start. (errno: %d - %s)"
 
+ER_WARN_BAD_PARALLEL_DEGREE
+  eng "Invalid degree of parallelism"
+
+ER_WARN_UNSUPPORTED_PARALLEL
+  eng "PARALLEL hint is not supported by this statement"
+
 #
 #  End of 8.0 error messages (server-to-client).
 #  Do NOT add messages intended for the error log above!

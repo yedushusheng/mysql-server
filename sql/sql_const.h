@@ -183,6 +183,7 @@ static const ulong SCHEMA_DEF_CACHE_MIN = 256;
 static const ulong STORED_PROGRAM_DEF_CACHE_MIN = 256;
 static const ulong TABLESPACE_DEF_CACHE_MIN = 256;
 static const ulong EVENT_DEF_CACHE_MIN = 256;
+constexpr uint max_parallel_degree_limit = 128;
 
 /*
   Stack reservation.

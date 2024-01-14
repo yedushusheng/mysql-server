@@ -286,6 +286,48 @@ class PT_hint_max_execution_time : public PT_hint {
   }
 };
 
+class PT_hint_parallel : public PT_hint {
+  typedef PT_hint super;
+
+ public:
+  constexpr static uint32 parallel_disabled{0};
+  constexpr static uint32 degree_unspecified{UINT32_MAX};
+
+  explicit PT_hint_parallel(longlong degree_arg)
+      : PT_hint(PARALLEL_HINT_ENUM, true), degree(degree_arg) {}
+  explicit PT_hint_parallel(Hint_param_table &table_name_arg,
+                            longlong degree_arg)
+      : PT_hint(PARALLEL_HINT_ENUM, true),
+        degree(degree_arg),
+        table_name(table_name_arg) {}
+
+  explicit PT_hint_parallel(LEX_CSTRING &query_block, longlong degree_arg)
+      : PT_hint(PARALLEL_HINT_ENUM, true),
+        degree(degree_arg),
+        table_name({NULL_CSTR, query_block}) {}
+
+  explicit PT_hint_parallel(Hint_param_table &table_name_arg,
+                            bool switch_state_arg)
+      : PT_hint(PARALLEL_HINT_ENUM, switch_state_arg),
+        table_name(table_name_arg) {}
+
+  explicit PT_hint_parallel(LEX_CSTRING &query_block)
+      : PT_hint(PARALLEL_HINT_ENUM, false),
+        table_name({NULL_CSTR, query_block}) {}
+
+  explicit PT_hint_parallel() : PT_hint(PARALLEL_HINT_ENUM, false) {}
+
+  bool contextualize(Parse_context *pc) override;
+  void append_args(const THD *thd, String *str) const override;
+  // Returns specified degree, disabled_parallel or degree_unspecified.
+  uint32 parallel_degree() const;
+
+ private:
+  uint32 degree{degree_unspecified};
+  Hint_param_table table_name = {NULL_CSTR, NULL_CSTR};
+  bool is_global_hint{false};
+};
+
 class PT_hint_sys_var : public PT_hint {
   const LEX_CSTRING sys_var_name;
   Item *sys_var_value;

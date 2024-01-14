@@ -517,6 +517,68 @@ bool PT_hint_max_execution_time::contextualize(Parse_context *pc) {
   return false;
 }
 
+bool PT_hint_parallel::contextualize(Parse_context *pc) {
+  if (super::contextualize(pc)) return true;
+
+  if (pc->thd->lex->sql_command != SQLCOM_SELECT) {
+    push_warning(pc->thd, Sql_condition::SL_WARNING,
+                 ER_WARN_UNSUPPORTED_PARALLEL,
+                 ER_THD(pc->thd, ER_WARN_UNSUPPORTED_PARALLEL));
+    return false;
+  }
+
+  Opt_hints_qb *qb = find_qb_hints(pc, &table_name.opt_query_block, this);
+  if (qb == nullptr) return false;
+
+  is_global_hint =
+      (pc->select == pc->thd->lex->query_block &&
+       table_name.opt_query_block.length == 0 && table_name.table.length == 0);
+
+  if (is_global_hint) {
+    Opt_hints_global *global_hint = get_global_hints(pc);
+    if (global_hint->is_specified(type())) {
+      print_warn(pc->thd, ER_WARN_CONFLICTING_HINT, nullptr, nullptr, nullptr,
+                 this);
+      return false;
+    }
+    global_hint->parallel_hint = this;
+    global_hint->set_switch(switch_on(), type(), false);
+    return false;
+  }
+
+  const bool is_qb_hint = table_name.table.length == 0;
+  if (is_qb_hint) {
+    if (qb->set_switch(switch_on(), type(), false))
+      print_warn(pc->thd, ER_WARN_CONFLICTING_HINT, &table_name.opt_query_block,
+                 nullptr, nullptr, this);
+
+    if (!qb->parallel_hint) qb->parallel_hint = this;
+
+    return false;
+  }
+
+  Opt_hints_table *table_hint = get_table_hints(pc, &table_name, qb);
+  if (table_hint->set_switch(switch_on(), type(), false))
+    print_warn(pc->thd, ER_WARN_CONFLICTING_HINT, nullptr, nullptr, nullptr,
+               this);
+
+  if (!table_hint->parallel_scan) table_hint->parallel_scan = this;
+
+  return false;
+}
+
+void PT_hint_parallel::append_args(const THD *, String *str) const {
+  if (degree == UINT32_MAX) return;
+
+  if (!is_global_hint) str->append(STRING_WITH_LEN(" "));
+  str->append_ulonglong(degree);
+}
+
+uint32 PT_hint_parallel::parallel_degree() const {
+  if (!switch_on()) return parallel_disabled;
+  return degree;
+}
+
 bool PT_hint_sys_var::contextualize(Parse_context *pc) {
   if (!sys_var_value) {
     // No warning here, warning is issued by parser.
