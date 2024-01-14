@@ -1594,6 +1594,18 @@ type_conversion_status Item_sum_bit::save_in_field_inner(Field *to,
                      default_charset());
 }
 
+type_conversion_status Item_sum_bit::save_in_field_inner(Field *to,
+                                                         bool no_conversions) {
+  if (m_sum_stage != Item_sum::TRANSITION_STAGE)
+    return super::save_in_field_inner(to, no_conversions);
+
+  if (hybrid_type == INT_RESULT)
+    return to->store(bits, unsigned_flag);
+  else
+    return to->store((char *)value_buff.ptr(), value_buff.length(),
+                     default_charset());
+}
+
 void Item_sum_bit::remove_bits(const String *s1, ulonglong b1) {
   if (m_is_xor) {
     // XOR satisfies ((A OP B) OP B) == A, so inverting is easy:
@@ -1759,14 +1771,28 @@ bool Item_sum_bit::add_bits(const String *s1, ulonglong b1) {
 bool Item_sum_bit::add() {
   char buff[CONVERT_IF_BIGGER_TO_BLOB - 1];
 
-  const String *argval_s = nullptr;
+  String *argval_s = nullptr;
   ulonglong argval_i = 0;
 
   String tmp_str(buff, sizeof(buff), &my_charset_bin);
-  if (hybrid_type == STRING_RESULT) {
-    argval_s = args[0]->val_str(&tmp_str);
-  } else
-    argval_i = (ulonglong)args[0]->val_int();
+  if (m_sum_stage == Item_sum::COMBINE_STAGE) {
+    auto *tmp_table_field = args[0]->get_tmp_table_field();
+    assert(tmp_table_field);
+    if (hybrid_type == STRING_RESULT) {
+      argval_s = tmp_table_field->val_str(&tmp_str);
+      auto slen = argval_s->length();
+      const bool non_nulls = (*argval_s)[slen - 1];
+      if (!non_nulls) return false;
+      argval_s->length(slen - 1);
+    } else
+      argval_i = tmp_table_field->val_int();
+  }
+  else {
+    if (hybrid_type == STRING_RESULT) {
+      argval_s = args[0]->val_str(&tmp_str);
+    } else
+      argval_i = (ulonglong)args[0]->val_int();
+  }
   if (current_thd->is_error()) {
     return true;
   }
@@ -2312,6 +2338,18 @@ bool Item_sum_hybrid_field::init_from(const Item *from,
   sum_stage = item->sum_stage;
   return false;
 }
+
+type_conversion_status Item_sum_hybrid_field::save_in_field_inner(
+    Field *to, bool no_conversions) {
+  if (sum_stage != Item_sum::TRANSITION_STAGE)
+    return Item_result_field::save_in_field_inner(to, no_conversions);
+
+  auto *cs = collation.collation;
+  to->set_notnull();
+  return to->store(pointer_cast<const char *>(field->data_ptr()),
+                   field->data_length(), cs);
+}
+
 bool Item_sum_avg::resolve_type(THD *thd) {
   if (Item_sum_sum::resolve_type(thd)) return true;
 
@@ -3649,7 +3687,8 @@ double Item_sum_avg::get_arg_sum_count(longlong *count) {
     *count = 1;
     return nr;
   }
-  uchar *arg_ptr = args[0]->get_tmp_table_field()->field_ptr();
+  // Here, use data_ptr(), see Item_sum_hybrid_field::save_in_field_inner()
+  const uchar *arg_ptr = args[0]->get_tmp_table_field()->data_ptr();
   *count = sint8korr(arg_ptr + sizeof(double));
   return float8get(arg_ptr);
 }
@@ -3991,18 +4030,6 @@ String *Item_avg_field::val_str(String *str) {
   return val_string_from_real(str);
 }
 
-type_conversion_status Item_avg_field::save_in_field_inner(
-    Field *to, bool no_conversions) {
-  if (sum_stage != Item_sum::TRANSITION_STAGE)
-    return Item_sum_num_field::save_in_field_inner(to, no_conversions);
-
-  auto *cs = collation.collation;
-  to->set_notnull();
-  return to->store((char *)field->field_ptr(), field->field_length, cs);
-}
-
-
-
 Item_sum_bit_field::Item_sum_bit_field(Item_result res_type, Item_sum_bit *item,
                                        ulonglong neutral_element) {
   DBUG_ASSERT(!item->m_is_window_function);
@@ -4022,6 +4049,7 @@ Item_sum_bit_field::Item_sum_bit_field(Item_result res_type, Item_sum_bit *item,
   // Implementation requires a non-Blob for string results.
   DBUG_ASSERT(hybrid_type != STRING_RESULT ||
               field->type() == MYSQL_TYPE_VARCHAR);
+  sum_stage = item->sum_stage;
 }
 
 Item_sum_bit_field::Item_sum_bit_field(const Item_sum_bit_field *item) {
@@ -4169,15 +4197,6 @@ double Item_variance_field::val_real() {
 
   if ((null_value = (count <= sample))) return 0.0;
   return variance_fp_recurrence_result(recurrence_s, 0.0, count, sample, false);
-}
-
-type_conversion_status Item_variance_field::save_in_field_inner(
-    Field *to, bool no_conversions) {
-  if (sum_stage != Item_sum::TRANSITION_STAGE)
-    return Item_sum_num_field::save_in_field_inner(to, no_conversions);
-  to->set_notnull();
-  return to->store((char *)field->field_ptr(), field->field_length,
-                   collation.collation);
 }
 
 /****************************************************************************

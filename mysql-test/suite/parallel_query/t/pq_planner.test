@@ -48,6 +48,30 @@ INSERT INTO t VALUES(0xFF00F0F0), (NULL), (0xF0F0FF00);
 --source suite/parallel_query/include/explain_and_run.inc
 DROP TABLE t;
 
+CREATE TABLE t (group_id int, a varbinary(10));
+INSERT INTO t(group_id, a) VALUES
+(1, 0x34567101ABFF00F0F0),
+(2, NULL),
+(1, 0x34567102ABF0F0F0F0),
+(3, 0x34567104ABF0F0F0F0),
+(1, 0x34567103ABFF00F0F0),
+(5, 0xABCDEF),
+(5, 0x123456),
+(5, 0x789123),
+(1, 0x34567104ABF0F0F0F0),
+(4, 0x34567100ABF0F0F0F0),
+(4, NULL),
+(4, 0x34567101ABFF00F0F0);
+--sorted_result
+SELECT group_id, HEX(BIT_AND(a)), HEX(BIT_OR(a)), HEX(BIT_XOR(a))
+FROM t
+GROUP BY group_id;
+--sorted_result
+SELECT group_id, HEX(BIT_AND(a)), BIT_AND(192), BIT_AND(0x303233), BIT_AND(binary "foo")
+FROM t
+GROUP BY group_id;
+DROP TABLE t;
+
 # access path STREAM could be pushed to workers
 CREATE TABLE `t1` (
   `i` int DEFAULT NULL,

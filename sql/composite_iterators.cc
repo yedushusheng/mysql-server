@@ -227,12 +227,21 @@ int AggregateIterator::Read() {
           SetRollupLevel(m_join->send_group_parts);
           return -1;
         } else {
+          bool first_phase_of_grouping = false;
           // If there's no GROUP BY, we need to output a row even if there are
           // no input rows.
 
           // Calculate aggregate functions for no rows
           for (Item *item : *m_join->get_current_fields()) {
             item->no_rows_in_result();
+
+            if (first_phase_of_grouping ||
+                item->type() != Item::SUM_FUNC_ITEM)
+              continue;
+            auto *sum_item = down_cast<Item_sum *>(item);
+            if (sum_item->sum_stage() == Item_sum::TRANSITION_STAGE &&
+                sum_item->aggr_query_block == m_join->query_block)
+              first_phase_of_grouping = true;            
           }
 
           /*

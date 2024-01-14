@@ -1176,6 +1176,7 @@ class Item_sum_hybrid_field : public Item_result_field {
   Field *field;
   /// Stores the Item's result type.
   Item_result hybrid_type;
+  Item_sum::Sumfuncstage sum_stage;
 
  public:
   enum Item_result result_type() const override { return hybrid_type; }
@@ -1255,6 +1256,13 @@ class Item_sum_bit_field : public Item_sum_hybrid_field {
   Item *new_item(Item_clone_context *) const override {
     return new Item_sum_bit_field(this);
   }
+  type_conversion_status save_in_field_inner(Field *to,
+                                             bool no_conversions) override {
+    if (sum_stage == Item_sum::TRANSITION_STAGE && hybrid_type == INT_RESULT)
+      return Item_result_field::save_in_field_inner(to, no_conversions);
+    // Let parent class handle that.
+    return Item_sum_hybrid_field::save_in_field_inner(to, no_conversions);
+  }  
   bool resolve_type(THD *) override { return false; }
   bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzydate) override;
   bool get_time(MYSQL_TIME *ltime) override;
@@ -1932,6 +1940,8 @@ class Item_sum_bit : public Item_sum {
   void reset_field() override;
   void update_field() override;
 	bool init_from(const Item *from, Item_clone_context *context) override;
+  type_conversion_status save_in_field_inner(Field *to,
+                                             bool no_conversions) override;
   bool resolve_type(THD *) override;
   bool fix_fields(THD *thd, Item **ref) override;
   void cleanup() override {
