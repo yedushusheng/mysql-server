@@ -614,11 +614,15 @@ bool AccessPathParallelizer::rewrite_stream(AccessPath *in, AccessPath *out) {
   return do_stream_rewrite(m_join_in, in);
 }
 
-bool AccessPathParallelizer::rewrite_filter(AccessPath *in [[maybe_unused]],
-                                            AccessPath *) {
-  // XXX clone condition to partial plan
+bool AccessPathParallelizer::rewrite_filter(AccessPath *in, AccessPath *out) {
   assert(in->filter().condition->parallel_safe() == Item_parallel_safe::Safe);
-  m_join_out->where_cond = in->filter().condition;
+
+  // HAVING is not pushed down.
+  if (out && !(out->filter().condition =
+            in->filter().condition->clone(m_item_clone_context)))
+    return true;
+
+  if (out) m_join_out->where_cond = in->filter().condition;
 
   return false;
 }
