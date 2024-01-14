@@ -45,6 +45,7 @@ class Collector {
   void TerminateWorkers();
   bool HandleWorkerExited(uint windex);
   void CollectStatusFromWorkers(THD *thd);
+  bool InitParallelScan();
   Diagnostics_area *combine_workers_stmt_da(THD *thd, ha_rows *found_rows);
 #if !defined(NDEBUG)
   CSStackClone dbug_cs_stack_clone;
@@ -58,6 +59,7 @@ class Collector {
 
   mysql_mutex_t m_worker_state_lock;
   mysql_cond_t m_worker_state_cond;
+  bool is_ended{false};
 };
 
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);

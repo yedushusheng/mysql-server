@@ -45,6 +45,7 @@ class Worker {
   /// Let row exchange reader side return, We need call this if there is a
   /// failure before lex->result is set.
   void NotifyAbort();
+  bool AttachTablesParallelScan();
   /// Set worker state to @param state and broadcast "state cond" if
   /// State::Finished.
   void SetState(State state);

@@ -814,7 +814,7 @@ bool MaterializeIterator::MaterializeQueryBlock(const QueryBlock &query_block,
     return true;
   }
   auto end_parallel_plan = create_scope_guard([join] {
-    if (join) join->end_parallel_plan();
+    if (join) join->end_parallel_plan(false);
   });
   PFSBatchMode pfs_batch_mode(query_block.subquery_iterator.get());
   while (*stored_rows < m_limit_rows) {

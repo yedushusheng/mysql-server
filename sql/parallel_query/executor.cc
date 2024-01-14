@@ -99,6 +99,21 @@ bool Collector::CreateRowExchange(MEM_ROOT *mem_root) {
   return false;
 }
 
+bool Collector::InitParallelScan() {
+  auto &psinfo = m_partial_plan->TablesParallelScan();
+  auto *table = psinfo.table;
+  ulong nranges = 100 * NumWorkers();
+  int res;
+
+  if ((res = table->file->init_parallel_scan(
+           &table->parallel_scan_handle, &nranges, &psinfo.scan_desc)) != 0) {
+    table->file->print_error(res, MYF(0));
+    return true;
+  }
+
+  return false;
+}
+
 bool Collector::Init(THD *thd) {
   // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
   // you should use m_id - 1
@@ -115,6 +130,9 @@ bool Collector::Init(THD *thd) {
         return m_workers[index]->MessageQueue();
       }))
     return true;
+
+  // Do initialize parallel scan for tables before workers are started
+  if (InitParallelScan()) return true;
 
   DEBUG_SYNC(thd, "before_launch_pqworkers");
 
@@ -180,14 +198,17 @@ bool Collector::LaunchWorkers(bool &has_failed_worker) {
 }
 
 void Collector::TerminateWorkers() {
-  for (auto *worker : m_workers) worker->Terminate();
-
+  // Note, worker could fail to allocate see Init()
+  for (auto *worker : m_workers) {
+      if (!worker) continue;
+      worker->Terminate();
+  }
   // Wait all workers to exit.
   mysql_mutex_lock(&m_worker_state_lock);
   while (true) {
     uint left_workers = m_workers.size();
     for (auto *worker : m_workers) {
-      if (!worker->IsRunning(false)) --left_workers;
+      if (!worker || !worker->IsRunning(false)) --left_workers;
     }
     if (left_workers == 0) break;
     mysql_cond_wait(&m_worker_state_cond, &m_worker_state_lock);
@@ -239,12 +260,16 @@ Diagnostics_area *Collector::combine_workers_stmt_da(THD *thd,
                                                      ha_rows *found_rows) {
   Diagnostics_area *cond_da = nullptr;
   bool is_error = false;
+
+  if (found_rows) *found_rows = 0;
   for (auto *worker : m_workers) {
+    if (!worker) continue;
     ha_rows cur_found_rows = 0;
     ha_rows cur_examined_rows = 0;
     Diagnostics_area *da = worker->stmt_da(&cur_found_rows, &cur_examined_rows);
 
     if (found_rows) *found_rows += cur_found_rows;
+
     thd->inc_examined_row_count(cur_examined_rows);
 
     if (!da) continue;
@@ -263,16 +288,20 @@ Diagnostics_area *Collector::combine_workers_stmt_da(THD *thd,
 
 void Collector::CollectStatusFromWorkers(THD *thd) {
   for (auto *worker : m_workers) {
+    if (!worker) continue;
     auto *worker_thd = worker->thd();
     add_to_status(&thd->status_var, &worker_thd->status_var);
   }
 }
 
 void Collector::End(THD *thd, ha_rows *found_rows) {
+  if (is_ended) return;
   TerminateWorkers();
 
   // XXX moves this to elsewhere if we support multiple collector
   CollectStatusFromWorkers(thd);
+
+  is_ended = true;
 
   auto *combined_da = combine_workers_stmt_da(thd, found_rows);
   if (!combined_da) return;
@@ -483,7 +512,15 @@ int CollectorIterator::Read() {
   return 0;
 }
 
-void JOIN::end_parallel_plan() {
+void JOIN::end_parallel_plan(bool fill_send_records) {
   if (!parallel_plan) return;
-  parallel_plan->EndCollector(thd, &send_records);
+  if (!calc_found_rows) fill_send_records = false;
+  parallel_plan->EndCollector(thd, fill_send_records ? &send_records : nullptr);
+}
+
+void JOIN::destroy_parallel_plan() {
+  if (!parallel_plan) return;
+
+  ::destroy(parallel_plan);
+  parallel_plan = nullptr;
 }
