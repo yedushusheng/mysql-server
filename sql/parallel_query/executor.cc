@@ -164,7 +164,7 @@ bool Collector::LaunchWorkers(THD *thd) {
   return false;
 }
 
-void Collector::TerminateWorkers(THD *thd) {
+void Collector::TerminateWorkers() {
   // Note, worker could fail to allocate see Init()
   for (auto *worker : m_workers) {
     if (!worker) continue;
@@ -178,7 +178,7 @@ void Collector::TerminateWorkers(THD *thd) {
       if (!worker || !worker->IsRunning()) --left_workers;
     }
     if (left_workers == 0) break;
-    m_worker_state_event.Wait(thd);
+    m_worker_state_event.Wait(nullptr);
   }
 }
 
@@ -240,7 +240,7 @@ void Collector::CollectStatusFromWorkers(THD *thd) {
 
 void Collector::End(THD *thd, ha_rows *found_rows) {
   if (is_ended) return;
-  TerminateWorkers(thd);
+  TerminateWorkers();
 
   // XXX moves this to elsewhere if we support multiple collector
   CollectStatusFromWorkers(thd);

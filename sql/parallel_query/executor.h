@@ -49,7 +49,7 @@ class Collector {
 
  private:
   bool LaunchWorkers(THD *thd);
-  void TerminateWorkers(THD *thd);
+  void TerminateWorkers();
   void CollectStatusFromWorkers(THD *thd);
   bool InitParallelScan();
   Diagnostics_area *combine_workers_stmt_da(THD *thd, ha_rows *found_rows);
