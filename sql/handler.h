@@ -5601,7 +5601,12 @@ class handler {
       parallel_scan_handle_t scan_handle MY_ATTRIBUTE((unused))) {
     return HA_ERR_UNSUPPORTED;
   }
-
+  virtual int estimate_parallel_scan_ranges(
+      parallel_scan_desc_t *scan_desc MY_ATTRIBUTE((unused)),
+      ulong *nranges MY_ATTRIBUTE((unused)),
+      ha_rows *nrows MY_ATTRIBUTE((unused))) {
+    return HA_ERR_UNSUPPORTED;
+  }
   /**
     Reports number of tables included in pushed join which this
     handler instance is part of. ==0 -> Not pushed

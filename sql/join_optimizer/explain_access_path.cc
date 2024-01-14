@@ -342,9 +342,10 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
   vector<ExplainData::Child> children;
   switch (path->type) {
     case AccessPath::TABLE_SCAN:
-      description.push_back(string("Table scan on ") +
-                            path->table_scan().table->alias +
-                            path->table_scan().table->file->explain_extra());
+      description.push_back(
+          string("Table scan on ") + path->table_scan().table->alias +
+          path->table_scan().table->file->explain_extra() +
+          pq::ExplainTableParallelScan(join, path->table_scan().table));
       AddChildrenFromPushedCondition(path->table_scan().table, &children);
       break;
     case AccessPath::INDEX_SCAN: {
@@ -358,6 +359,7 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
         str += " (reverse)";
       }
       str += table->file->explain_extra();
+      str += pq::ExplainTableParallelScan(join, path->index_scan().table);
 
       description.push_back(move(str));
       AddChildrenFromPushedCondition(table, &children);
@@ -378,6 +380,7 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
                ItemToString(table->file->pushed_idx_cond);
       }
       str += table->file->explain_extra();
+      str += pq::ExplainTableParallelScan(join, path->ref().table);
       description.push_back(move(str));
       AddChildrenFromPushedCondition(table, &children);
       break;
@@ -395,6 +398,7 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
                ItemToString(table->file->pushed_idx_cond);
       }
       str += table->file->explain_extra();
+      str += pq::ExplainTableParallelScan(join, path->ref_or_null().table);
       description.push_back(move(str));
       AddChildrenFromPushedCondition(table, &children);
       break;
@@ -411,6 +415,7 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
                ItemToString(table->file->pushed_idx_cond);
       }
       str += table->file->explain_extra();
+      str += pq::ExplainTableParallelScan(join, path->eq_ref().table);
       description.push_back(move(str));
       AddChildrenFromPushedCondition(table, &children);
       break;
@@ -489,6 +494,7 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
                ItemToString(table->file->pushed_idx_cond);
       }
       ret += table->file->explain_extra();
+      ret += pq::ExplainTableParallelScan(join, path->index_range_scan().table);
       description.push_back(move(ret));
       AddChildrenFromPushedCondition(table, &children);
       break;

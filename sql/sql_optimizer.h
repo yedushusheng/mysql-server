@@ -94,6 +94,7 @@ class Cost_model_server;
 
 namespace pq {
 class ParallelPlan;
+class PartialPlan;
 }
 
 struct SARGABLE_PARAM {
@@ -711,6 +712,7 @@ class JOIN {
   bool with_json_agg;
 
   pq::ParallelPlan *parallel_plan{nullptr};
+  pq::PartialPlan *partial_plan{nullptr};
   void end_parallel_plan(bool fill_send_records);
   void destroy_parallel_plan();
 

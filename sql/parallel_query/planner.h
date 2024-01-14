@@ -28,6 +28,7 @@ class ItemRefCloneResolver : public Item_ref_clone_resolver {
 
 struct ParallelScanInfo {
   TABLE *table;
+  ulong suggested_ranges;
   parallel_scan_desc_t scan_desc;
 };
 

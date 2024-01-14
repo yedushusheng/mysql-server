@@ -5,7 +5,7 @@ EXPLAIN format=tree SELECT a FROM t1 HAVING a = 1;
 EXPLAIN
 -> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN)
     -> Filter: (t1.a = 1)  (cost=N.NNN rows=NNN)
-        -> Table scan on t1  (cost=N.NNN rows=NNN)
+        -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
 
 SELECT a FROM t1 HAVING a = 1;
 a
@@ -18,7 +18,7 @@ EXPLAIN format=tree SELECT IF( a = 1, a, a ) AS `b` FROM t1 ORDER BY field( `b` 
 EXPLAIN
 -> Gather (slice: 1, workers: 4) with merge sort: `field((b + 1),1)`  (cost=N.NNN rows=NNN)
     -> Sort: field((b + 1),1)  (cost=N.NNN rows=NNN)
-        -> Table scan on t1  (cost=N.NNN rows=NNN)
+        -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
 
 SELECT IF( a = 1, a, a ) AS `b` FROM t1 ORDER BY field( `b` + 1, 1 );
 b
@@ -55,7 +55,7 @@ EXPLAIN
 -> Aggregate: max(`max(concat('*',t1.a,'*'))`)  (cost=N.NNN rows=NNN)
     -> Gather (slice: 1, workers: 4)
         -> Aggregate: max(concat('*',t1.a,'*'))  (cost=N.NNN rows=NNN)
-            -> Index scan on t1 using PRIMARY  (cost=N.NNN rows=NNN)
+            -> Index scan on t1 using PRIMARY, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
 
 SELECT max(a), max(concat("*", a, "*")) FROM t1;;
 max(a)	max(concat("*", a, "*"))
@@ -76,7 +76,7 @@ EXPLAIN
     -> Group (no aggregates)  (cost=N.NNN rows=NNN)
         -> Gather (slice: 1, workers: 4)
             -> Group (no aggregates)  (cost=N.NNN rows=NNN)
-                -> Table scan on t1  (cost=N.NNN rows=NNN)
+                -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
 
 SELECT 1+1 AS summa FROM t1 GROUP BY summa LIMIT 1;
 summa
@@ -93,7 +93,7 @@ EXPLAIN
         -> Aggregate: bit_xor(t.a), bit_or(t.a), bit_and(t.a)  (cost=1.80..3.69 rows=3)
             -> Table scan on <temporary>  (cost=0.85..2.54 rows=3)
                 -> Temporary table  (cost=1.70..3.39 rows=3)
-                    -> Table scan on t  (cost=N.NNN rows=NNN)
+                    -> Table scan on t, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
 
 SELECT SQL_BUFFER_RESULT HEX(BIT_AND(a)), HEX(BIT_OR(a)), HEX(BIT_XOR(a)) FROM t;
 HEX(BIT_AND(a))	HEX(BIT_OR(a))	HEX(BIT_XOR(a))
@@ -140,7 +140,7 @@ INSERT INTO t1 VALUES (1, '2008-01-01'), (2, '2008-01-02'), (3, '2008-01-03');
 EXPLAIN format=tree SELECT COALESCE(d, d), IFNULL(d, d), IF(i, d, d), CASE i WHEN i THEN d ELSE d END, GREATEST(d, d), LEAST(d, d) FROM t1 ORDER BY RAND();
 EXPLAIN
 
-            -> Table scan on t1  (cost=N.NNN rows=NNN)
+            -> Table scan on t1, with parallel scan ranges: 400  (cost=N.NNN rows=NNN)
         -> Stream results  (cost=N.NNN rows=NNN)
     -> Sort: `rand()`
 -> Gather (slice: 1, workers: 4) with merge sort: `rand()`

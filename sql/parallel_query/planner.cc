@@ -448,8 +448,8 @@ SourcePlanChangedStore::~SourcePlanChangedStore() {
 JOIN *PartialPlan::Join() const { return m_query_block->join; }
 
 void PartialPlan::SetTablesParallelScan(TABLE *table,
-                                      const parallel_scan_desc_t &psdesc) {
-  m_parallel_scan_info = {table, psdesc};
+                                        const parallel_scan_desc_t &psdesc) {
+  m_parallel_scan_info = {table, 0, psdesc};
 }
 
 ParallelPlan::ParallelPlan(JOIN *join, uint32 parallel_degree)
@@ -777,6 +777,7 @@ bool ParallelPlan::GeneratePartialPlan(
   JOIN *join;
   if (!(join = new (mem_root) JOIN(thd, partial_query_block))) return true;
   partial_query_block->join = join;
+  join->partial_plan = &m_partial_plan;
   join->set_executed();
   join->primary_tables = source_join->primary_tables;
   join->const_tables = source_join->const_tables;
@@ -933,6 +934,20 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   if (rewriter.has_pushed_limit_offset()) m_need_collect_found_rows = true;
 
   PartialJoin()->set_root_access_path(partial_path);
+
+  // Estimate parallel scan ranges for EXPLAIN PLAN. This should be done in
+  // ChooseParallelPlan() if we can compare cost of serial and parallel
+  // plan.
+  auto &scaninfo = m_partial_plan.TablesParallelScan();
+  auto *table = scaninfo.table;
+  scaninfo.suggested_ranges = 100 * m_parallel_degree;
+  ha_rows nrows;
+  int res;
+  if ((res = table->file->estimate_parallel_scan_ranges(
+           &scaninfo.scan_desc, &scaninfo.suggested_ranges, &nrows))) {
+    table->file->print_error(res, MYF(0));
+    return true;
+  }
 
   DBUG_EXECUTE_IF("pq_simulate_access_path_generate_error", {
     { my_error(ER_DA_UNKNOWN_ERROR_NUMBER, MYF(0), 4); };

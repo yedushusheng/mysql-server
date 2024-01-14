@@ -102,11 +102,11 @@ bool Collector::CreateRowExchange(MEM_ROOT *mem_root) {
 bool Collector::InitParallelScan() {
   auto &psinfo = m_partial_plan->TablesParallelScan();
   auto *table = psinfo.table;
-  ulong nranges = 100 * NumWorkers();
   int res;
 
-  if ((res = table->file->init_parallel_scan(
-           &table->parallel_scan_handle, &nranges, &psinfo.scan_desc)) != 0) {
+  if ((res = table->file->init_parallel_scan(&table->parallel_scan_handle,
+                                             &psinfo.suggested_ranges,
+                                             &psinfo.scan_desc)) != 0) {
     table->file->print_error(res, MYF(0));
     return true;
   }
@@ -479,6 +479,19 @@ class FakeTimingIterator : public RowIterator {
   std::string::size_type m_timing_data_cursor{0};
   std::pair<std::string *, std::string *> m_timing_data;
 };
+
+std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
+  std::string str;
+  if (!join->partial_plan) return str;
+  auto &scaninfo = join->partial_plan->TablesParallelScan();
+  if (table != scaninfo.table) return str;
+
+  str = ", with parallel scan ranges: " +
+        std::to_string(scaninfo.suggested_ranges);
+  if (scaninfo.scan_desc.key_used != UINT16_MAX)
+    str += ", prefix: " + std::to_string(scaninfo.scan_desc.key_used);
+  return str;
+}
 
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector) {
   return new (thd->mem_root) FakeTimingIterator(thd, collector);
