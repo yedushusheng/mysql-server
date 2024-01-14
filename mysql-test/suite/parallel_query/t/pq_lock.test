@@ -11,7 +11,7 @@ INSERT INTO t1 VALUES(1,1),(2,2);
 EXPLAIN FORMAT=tree SELECT * FROM t1;
 SET debug_sync = 'before_launch_pqworkers wait_for ddl_stmt';
 # launching a parallel query which will wait for a DDL
---send SELECT * FROM t1
+--send SELECT * FROM t1 ORDER BY 1
 
 # execute a ddl statement an another connection.
 connect (con1,localhost,root,,);

@@ -1,4 +1,4 @@
-enable parallel query forcibly with max_parallel_degree = 1 and cost/records threshold = 0
+### enable parallel query forcibly with maximum parallel degree = 4 and cost/records threshold = 0 ###
 CREATE TABLE t1(a int, b int, c int);
 INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 ###
@@ -6,8 +6,8 @@ INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,
 ###
 EXPLAIN format=tree SELECT * FROM t1;
 EXPLAIN
--> Gather (slice: 1, workers: 1)  (cost=1127.50 rows=10000)
-    -> Table scan on t1  (cost=1127.50 rows=10000)
+-> Gather (slice: 1, workers: 4)  (cost=1.25 rows=10)
+    -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT * FROM t1;
 a	b	c
@@ -23,9 +23,9 @@ a	b	c
 5	5	5
 EXPLAIN format=tree SELECT * FROM t1 where a > 1;
 EXPLAIN
--> Gather (slice: 1, workers: 1)  (cost=1127.50 rows=3333)
-    -> Filter: (t1.a > 1)  (cost=1127.50 rows=3333)
-        -> Table scan on t1  (cost=1127.50 rows=10000)
+-> Gather (slice: 1, workers: 4)  (cost=1.25 rows=3)
+    -> Filter: (t1.a > 1)  (cost=1.25 rows=3)
+        -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT * FROM t1 where a > 1;
 a	b	c
@@ -39,22 +39,22 @@ a	b	c
 5	5	5
 EXPLAIN format=tree SELECT sum(a) FROM t1;
 EXPLAIN
--> Aggregate: sum(a)  (cost=2127.50 rows=10000)
-    -> Gather (slice: 1, workers: 1)
-        -> Aggregate: sum(t1.a)  (cost=2127.50 rows=10000)
-            -> Table scan on t1  (cost=1127.50 rows=10000)
+-> Aggregate: sum(a)  (cost=2.25 rows=10)
+    -> Gather (slice: 1, workers: 4)
+        -> Aggregate: sum(t1.a)  (cost=2.25 rows=10)
+            -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT sum(a) FROM t1;
 sum(a)
 30
 EXPLAIN format=tree SELECT a FROM t1 GROUP BY a;
 EXPLAIN
--> Table scan on <temporary>  (cost=0.01..127.50 rows=10000)
-    -> Temporary table with deduplication  (cost=2127.51..2255.00 rows=10000)
-        -> Gather (slice: 1, workers: 1)
-            -> Table scan on <temporary>  (cost=0.01..127.50 rows=10000)
-                -> Temporary table with deduplication  (cost=2127.51..2255.00 rows=10000)
-                    -> Table scan on t1  (cost=1127.50 rows=10000)
+-> Table scan on <temporary>  (cost=0.26..2.62 rows=10)
+    -> Temporary table with deduplication  (cost=2.51..4.88 rows=10)
+        -> Gather (slice: 1, workers: 4)
+            -> Table scan on <temporary>  (cost=0.26..2.62 rows=10)
+                -> Temporary table with deduplication  (cost=2.51..4.88 rows=10)
+                    -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT a FROM t1 GROUP BY a;
 a
@@ -67,10 +67,10 @@ EXPLAIN format=tree SELECT sum(b) FROM t1 GROUP BY a;
 EXPLAIN
 -> Table scan on <temporary>
     -> Aggregate using temporary table
-        -> Gather (slice: 1, workers: 1)
+        -> Gather (slice: 1, workers: 4)
             -> Table scan on <temporary>
                 -> Aggregate using temporary table
-                    -> Table scan on t1  (cost=1127.50 rows=10000)
+                    -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT sum(b) FROM t1 GROUP BY a;
 sum(b)
@@ -83,10 +83,10 @@ EXPLAIN format=tree SELECT a, sum(b) FROM t1 GROUP BY a;
 EXPLAIN
 -> Table scan on <temporary>
     -> Aggregate using temporary table
-        -> Gather (slice: 1, workers: 1)
+        -> Gather (slice: 1, workers: 4)
             -> Table scan on <temporary>
                 -> Aggregate using temporary table
-                    -> Table scan on t1  (cost=1127.50 rows=10000)
+                    -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT a, sum(b) FROM t1 GROUP BY a;
 a	sum(b)
@@ -100,10 +100,10 @@ EXPLAIN
 -> Sort: `sum(b)`
     -> Table scan on <temporary>
         -> Aggregate using temporary table
-            -> Gather (slice: 1, workers: 1)
+            -> Gather (slice: 1, workers: 4)
                 -> Table scan on <temporary>
                     -> Aggregate using temporary table
-                        -> Table scan on t1  (cost=1127.50 rows=10000)
+                        -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT a, sum(b) FROM t1 GROUP BY a order by 2;
 a	sum(b)
@@ -114,13 +114,13 @@ a	sum(b)
 5	10
 EXPLAIN format=tree SELECT a, sum(b) + 1 FROM t1 GROUP BY a order by 2;
 EXPLAIN
--> Sort: (`sum(b)` + 1)
+-> Sort: (sum(b) + 1)
     -> Table scan on <temporary>
         -> Aggregate using temporary table
-            -> Gather (slice: 1, workers: 1)
+            -> Gather (slice: 1, workers: 4)
                 -> Table scan on <temporary>
                     -> Aggregate using temporary table
-                        -> Table scan on t1  (cost=1127.50 rows=10000)
+                        -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT a, sum(b) + 1 FROM t1 GROUP BY a order by 2;
 a	sum(b) + 1
@@ -135,11 +135,11 @@ a	sum(b) + 1
 ### aggregate access path ###
 EXPLAIN format=tree SELECT SQL_BIG_RESULT a FROM t1 GROUP BY a;
 EXPLAIN
--> Group (no aggregates)  (cost=2127.50 rows=10000)
-    -> Gather (slice: 1, workers: 1) with merge sort: t1.a
-        -> Group (no aggregates)  (cost=2127.50 rows=10000)
-            -> Sort: t1.a  (cost=1127.50 rows=10000)
-                -> Table scan on t1  (cost=1127.50 rows=10000)
+-> Group (no aggregates)  (cost=2.25 rows=10)
+    -> Gather (slice: 1, workers: 4) with merge sort: t1.a
+        -> Group (no aggregates)  (cost=2.25 rows=10)
+            -> Sort: t1.a  (cost=1.25 rows=10)
+                -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT SQL_BIG_RESULT a FROM t1 GROUP BY a;
 a
@@ -153,12 +153,12 @@ EXPLAIN format=tree SELECT DISTINCT SQL_BIG_RESULT a FROM t1 GROUP BY a,b ORDER 
 EXPLAIN
 -> Sort: t1.a DESC, t1.b
     -> Sort with duplicate removal: t1.a DESC
-        -> Stream results  (cost=2127.50 rows=10000)
-            -> Group (no aggregates)  (cost=2127.50 rows=10000)
-                -> Gather (slice: 1, workers: 1) with merge sort: t1.a DESC, t1.b
-                    -> Group (no aggregates)  (cost=2127.50 rows=10000)
-                        -> Sort: t1.a DESC, t1.b  (cost=1127.50 rows=10000)
-                            -> Table scan on t1  (cost=1127.50 rows=10000)
+        -> Stream results  (cost=2.25 rows=10)
+            -> Group (no aggregates)  (cost=2.25 rows=10)
+                -> Gather (slice: 1, workers: 4) with merge sort: t1.a DESC, t1.b
+                    -> Group (no aggregates)  (cost=2.25 rows=10)
+                        -> Sort: t1.a DESC, t1.b  (cost=1.25 rows=10)
+                            -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT DISTINCT SQL_BIG_RESULT a FROM t1 GROUP BY a,b ORDER BY a DESC;
 a
@@ -174,11 +174,11 @@ EXPLAIN
     -> Temporary table with deduplication  (cost=2.50..2.50 rows=0)
         -> Table scan on <temporary>
             -> Aggregate using temporary table
-                -> Gather (slice: 1, workers: 1)
+                -> Gather (slice: 1, workers: 4)
                     -> Table scan on <temporary>
                         -> Aggregate using temporary table
-                            -> Filter: (t1.b > 1)  (cost=1127.50 rows=3333)
-                                -> Table scan on t1  (cost=1127.50 rows=10000)
+                            -> Filter: (t1.b > 1)  (cost=1.25 rows=3)
+                                -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT DISTINCT (COUNT(b) + 1) AS c FROM t1 WHERE b > 1 GROUP BY a;
 c
@@ -186,22 +186,22 @@ c
 ### offset limit ###
 EXPLAIN format=tree SELECT * FROM t1 LIMIT 2 OFFSET 1;
 EXPLAIN
--> Limit/Offset: 2/1 row(s)  (cost=1127.50 rows=2)
-    -> Gather (slice: 1, workers: 1)
-        -> Limit: 3 row(s)  (cost=1127.50 rows=2)
-            -> Table scan on t1  (cost=1127.50 rows=10000)
+-> Limit/Offset: 2/1 row(s)  (cost=1.25 rows=2)
+    -> Gather (slice: 1, workers: 4)
+        -> Limit: 3 row(s)  (cost=1.25 rows=2)
+            -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT * FROM t1 LIMIT 2 OFFSET 1;
 a	b	c
 2	2	2
-3	3	3
+2	2	2
 EXPLAIN format=tree SELECT * FROM t1 ORDER BY a LIMIT 2 OFFSET 1;
 EXPLAIN
--> Limit/Offset: 2/1 row(s)  (cost=1127.50 rows=2)
-    -> Gather (slice: 1, workers: 1) with merge sort: t1.a
-        -> Limit: 3 row(s)  (cost=1127.50 rows=2)
-            -> Sort: t1.a, limit input to 3 row(s) per chunk  (cost=1127.50 rows=10000)
-                -> Table scan on t1  (cost=1127.50 rows=10000)
+-> Limit/Offset: 2/1 row(s)  (cost=1.25 rows=2)
+    -> Gather (slice: 1, workers: 4) with merge sort: t1.a
+        -> Limit: 3 row(s)  (cost=1.25 rows=2)
+            -> Sort: t1.a, limit input to 3 row(s) per chunk  (cost=1.25 rows=10)
+                -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT * FROM t1 ORDER BY a LIMIT 2 OFFSET 1;
 a	b	c
@@ -213,10 +213,10 @@ EXPLAIN
 -> Filter: (sum(b) > 5)
     -> Table scan on <temporary>
         -> Aggregate using temporary table
-            -> Gather (slice: 1, workers: 1)
+            -> Gather (slice: 1, workers: 4)
                 -> Table scan on <temporary>
                     -> Aggregate using temporary table
-                        -> Table scan on t1  (cost=1127.50 rows=10000)
+                        -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5;
 sum(b)
@@ -229,10 +229,10 @@ EXPLAIN
     -> Filter: (sum(b) > 5)
         -> Table scan on <temporary>
             -> Aggregate using temporary table
-                -> Gather (slice: 1, workers: 1)
+                -> Gather (slice: 1, workers: 4)
                     -> Table scan on <temporary>
                         -> Aggregate using temporary table
-                            -> Table scan on t1  (cost=1127.50 rows=10000)
+                            -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5 LIMIT 1 OFFSET 2;
 sum(b)
@@ -246,8 +246,8 @@ CREATE TABLE t1(a int, b int, c int, index(b));
 INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 EXPLAIN format=tree SELECT b FROM t1;
 EXPLAIN
--> Gather (slice: 1, workers: 1)  (cost=1127.50 rows=10000)
-    -> Index scan on t1 using b  (cost=1127.50 rows=10000)
+-> Gather (slice: 1, workers: 4)  (cost=1.35 rows=11)
+    -> Index scan on t1 using b  (cost=1.35 rows=11)
 
 SELECT b FROM t1;
 b
@@ -263,23 +263,23 @@ b
 5
 EXPLAIN format=tree SELECT b FROM t1 LIMIT 4;
 EXPLAIN
--> Limit: 4 row(s)  (cost=1127.50 rows=4)
-    -> Gather (slice: 1, workers: 1)
-        -> Limit: 4 row(s)  (cost=1127.50 rows=4)
-            -> Index scan on t1 using b  (cost=1127.50 rows=10000)
+-> Limit: 4 row(s)  (cost=1.35 rows=4)
+    -> Gather (slice: 1, workers: 4)
+        -> Limit: 4 row(s)  (cost=1.35 rows=4)
+            -> Index scan on t1 using b  (cost=1.35 rows=11)
 
 SELECT b FROM t1 LIMIT 4;
 b
 1
-1
 2
 2
+3
 EXPLAIN format=tree SELECT b FROM t1 ORDER BY b LIMIT 4;
 EXPLAIN
--> Limit: 4 row(s)  (cost=0.05 rows=4)
-    -> Gather (slice: 1, workers: 1) with merge sort: t1.b
-        -> Limit: 4 row(s)  (cost=0.05 rows=4)
-            -> Index scan on t1 using b  (cost=0.05 rows=4)
+-> Limit: 4 row(s)  (cost=0.24 rows=4)
+    -> Gather (slice: 1, workers: 4) with merge sort: t1.b
+        -> Limit: 4 row(s)  (cost=0.24 rows=4)
+            -> Index scan on t1 using b  (cost=0.24 rows=4)
 
 SELECT b FROM t1 ORDER BY b LIMIT 4;
 b
@@ -289,11 +289,10 @@ b
 2
 EXPLAIN format=tree SELECT b FROM t1 GROUP BY b LIMIT 4;
 EXPLAIN
--> Limit: 4 row(s)  (cost=0.45 rows=4)
-    -> Group (no aggregates)  (cost=0.45 rows=4)
-        -> Gather (slice: 1, workers: 1) with merge sort: t1.b
-            -> Group (no aggregates)  (cost=0.45 rows=4)
-                -> Index scan on t1 using b  (cost=0.05 rows=4)
+-> Limit: 4 row(s)  (cost=1.25 rows=4)
+    -> Gather (slice: 1, workers: 4)
+        -> Limit: 4 row(s)  (cost=1.25 rows=4)
+            -> Index range scan on t1 using index_for_group_by(b)  (cost=1.25 rows=4)
 
 SELECT b FROM t1 GROUP BY b LIMIT 4;
 b
@@ -305,11 +304,11 @@ EXPLAIN format=tree SELECT count(a), b FROM t1 GROUP BY b ORDER BY 2,1 LIMIT 4;
 EXPLAIN
 -> Limit: 4 row(s)
     -> Sort: t1.b, `count(a)`, limit input to 4 row(s) per chunk
-        -> Stream results  (cost=2127.50 rows=10000)
-            -> Group aggregate: count(a)  (cost=2127.50 rows=10000)
-                -> Gather (slice: 1, workers: 1) with merge sort: t1.b
-                    -> Group aggregate: count(t1.a)  (cost=2127.50 rows=10000)
-                        -> Index scan on t1 using b  (cost=1127.50 rows=10000)
+        -> Stream results  (cost=2.45 rows=11)
+            -> Group aggregate: count(a)  (cost=2.45 rows=11)
+                -> Gather (slice: 1, workers: 4) with merge sort: t1.b
+                    -> Group aggregate: count(t1.a)  (cost=2.45 rows=11)
+                        -> Index scan on t1 using b  (cost=1.35 rows=11)
 
 SELECT count(a), b FROM t1 GROUP BY b ORDER BY 2,1 LIMIT 4;
 count(a)	b
@@ -320,8 +319,8 @@ count(a)	b
 ### range index scan ###
 EXPLAIN format=tree SELECT a FROM t1 WHERE b BETWEEN 2 AND 5;
 EXPLAIN
--> Gather (slice: 1, workers: 1)  (cost=0.70 rows=1)
-    -> Index range scan on t1 using b, with index condition: (t1.b between 2 and 5)  (cost=0.70 rows=1)
+-> Gather (slice: 1, workers: 4)  (cost=3.86 rows=8)
+    -> Index range scan on t1 using b, with index condition: (t1.b between 2 and 5)  (cost=3.86 rows=8)
 
 SELECT a FROM t1 WHERE b BETWEEN 2 AND 5;
 a
@@ -346,8 +345,8 @@ CREATE INDEX idx_t1_1 ON t1 (a1,a2,b,c);
 CREATE INDEX idx_t1_2 ON t1 (a1,a2,b);
 EXPLAIN format=tree SELECT a1, MIN(a2),MAX(a2) FROM t1 GROUP BY a1;
 EXPLAIN
--> Gather (slice: 1, workers: 1)  (cost=491.10 rows=1251)
-    -> Index range scan on t1 using index_for_group_by(idx_t1_1)  (cost=491.10 rows=1251)
+-> Gather (slice: 1, workers: 4)  (cost=0.75 rows=2)
+    -> Index range scan on t1 using index_for_group_by(idx_t1_1)  (cost=0.75 rows=2)
 
 SELECT a1, MIN(a2),MAX(a2) FROM t1 GROUP BY a1;
 a1	MIN(a2)	MAX(a2)
@@ -358,9 +357,9 @@ CREATE TABLE t1(a INT, b INT, c INT, d INT, PRIMARY KEY(a, b, c, d), KEY(b, d));
 INSERT INTO t1 VALUES(1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5),(1,1,1,6),(2,2,2,6),(3,3,3,6),(4,4,4,6),(5,5,5,6);
 EXPLAIN format=tree SELECT /*+ SKIP_SCAN(t1) */ a, b, c, d FROM t1 WHERE a IN (1, 2, 3, 4, 5) AND b IN (1, 2, 3) AND d >= 4;
 EXPLAIN
--> Gather (slice: 1, workers: 1)  (cost=13.21 rows=7)
-    -> Filter: ((t1.a in (1,2,3,4,5)) and (t1.b in (1,2,3)) and (t1.d >= 4))  (cost=13.21 rows=7)
-        -> Index range scan on t1 using index_for_skip_scan(PRIMARY)  (cost=13.21 rows=7)
+-> Gather (slice: 1, workers: 4)  (cost=12.37 rows=18)
+    -> Filter: ((t1.a in (1,2,3,4,5)) and (t1.b in (1,2,3)) and (t1.d >= 4))  (cost=12.37 rows=18)
+        -> Index range scan on t1 using index_for_skip_scan(PRIMARY)  (cost=12.37 rows=18)
 
 SELECT /*+ SKIP_SCAN(t1) */ a, b, c, d FROM t1 WHERE a IN (1, 2, 3, 4, 5) AND b IN (1, 2, 3) AND d >= 4;
 a	b	c	d

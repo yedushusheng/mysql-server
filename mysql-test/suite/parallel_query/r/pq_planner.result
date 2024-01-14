@@ -1,11 +1,11 @@
-enable parallel query forcibly with max_parallel_degree = 1 and cost/records threshold = 0
+### enable parallel query forcibly with maximum parallel degree = 4 and cost/records threshold = 0 ###
 CREATE TABLE t1(a INT, b INT, c INT);
 INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
 EXPLAIN format=tree SELECT a FROM t1 HAVING a = 1;
 EXPLAIN
--> Gather (slice: 1, workers: 1)  (cost=1127.50 rows=10000)
-    -> Filter: (t1.a = 1)  (cost=1127.50 rows=10000)
-        -> Table scan on t1  (cost=1127.50 rows=10000)
+-> Gather (slice: 1, workers: 4)  (cost=1.25 rows=10)
+    -> Filter: (t1.a = 1)  (cost=1.25 rows=10)
+        -> Table scan on t1  (cost=1.25 rows=10)
 
 SELECT a FROM t1 HAVING a = 1;
 a
@@ -16,9 +16,9 @@ CREATE TABLE t1(a INT);
 INSERT INTO t1 VALUES(1),(2),(3);
 EXPLAIN format=tree SELECT IF( a = 1, a, a ) AS `b` FROM t1 ORDER BY field( `b` + 1, 1 );
 EXPLAIN
--> Gather (slice: 1, workers: 1) with merge sort: `field((b + 1),1)`  (cost=1127.50 rows=10000)
-    -> Sort: field((b + 1),1)  (cost=1127.50 rows=10000)
-        -> Table scan on t1  (cost=1127.50 rows=10000)
+-> Gather (slice: 1, workers: 4) with merge sort: `field((b + 1),1)`  (cost=0.55 rows=3)
+    -> Sort: field((b + 1),1)  (cost=0.55 rows=3)
+        -> Table scan on t1  (cost=0.55 rows=3)
 
 SELECT IF( a = 1, a, a ) AS `b` FROM t1 ORDER BY field( `b` + 1, 1 );
 b
@@ -31,16 +31,16 @@ EXPLAIN format=tree SELECT (SELECT COUNT(*) + (SELECT COUNT(*) FROM t1 WHERE f1 
 EXPLAIN
 -> Rows fetched before execution  (cost=0.00..0.00 rows=1)
 -> Select #2 (subquery in projection; dependent)
-    -> Aggregate: count(0)  (cost=2127.50 rows=10000)
-        -> Table scan on t1  (cost=1127.50 rows=10000)
+    -> Aggregate: count(0)  (cost=0.45 rows=1)
+        -> Table scan on t1  (cost=0.35 rows=1)
     -> Select #3 (subquery in projection; dependent)
-        -> Aggregate: count(0)  (cost=1227.50 rows=1000)
-            -> Filter: (t1.f1 = '555')  (cost=1127.50 rows=1000)
-                -> Table scan on t1  (cost=1127.50 rows=10000)
+        -> Aggregate: count(0)  (cost=0.45 rows=1)
+            -> Filter: (t1.f1 = '555')  (cost=0.35 rows=1)
+                -> Table scan on t1  (cost=0.35 rows=1)
     -> Select #3 (subquery in projection; dependent)
-        -> Aggregate: count(0)  (cost=1227.50 rows=1000)
-            -> Filter: (t1.f1 = '555')  (cost=1127.50 rows=1000)
-                -> Table scan on t1  (cost=1127.50 rows=10000)
+        -> Aggregate: count(0)  (cost=0.45 rows=1)
+            -> Filter: (t1.f1 = '555')  (cost=0.35 rows=1)
+                -> Table scan on t1  (cost=0.35 rows=1)
 
 Warnings:
 Note	1276	Field or reference 'c.f2' of SELECT #3 was resolved in SELECT #1
@@ -52,10 +52,10 @@ CREATE TABLE t1(a INT NOT NULL, PRIMARY KEY(a));
 INSERT INTO t1 VALUES(1),(2);
 EXPLAIN format=tree SELECT max(a), max(concat("*", a, "*")) FROM t1;;
 EXPLAIN
--> Aggregate: max(`max(concat('*',t1.a,'*'))`)  (cost=2127.50 rows=10000)
-    -> Gather (slice: 1, workers: 1)
-        -> Aggregate: max(concat('*',t1.a,'*'))  (cost=2127.50 rows=10000)
-            -> Index scan on t1 using PRIMARY  (cost=1127.50 rows=10000)
+-> Aggregate: max(`max(concat('*',t1.a,'*'))`)  (cost=0.65 rows=2)
+    -> Gather (slice: 1, workers: 4)
+        -> Aggregate: max(concat('*',t1.a,'*'))  (cost=0.65 rows=2)
+            -> Index scan on t1 using PRIMARY  (cost=0.45 rows=2)
 
 SELECT max(a), max(concat("*", a, "*")) FROM t1;;
 max(a)	max(concat("*", a, "*"))
@@ -72,11 +72,11 @@ Warning	1681	Integer display width is deprecated and will be removed in a future
 INSERT INTO t1 VALUES (9410,9412);
 EXPLAIN format=tree SELECT 1+1 AS summa FROM t1 GROUP BY summa LIMIT 1;
 EXPLAIN
--> Limit: 1 row(s)  (cost=2127.50 rows=1)
-    -> Group (no aggregates)  (cost=2127.50 rows=10000)
-        -> Gather (slice: 1, workers: 1)
-            -> Group (no aggregates)  (cost=2127.50 rows=10000)
-                -> Table scan on t1  (cost=1127.50 rows=10000)
+-> Limit: 1 row(s)  (cost=0.45 rows=1)
+    -> Group (no aggregates)  (cost=0.45 rows=1)
+        -> Gather (slice: 1, workers: 4)
+            -> Group (no aggregates)  (cost=0.45 rows=1)
+                -> Table scan on t1  (cost=0.35 rows=1)
 
 SELECT 1+1 AS summa FROM t1 GROUP BY summa LIMIT 1;
 summa
@@ -88,12 +88,12 @@ CREATE TABLE `t` (
 INSERT INTO t VALUES(0xFF00F0F0), (NULL), (0xF0F0FF00);
 EXPLAIN format=tree SELECT SQL_BUFFER_RESULT HEX(BIT_AND(a)), HEX(BIT_OR(a)), HEX(BIT_XOR(a)) FROM t;
 EXPLAIN
--> Aggregate: bit_xor(a), bit_or(a), bit_and(a)  (cost=2127.61..3255.00 rows=10000)
-    -> Gather (slice: 1, workers: 1)
-        -> Aggregate: bit_xor(t.a), bit_or(t.a), bit_and(t.a)  (cost=2127.61..3255.00 rows=10000)
-            -> Table scan on <temporary>  (cost=0.01..127.50 rows=10000)
-                -> Temporary table  (cost=2127.51..2255.00 rows=10000)
-                    -> Table scan on t  (cost=1127.50 rows=10000)
+-> Aggregate: bit_xor(a), bit_or(a), bit_and(a)  (cost=1.80..3.69 rows=3)
+    -> Gather (slice: 1, workers: 4)
+        -> Aggregate: bit_xor(t.a), bit_or(t.a), bit_and(t.a)  (cost=1.80..3.69 rows=3)
+            -> Table scan on <temporary>  (cost=0.85..2.54 rows=3)
+                -> Temporary table  (cost=1.70..3.39 rows=3)
+                    -> Table scan on t  (cost=0.55 rows=3)
 
 SELECT SQL_BUFFER_RESULT HEX(BIT_AND(a)), HEX(BIT_OR(a)), HEX(BIT_XOR(a)) FROM t;
 HEX(BIT_AND(a))	HEX(BIT_OR(a))	HEX(BIT_XOR(a))
@@ -107,10 +107,10 @@ INSERT INTO t1 VALUES (1, '2008-01-01'), (2, '2008-01-02'), (3, '2008-01-03');
 EXPLAIN format=tree SELECT COALESCE(d, d), IFNULL(d, d), IF(i, d, d), CASE i WHEN i THEN d ELSE d END, GREATEST(d, d), LEAST(d, d) FROM t1 ORDER BY RAND();
 EXPLAIN
 
-            -> Table scan on t1  (cost=1127.50 rows=10000)
-        -> Stream results  (cost=1127.50 rows=10000)
+            -> Table scan on t1  (cost=0.55 rows=3)
+        -> Stream results  (cost=0.55 rows=3)
     -> Sort: `rand()`
--> Gather (slice: 1, workers: 1) with merge sort: `rand()`
+-> Gather (slice: 1, workers: 4) with merge sort: `rand()`
 SELECT COALESCE(d, d), IFNULL(d, d), IF(i, d, d), CASE i WHEN i THEN d ELSE d END, GREATEST(d, d), LEAST(d, d) FROM t1 ORDER BY RAND();
 COALESCE(d, d)	IFNULL(d, d)	IF(i, d, d)	CASE i WHEN i THEN d ELSE d END	GREATEST(d, d)	LEAST(d, d)
 2008-01-01	2008-01-01	2008-01-01	2008-01-01	2008-01-01	2008-01-01
@@ -123,12 +123,12 @@ EXPLAIN format=tree (SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2;
 EXPLAIN
 -> Limit: 2 row(s)
     -> Append
-        -> Stream results  (cost=1127.50 rows=10000)
-            -> Gather (slice: 1, workers: 1)  (cost=1127.50 rows=10000)
-                -> Table scan on t1  (cost=1127.50 rows=10000)
-        -> Stream results  (cost=1127.50 rows=10000)
-            -> Gather (slice: 1, workers: 1)  (cost=1127.50 rows=10000)
-                -> Table scan on t1  (cost=1127.50 rows=10000)
+        -> Stream results  (cost=0.55 rows=3)
+            -> Gather (slice: 1, workers: 4)  (cost=0.55 rows=3)
+                -> Table scan on t1  (cost=0.55 rows=3)
+        -> Stream results  (cost=0.55 rows=3)
+            -> Gather (slice: 1, workers: 4)  (cost=0.55 rows=3)
+                -> Table scan on t1  (cost=0.55 rows=3)
 
 (SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2;
 c1

@@ -90,7 +90,7 @@ class Query_result_to_collector : public Query_result_interceptor {
     thd->inc_sent_row_count(1);
 
     DBUG_EXECUTE_IF("pq_simulate_one_worker_part_result_error", {
-      if (m_worker_id == 1 && thd->get_sent_row_count() == 10) {
+      if (thd->get_sent_row_count() == 2) {
         my_error(ER_DA_UNKNOWN_ERROR_NUMBER, MYF(0), 1);
         return true;
       }
@@ -103,10 +103,6 @@ class Query_result_to_collector : public Query_result_interceptor {
     m_row_exchange_writer->WriteEOF();
     return false;
   }
-
-#ifndef NDEBUG
-  uint m_worker_id{0};
-#endif
 };
 
 Worker::Worker(THD *thd, uint worker_id, PartialPlan *plan,
@@ -364,9 +360,6 @@ bool Worker::PrepareQueryPlan() {
     return true;
   }
   lex->result = query_result;
-#ifndef NDEBUG
-  query_result->m_worker_id = m_id;
-#endif
   auto *query_block = lex->query_block;
 
   // Clone partial query plan and open tables

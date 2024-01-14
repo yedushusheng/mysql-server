@@ -1,0 +1,7 @@
+### enable parallel query forcibly with maximum parallel degree = 4 and cost/records threshold = 0 ###
+CREATE TABLE t(a INT);
+INSERT INTO t VALUES ();
+SELECT * FROM t;
+a
+NULL
+DROP TABLE t;

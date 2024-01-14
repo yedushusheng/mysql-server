@@ -1,4 +1,4 @@
-enable parallel query forcibly with max_parallel_degree = 1 and cost/records threshold = 0
+### enable parallel query forcibly with maximum parallel degree = 4 and cost/records threshold = 0 ###
 CREATE TABLE t1 (a INT, b INT, c INT DEFAULT 0);
 INSERT INTO t1 (a, b) VALUES (3,3), (2,2), (3,3), (2,2), (3,3), (4,4);
 CREATE TABLE t2 SELECT * FROM t1;
@@ -7,12 +7,12 @@ EXPLAIN format=tree SELECT t1.a, SUM(t1.b) FROM t1 WHERE t1.a = (SELECT SUM(t2.b
 EXPLAIN
 -> Table scan on <temporary>
     -> Aggregate using temporary table
-        -> Filter: (t1.a = (select #2))  (cost=1127.50 rows=10000)
-            -> Table scan on t1  (cost=1127.50 rows=10000)
+        -> Filter: (t1.a = (select #2))  (cost=0.85 rows=6)
+            -> Table scan on t1  (cost=0.85 rows=6)
             -> Select #2 (subquery in condition; dependent)
-                -> Limit: 1 row(s)  (cost=2127.50 rows=1)
-                    -> Aggregate: sum(t2.b)  (cost=2127.50 rows=10000)
-                        -> Table scan on t2  (cost=1127.50 rows=10000)
+                -> Limit: 1 row(s)  (cost=1.45 rows=1)
+                    -> Aggregate: sum(t2.b)  (cost=1.45 rows=6)
+                        -> Table scan on t2  (cost=0.85 rows=6)
 
 Warnings:
 Note	1276	Field or reference 'test.t1.b' of SELECT #2 was resolved in SELECT #1
@@ -63,8 +63,8 @@ id
 2
 SELECT SQL_CALC_FOUND_ROWS id FROM t1 GROUP BY id LIMIT 2;
 id
-1
 2
+1
 Warnings:
 Warning	1287	SQL_CALC_FOUND_ROWS is deprecated and will be removed in a future release. Consider using two separate queries instead.
 SELECT found_rows();
