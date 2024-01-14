@@ -339,6 +339,26 @@ EXPLAIN FORMAT=tree SELECT * FROM t2 AS nt2 WHERE 1 IN (SELECT it1.a FROM t1 AS 
 DROP TABLE t1, t2, t6;
 --enable_testcase
 
+# reduce fields for unpushed item
+let create_table_sql=CREATE TABLE t1(id INT PRIMARY KEY AUTO_INCREMENT, b INT);
+let shardkey=id;
+--source include/create_spider_table.inc
+
+SELECT
+  ref_0.b AS c2,
+  CASE WHEN ref_0.b IS NULL THEN upper(
+      cast(reverse(
+        cast(cast(NULL AS CHAR) AS CHAR)) AS CHAR)) ELSE upper(
+      cast(reverse(
+        cast(cast(NULL AS CHAR) AS CHAR)) AS CHAR)) END
+     AS c3
+FROM
+  t1 AS ref_0
+WHERE 21 DIV ref_0.b
+ORDER BY 1, 2;
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
+
 # clean env.
 --source ../include/deinit_spider.inc
 --enable_warnings

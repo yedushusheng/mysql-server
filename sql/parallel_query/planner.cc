@@ -699,16 +699,40 @@ class OriginItemRewriteContext : public Item_clone_context {
       item_field->set_result_field(from->field);
       return;
     }
-    // Find table field no for pushed down item sum
-    for (uint i = 0; i < m_partial_fields.size(); i++) {
-      auto *partial_field = m_partial_fields[i];
-      if (item_field->is_identical(partial_field)) {
-        item_field->field_index = i;
-        item_field->field = m_collector_table->field[i];
-        item_field->set_result_field(item_field->field);
+
+    assert(from->type() == Item::FIELD_ITEM);
+
+    // Find table field by identifier for pushed down item
+    uint same_field_index = 0;
+    Item *same_field_item = nullptr;
+    uint i = 0;
+    for (auto *item : m_partial_fields) {
+      if (item_field->is_identical(item)) {
+        same_field_index = i;
+        same_field_item = item;
         break;
       }
+
+      /// See is_item_field_in_fields(), we omit duplicated fields for reducing
+      /// pushed down fields. Here we don't break if one field found because we
+      /// hope it can match with its identical field (with same id) if it is in
+      /// fields.
+      if (!same_field_item && item->type() == Item::FIELD_ITEM &&
+          from->field == down_cast<Item_field *>(item)->field) {
+        same_field_index = i;
+        same_field_item = item;
+      }
+
+      ++i;
     }
+
+    assert(same_field_item);
+
+    item_field->field_index = same_field_index;
+    item_field->field = m_collector_table->field[same_field_index];
+    item_field->set_result_field(item_field->field);
+    if (!item_field->is_identical(same_field_item))
+      item_field->set_id(same_field_item->id());
   }
 
   void rebind_hybrid_field(Item_sum_hybrid_field *item_hybrid,
@@ -733,8 +757,6 @@ class OriginItemRewriteContext : public Item_clone_context {
 
   bool resolve_view_ref(Item_view_ref *item,
                         const Item_view_ref *from) override {
-    // all Item_view_ref should be pushed down except const_item
-    assert(from->const_item());
     item->ref = from->ref;
     if (from->get_first_inner_table())
       item->set_first_inner_table(from->get_first_inner_table());

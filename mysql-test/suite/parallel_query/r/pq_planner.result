@@ -346,6 +346,39 @@ create table for child
 create table for master
 "drop table on master"
 "Drop spider tables successfully."
+"Start to create spider tables"
+create table for child
+"create table on child2_1"
+CREATE TABLE t1(id INT PRIMARY KEY AUTO_INCREMENT, b INT) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+"create table on child2_2"
+CREATE TABLE t1(id INT PRIMARY KEY AUTO_INCREMENT, b INT) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+create table for master
+CREATE TABLE t1(id INT PRIMARY KEY AUTO_INCREMENT, b INT) ENGINE=Spider DEFAULT CHARSET=utf8
+PARTITION BY LIST (id % 2)
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "id"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "id"'
+    );
+"Create spider tables successfully."
+SELECT
+ref_0.b AS c2,
+CASE WHEN ref_0.b IS NULL THEN upper(
+cast(reverse(
+cast(cast(NULL AS CHAR) AS CHAR)) AS CHAR)) ELSE upper(
+cast(reverse(
+cast(cast(NULL AS CHAR) AS CHAR)) AS CHAR)) END
+AS c3
+FROM
+t1 AS ref_0
+WHERE 21 DIV ref_0.b
+ORDER BY 1, 2;
+c2	c3
+"Start to drop spider tables"
+create table for child
+"drop table on child2_1"
+"drop table on child2_2"
+create table for master
+"drop table on master"
+"Drop spider tables successfully."
 for master_1
 for child2
 child2_1
