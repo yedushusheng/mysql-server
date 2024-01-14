@@ -20,6 +20,10 @@ namespace pq {
 class PartialPlan;
 class Worker;
 
+struct WorkerShareState {
+  void *data{nullptr};
+};
+
 class Collector {
  public:
   using CollectResult = comm::RowExchange::Result;
@@ -57,6 +61,8 @@ class Collector {
   CSStackClone dbug_cs_stack_clone;
 #endif
   PartialPlan *m_partial_plan;
+  WorkerShareState m_worker_share_state;
+
   TABLE *m_table{nullptr};
   Filesort *m_merge_sort{nullptr};
   comm::RowExchange m_receiver_exchange;
@@ -123,6 +129,7 @@ class PartialExecutor {
 };
 
 std::string ExplainTableParallelScan(JOIN *join, TABLE *table);
+std::string ExplainDeparsedPlan(PartialPlan *partial_plan);
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
 }  // namespace pq
 

@@ -40,7 +40,7 @@ static RowChannel::Result ReadOneRow(RowChannel *channel, uchar *dest,
   assert(nbytes == curseg->length);
   // Copy it to destination that is caller specified so that we can decode
   // blob fields correctly.
-  memcpy(dest, curseg->data, curseg->length);
+  if (dest != curseg->data) memcpy(dest, curseg->data, curseg->length);
   // Receive extra segments in waiting mode but we should copy it to buffer
   // to avoid be overwritten by subsequent messages.
   for (uint seg = 1; seg < segments; seg++) {

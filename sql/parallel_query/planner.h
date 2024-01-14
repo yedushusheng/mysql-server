@@ -1,7 +1,7 @@
 #ifndef PARALLEL_QUERY_PLANNER_H
 #define PARALLEL_QUERY_PLANNER_H
-#include "my_base.h"
 #include "mem_root_deque.h"
+#include "my_base.h"
 #include "sql/item.h"
 
 class QEP_TAB;
@@ -10,6 +10,7 @@ struct AccessPath;
 namespace pq {
 class Collector;
 class AccessPathChangesStore;
+class PlanDeparser;
 
 constexpr uint default_max_parallel_degree = 0;
 constexpr uint default_max_parallel_workers = 10000;
@@ -49,10 +50,14 @@ class PartialPlan {
   }
 
   ParallelScanInfo &TablesParallelScan() { return m_parallel_scan_info; }
+  bool DeparsePlan(THD *thd);
+  PlanDeparser *Deparser() const { return m_plan_deparser; }
+  String *DeparsedStatement() const;
 
  private:
   Query_block *m_query_block;
   ParallelScanInfo m_parallel_scan_info;
+  PlanDeparser *m_plan_deparser{nullptr};
 };
 
 class SourcePlanChangedStore {

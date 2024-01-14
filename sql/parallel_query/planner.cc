@@ -7,6 +7,7 @@
 #include "sql/opt_range.h"
 #include "sql/opt_trace.h"
 #include "sql/parallel_query/executor.h"
+#include "sql/parallel_query/plan_deparser.h"
 #include "sql/parallel_query/rewrite_access_path.h"
 #include "sql/sql_optimizer.h"
 
@@ -565,6 +566,19 @@ void PartialPlan::SetTableParallelScan(TABLE *table, ulong suggested_ranges,
   m_parallel_scan_info = {table, suggested_ranges, psdesc};
 }
 
+bool PartialPlan::DeparsePlan(THD *thd) {
+  assert(!m_plan_deparser);
+  if (!(m_plan_deparser = new PlanDeparser(thd, m_query_block)) ||
+      m_plan_deparser->deparse(thd))
+    return true;
+  return false;
+}
+
+String *PartialPlan::DeparsedStatement() const {
+  if (!m_plan_deparser) return nullptr;
+  return m_plan_deparser->statement();
+}
+
 ParallelPlan::ParallelPlan(JOIN *join, uint32 parallel_degree)
     : m_join(join),
       m_fields(join->thd->mem_root),
@@ -913,7 +927,8 @@ bool ParallelPlan::GeneratePartialPlan(
   join->implicit_grouping = source_join->implicit_grouping;
 
   // XXX Don't need where_cond, Explain need this?
-  join->where_cond = nullptr;
+  // Temporary solution for deparser
+  join->where_cond = source_query_block->where_cond();
 
   // XXX group by and order by generating
   if (setup_partial_base_ref_items()) return true;

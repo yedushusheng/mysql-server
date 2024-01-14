@@ -618,6 +618,8 @@ bool AccessPathParallelizer::rewrite_filter(AccessPath *in [[maybe_unused]],
                                             AccessPath *) {
   // XXX clone condition to partial plan
   assert(in->filter().condition->parallel_safe() == Item_parallel_safe::Safe);
+  m_join_out->where_cond = in->filter().condition;
+
   return false;
 }
 
@@ -631,6 +633,8 @@ bool AccessPathParallelizer::rewrite_sort(AccessPath *in, AccessPath *out) {
         clone_order_list(filesort->src_order,
                          {mem_root(), &m_join_out->query_block->base_ref_items,
                           m_join_out->fields->size(), nullptr});
+    m_join_out->order = m_join_in->order;
+    m_join_out->order.order = sort_out.filesort->src_order;
     return false;
   }
   // Rewrite orignal filesort since its underlying table changed.

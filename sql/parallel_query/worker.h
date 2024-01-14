@@ -2,9 +2,12 @@
 #define PARALLEL_QUERY_WORKER_H
 #include "my_base.h"
 #include "sql/sql_error.h"
+class TABLE;
 
 namespace pq {
 class PartialPlan;
+struct WorkerShareState;
+
 namespace comm {
 class Event;
 class RowChannel;
@@ -62,5 +65,9 @@ class Worker {
 
 Worker *CreateLocalWorker(uint id, comm::Event *state_event, THD *thd,
                           PartialPlan *plan);
+Worker *CreateMySQLClientWorker(uint id, comm::Event *state_event, THD *thd,
+                                PartialPlan *partial_plan,
+                                WorkerShareState *worker_share_state,
+                                TABLE *collector_table);
 }  // namespace pq
 #endif

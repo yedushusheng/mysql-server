@@ -542,6 +542,8 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
           }
         }
       }
+      ret += ", statement: ";
+      ret += pq::ExplainDeparsedPlan(collector->partial_plan());
       description.push_back(move(ret));
       children.push_back({collector->PartialRootAccessPath()});
       break;

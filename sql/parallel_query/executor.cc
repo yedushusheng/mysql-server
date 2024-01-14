@@ -95,11 +95,18 @@ bool Collector::InitParallelScan() {
 }
 
 bool Collector::Init(THD *thd) {
+  if (m_partial_plan->DeparsePlan(thd)) return true;
   // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
   // you should use m_id - 1
   for (uint widx = 0; widx < m_workers.size(); ++widx) {
+#if 0
     auto *worker =
         CreateLocalWorker(widx + 1, &m_worker_state_event, thd, partial_plan());
+#endif
+    auto *worker =
+        CreateMySQLClientWorker(widx + 1, &m_worker_state_event, thd,
+                                partial_plan(), &m_worker_share_state, m_table);
+
     m_workers[widx] = worker;
     if (!worker || worker->Init(m_receiver_exchange.event())) return true;
   }
@@ -435,6 +442,13 @@ std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   if (scaninfo.scan_desc.key_used != UINT16_MAX)
     str += ", prefix: " + std::to_string(scaninfo.scan_desc.key_used);
   return str;
+}
+
+std::string ExplainDeparsedPlan(PartialPlan *partial_plan) {
+  // For the union temporary scan, join is nullptr
+  std::string str;
+  if (partial_plan->DeparsePlan(current_thd)) return str;
+  return partial_plan->DeparsedStatement()->c_ptr();
 }
 
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector) {

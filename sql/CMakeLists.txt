@@ -586,6 +586,8 @@ SET(SQL_SHARED_SOURCES
   parallel_query/planner.cc
   parallel_query/executor.cc
   parallel_query/worker.cc
+  parallel_query/mysqlclient_worker.cc
+  parallel_query/plan_deparser.cc
   parallel_query/rewrite_access_path.cc  
 )
 
