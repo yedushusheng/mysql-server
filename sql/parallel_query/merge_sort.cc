@@ -210,13 +210,15 @@ bool FillToPriorityQueue(MergeSort *merge_sort, MergeSortElement *elem) {
 
 bool MergeSort::Populate(THD *thd) {
   uint nleft = m_num_elements;
+  bool has_row_filled = false;
   while (nleft > 0) {
     for (uint i = 0; i < m_num_elements; i++) {
       MergeSortElement *elem = &m_elements[i];
       // skip non-empty elements or finished elements
       if (!elem->IsEmpty() || m_source->IsChannelFinished(i)) continue;
 
-      if (FillElementBuffer(elem, false) != Result::SUCCESS) return true;
+      if (FillElementBuffer(elem, false, &has_row_filled) != Result::SUCCESS)
+        return true;
 
       if (elem->IsEmpty()) {
         if (m_source->IsChannelFinished(i)) nleft--;
@@ -226,7 +228,11 @@ bool MergeSort::Populate(THD *thd) {
 
       nleft--;
     }
-    if (nleft > 0) m_source->Wait(thd);
+    // Since all channels share same Event for reading and we read blob data
+    // with block mode, one channel reading could overwrites other channels'
+    // event set. Here we just make sure no data read from any channels
+    // before waiting Event. see also ReadOneRow() in row_exchange.cc.
+    if (nleft > 0 && !has_row_filled) m_source->Wait(thd);
 
     if (thd->killed) return true;
   }
@@ -234,12 +240,9 @@ bool MergeSort::Populate(THD *thd) {
   return false;
 }
 
-/**
-  Fill up buffer of element from specified channel If succeed, the element is
-  fully filled
-*/
 MergeSort::Result MergeSort::FillElementBuffer(MergeSortElement *elem,
-                                               bool block_for_first) {
+                                               bool block_for_first,
+                                               bool *has_row_filled) {
   bool no_wait = !block_for_first;
 
   assert(elem->IsEmpty());
@@ -254,7 +257,8 @@ MergeSort::Result MergeSort::FillElementBuffer(MergeSortElement *elem,
 
     if (result != Result::SUCCESS) return result;
 
-    no_wait = true;
+    if (has_row_filled && !*has_row_filled) *has_row_filled = true;
+    if (!no_wait) no_wait = true;
   }
 
   return Result::SUCCESS;
@@ -286,7 +290,7 @@ MergeSort::Result MergeSort::ReadOneRow(uchar **buf, bool *duplicated_with_last)
     // No record left, let's fill up this element from source channel
     if (!m_source->IsChannelFinished(index)) {
       Result result;
-      if ((result = FillElementBuffer(elem, true)) != Result::SUCCESS)
+      if ((result = FillElementBuffer(elem, true, nullptr)) != Result::SUCCESS)
         return result;
     }
     if (!elem->IsEmpty()) {
