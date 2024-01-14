@@ -16,6 +16,7 @@
 #include "sql/parallel_query/planner.h"
 #include "sql/parallel_query/row_channel.h"
 #include "sql/parallel_query/worker.h"
+#include "sql/parallel_query/spider_conn_worker.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_optimizer.h"
@@ -185,7 +186,7 @@ bool MySQLClientAsync::fetch_row(bool *fetch_complete) {
 
 MySQLClientQueryExec::MySQLClientQueryExec(PlanDeparser *deparser, TABLE *table)
     : m_table(table), m_deparser(deparser) {
-    mysql = new MySQLClientSync;
+    mysql = new MySQLClientSpider;
  }
 
 MySQLClientQueryExec::~MySQLClientQueryExec() {
