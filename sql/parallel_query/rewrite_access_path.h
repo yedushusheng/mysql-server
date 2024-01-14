@@ -164,7 +164,7 @@ class AccessPathParallelizer : public AccessPathRewriter {
   void post_rewrite_out_path(AccessPath *out) override;
 
   void rewrite_index_access_path(
-      parallel_scan_desc_t::type_t scan_type, TABLE *table, uint keynr,
+      bool is_ref_or_ull, TABLE *table, uint keynr,
       bool use_order, bool reverse,
       std::function<void(uint16_t *, key_range **, key_range **)>
           get_scan_range);

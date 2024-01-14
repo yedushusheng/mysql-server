@@ -264,8 +264,8 @@ void AccessPathParallelizer::set_table_parallel_scan(TABLE *table, uint keynr,
   key_range *min_key = nullptr, *max_key = nullptr;
   bool is_asc = !reverse;
   uint16_t key_used = UINT16_MAX;
-  parallel_scan_desc_t scan_desc = {
-      parallel_scan_desc_t::NORMAL, keynr, min_key, max_key, key_used, is_asc};
+  parallel_scan_desc_t scan_desc = {keynr,   false,    min_key,
+                                    max_key, key_used, is_asc};
 
   m_partial_plan->SetTablesParallelScan(table, scan_desc);
 }
@@ -279,7 +279,7 @@ bool AccessPathParallelizer::rewrite_table_scan(AccessPath *in, AccessPath *out
 }
 
 void AccessPathParallelizer::rewrite_index_access_path(
-    parallel_scan_desc_t::type_t scan_type, TABLE *table, uint keynr,
+    bool is_ref_or_null, TABLE *table, uint keynr,
     bool use_order, bool reverse,
     std::function<void(uint16_t *, key_range **, key_range **)>
         get_scan_range) {
@@ -298,8 +298,8 @@ void AccessPathParallelizer::rewrite_index_access_path(
   bool is_asc = !reverse;
   uint16_t key_used = UINT16_MAX;
   if (get_scan_range) get_scan_range(&key_used, &min_key, &max_key);
-  parallel_scan_desc_t scan_desc = {scan_type, keynr,    min_key,
-                                    max_key,   key_used, is_asc};
+  parallel_scan_desc_t scan_desc = {keynr,   is_ref_or_null, min_key,
+                                    max_key, key_used,       is_asc};
 
   m_partial_plan->SetTablesParallelScan(table, scan_desc);
 }
@@ -309,7 +309,7 @@ bool AccessPathParallelizer::rewrite_index_scan(AccessPath *in, AccessPath *out
   assert(out);
   auto &index_scan = in->index_scan();
 
-  rewrite_index_access_path(parallel_scan_desc_t::NORMAL, index_scan.table,
+  rewrite_index_access_path(false, index_scan.table,
                             index_scan.idx, index_scan.use_order,
                             index_scan.reverse, nullptr);
   return false;
@@ -332,7 +332,7 @@ bool AccessPathParallelizer::rewrite_ref(AccessPath *in,
   assert(out);
   auto &ref = in->ref();
   rewrite_index_access_path(
-      parallel_scan_desc_t::NORMAL, ref.table, ref.ref->key, ref.use_order,
+      false, ref.table, ref.ref->key, ref.use_order,
       ref.reverse, [&ref, this](auto key_used, auto min_key, auto max_key) {
         get_scan_range_for_ref(mem_root(), ref.ref, key_used, min_key, max_key);
       });
@@ -345,9 +345,8 @@ bool AccessPathParallelizer::rewrite_ref_or_null(AccessPath *in, AccessPath *out
   auto &ref_or_null = in->ref_or_null();
 
   rewrite_index_access_path(
-      parallel_scan_desc_t::REF_OR_NULL, ref_or_null.table,
-      ref_or_null.ref->key, ref_or_null.use_order, false,
-      [&ref_or_null, this](auto key_used, auto min_key, auto max_key) {
+      true, ref_or_null.table, ref_or_null.ref->key, ref_or_null.use_order,
+      false, [&ref_or_null, this](auto key_used, auto min_key, auto max_key) {
         get_scan_range_for_ref(mem_root(), ref_or_null.ref, key_used, min_key,
                                nullptr);
         // Construct null ref key for parallel scan, avoid change origin
@@ -370,7 +369,7 @@ bool AccessPathParallelizer::rewrite_eq_ref(AccessPath *in,
   auto &eq_ref = in->eq_ref();
 
   rewrite_index_access_path(
-      parallel_scan_desc_t::NORMAL, eq_ref.table, eq_ref.ref->key,
+      false, eq_ref.table, eq_ref.ref->key,
       eq_ref.use_order, false,
       [&eq_ref, this](auto key_used, auto min_key, auto max_key) {
         get_scan_range_for_ref(mem_root(), eq_ref.ref, key_used, min_key,
@@ -388,10 +387,7 @@ bool AccessPathParallelizer::rewrite_index_range_scan(AccessPath *in,
   assert(quick->head == index_range_scan.table);
 
   rewrite_index_access_path(
-      m_join_in->m_ordered_index_usage == JOIN::ORDERED_INDEX_GROUP_BY
-          ? parallel_scan_desc_t::INDEX_GROUP_BY
-          : parallel_scan_desc_t::NORMAL,
-      quick->head, quick->index,
+      false, quick->head, quick->index,
       m_join_in->m_ordered_index_usage != JOIN::ORDERED_INDEX_VOID,
       quick->reverse_sorted(),
       [quick, this](auto key_used, auto min_key, auto max_key) {

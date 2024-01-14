@@ -13510,7 +13510,25 @@ int QUICK_GROUP_MIN_MAX_SELECT::reset(void) {
   }
   if (quick_prefix_select && quick_prefix_select->reset()) return 1;
 
+  // Why HA_EXTRA_TOGGLE_PARALLEL_SCAN_INNER ?
+  //
+  // Only MyRocks supports HA_EXTRA_TOGGLE_PARALLEL_SCAN_INNER and it switches
+  // ha_rocksdb::m_parallel_scan_enabled_.
+  //
+  // If there's no HA_EXTRA_TOGGLE_PARALLEL_SCAN_INNER, in a parallel query, a
+  // PQ worker attaches a MyRocksParallelScan and all of its handler scans use
+  // ParallelIterators and consume MyRocksParallelScanJobs. For GROUP_MIN_MAX,
+  // the QUICK_GROUP_MIN_MAX_SELECT determines the last group prefix by calling
+  // ha_index_last which performs a descending scan, conflicting with
+  // MyRocksParallelScan which ascends.
+  //
+  // Use HA_EXTRA_TOGGLE_PARALLEL_SCAN_INNER to prevent ha_index_last from using
+  // ParallelIterators. If so, ha_index_last sets up a regular Iterator,
+  // performs a non-parallel scan and does not impact the attached parallel
+  // jobs.
+  (void)head->file->ha_extra(HA_EXTRA_TOGGLE_PARALLEL_SCAN_INNER);
   result = head->file->ha_index_last(record);
+  (void)head->file->ha_extra(HA_EXTRA_TOGGLE_PARALLEL_SCAN_INNER);
   if (result != 0) {
     if (result == HA_ERR_END_OF_FILE)
       return 0;
