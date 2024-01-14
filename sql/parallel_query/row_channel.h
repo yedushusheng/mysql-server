@@ -7,10 +7,12 @@ namespace pq {
 namespace comm {
 class RowChannel {
  public:
+  enum class Type {MEM, TCP};
+
   virtual ~RowChannel() {}
   using Result = RowTxResult;
 
-  virtual bool Init(THD *thd, Event *event) = 0;
+  virtual bool Init(THD *thd, Event *event, bool receiver) = 0;
 
   virtual Result Send(std::size_t nbytes, const void *data, bool nowait) = 0;
   virtual Result Receive(std::size_t *nbytesp, void **datap, bool nowait,
@@ -24,6 +26,9 @@ class RowChannel {
 
 RowChannel *CreateMemRowChannel(MEM_ROOT *mem_root, RowChannel *peer);
 void SetPeerEventForMemChannel(RowChannel *channel, Event *peer_event);
+
+RowChannel *CreateTcpRowChannel(MEM_ROOT *mem_root, int *sock);
+
 }  // namespace comm
 }  // namespace pq
 #endif
