@@ -7137,4 +7137,16 @@ inline Item *GetNthVisibleField(const mem_root_deque<Item *> &fields,
   return nullptr;
 }
 
+inline Item_parallel_safe GetItemsParallelSafe(Item **items, uint count) {
+  auto res = Item_parallel_safe::Safe;
+  for (uint i = 0; i < count; ++i) {
+    if (items[i]->parallel_safe() > res) {
+      res = items[i]->parallel_safe();
+      if (res == Item_parallel_safe::Unsafe) return res;
+    }
+  }
+
+  return res;
+}
+
 #endif /* ITEM_INCLUDED */
