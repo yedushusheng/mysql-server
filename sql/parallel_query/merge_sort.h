@@ -74,30 +74,35 @@ class MergeSortElement {
    */
   bool alloc_and_make_sortkey(Sort_param *param, TABLE *table);
 
-  uint NumRecords() const { return m_num_records; }
+  bool IsEmpty() const {
+    assert(m_cur_read <= m_cur_write &&
+           m_cur_write <= m_cur_read + (std::uint64_t)m_allocated_records);
+
+    return m_cur_read == m_cur_write;
+  }
+  bool IsFull() const {
+    assert(m_cur_read <= m_cur_write);
+
+    auto num_recs = m_cur_write - m_cur_read;
+    assert(num_recs <= (std::uint64_t)m_allocated_records);
+
+    return num_recs == (std::uint64_t)m_allocated_records;
+  }
   uchar *CurrentRecord(RowDataInfo **rowdata) const;
 
   /// Pop a record for next read. The top record is ready to read. @return false
   /// if no record left.
   bool PopRecord() {
-    if (--m_num_records == 0) {
-      ResetRecordRead();
-      return false;
-    }
-    ++m_cur_record;
-    m_read_cursor += m_record_length;
-    return true;
+    assert(m_cur_read < m_cur_write &&
+           m_cur_write <= m_cur_read + (std::uint64_t)m_allocated_records);
+
+    return ++m_cur_read != m_cur_write;
   }
 
   /// Push a new record and this is just called when the buffer is emptied.
   MergeSort::Result PushRecord(MergeSortSource *source, bool nowait);
 
  private:
-  void ResetRecordRead() {
-    m_cur_record = 0;
-    m_read_cursor = m_record_buffer;
-  }
-
   uint m_chn_index;  // index of source channel
 
   uchar *m_key{nullptr};  // pointer to sort key
@@ -106,11 +111,11 @@ class MergeSortElement {
 
   // The record buffer related properties
   /// Records buffer
-  uchar *m_record_buffer{nullptr};
+  uchar *m_records_buffer{nullptr};
   RowDataInfo *m_row_data{nullptr};
-  uint m_num_records{0};  // The number of records in buffer
-  uint m_cur_record;
-  uchar *m_read_cursor;  // current read position
+  std::uint64_t m_cur_read{0};  // Next read record index
+  // Next write record index, the buffer empty if it equals to cur_read.
+  std::uint64_t m_cur_write{0};
   /// The the length of record, it equals to source table's table->s->reclength
   ulong m_record_length;
   uint m_allocated_records{0};

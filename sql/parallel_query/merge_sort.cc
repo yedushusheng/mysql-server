@@ -37,14 +37,12 @@ bool MergeSortElement::Init(size_t index, THD *thd, size_t key_size,
     return true;
   m_key_length = key_size;
 
-  if (!(m_record_buffer = static_cast<uchar *>(
+  if (!(m_records_buffer = static_cast<uchar *>(
             thd->mem_root->Alloc(m_record_length * m_allocated_records))))
     return true;
   if (!(m_row_data = AllocRowDataInfoArray(thd->mem_root, m_allocated_records,
                                            row_segments)))
     return true;
-
-  ResetRecordRead();
 
   return false;
 }
@@ -125,21 +123,28 @@ bool MergeSort::Init(THD *thd, Filesort *filesort, uint nelements) {
 }
 
 uchar *MergeSortElement::CurrentRecord(RowDataInfo **rowdata) const {
-  if (rowdata) *rowdata = RowDataInfoAt(m_row_data, m_cur_record);
+  assert(m_cur_read < m_cur_write &&
+         m_cur_write <= m_cur_read + (std::uint64_t)m_allocated_records);
 
-  return m_read_cursor;
+  auto cur_rec = m_cur_read % (std::uint64_t)m_allocated_records;
+  if (rowdata) *rowdata = RowDataInfoAt(m_row_data, cur_rec);
+  return m_records_buffer + cur_rec * m_record_length;
 }
 
 MergeSort::Result MergeSortElement::PushRecord(MergeSortSource *source,
                                                bool nowait) {
-  uchar *offset = m_record_buffer + m_num_records * m_record_length;
+  assert(m_cur_read <= m_cur_write &&
+         m_cur_write < m_cur_read + (std::uint64_t)m_allocated_records);
+
+  auto cur_rec = m_cur_write % (std::uint64_t)m_allocated_records;
+  uchar *offset = m_records_buffer + cur_rec * m_record_length;
   auto result =
       source->ReadFromChannel(m_chn_index, offset, m_record_length, nowait,
-                              RowDataInfoAt(m_row_data, m_num_records));
+                              RowDataInfoAt(m_row_data, cur_rec));
 
   if (result != MergeSort::Result::SUCCESS) return result;
 
-  m_num_records++;
+  ++m_cur_write;
 
   return result;
 }
@@ -205,12 +210,12 @@ bool MergeSort::Populate(THD *thd) {
   while (nleft > 0) {
     for (uint i = 0; i < m_num_elements; i++) {
       MergeSortElement *elem = &m_elements[i];
-      // skip full elements or finished elements
-      if (elem->NumRecords() > 0 || m_source->IsChannelFinished(i)) continue;
+      // skip non-empty elements or finished elements
+      if (!elem->IsEmpty() || m_source->IsChannelFinished(i)) continue;
 
       if (FillElementBuffer(elem, false) != Result::SUCCESS) return true;
 
-      if (elem->NumRecords() == 0) {
+      if (elem->IsEmpty()) {
         if (m_source->IsChannelFinished(i)) nleft--;
         continue;
       }
@@ -234,12 +239,12 @@ MergeSort::Result MergeSort::FillElementBuffer(MergeSortElement *elem,
                                                bool block_for_first) {
   bool no_wait = !block_for_first;
 
-  assert(elem->NumRecords() == 0);
+  assert(elem->IsEmpty());
 
   // Issue waiting read for the first record if @param block_for_first is set,
   // and nowait read for latter ones. Fill as many as max_records_buffered - 1
   // rows, "logically" proceding the header record, which is to be returned.
-  while (elem->NumRecords() < max_records_buffered) {
+  while (!elem->IsFull()) {
     auto result = elem->PushRecord(m_source, no_wait);
     // return RowExchangeResult::SUCCESS RowExchangeResult::WOULDBLOCK case.
     if (result == Result::NODATA) return Result::SUCCESS;
@@ -260,14 +265,14 @@ MergeSort::Result MergeSort::Read(uchar **buf, RowDataInfo *&rowdata) {
   MergeSortElement *elem = m_priority_queue->top();
   uint index = elem->ChannelIndex();
 
-  if (elem->NumRecords() == 0) {
+  if (elem->IsEmpty()) {
     // No record left, let's fill up this element from source channel
     if (!m_source->IsChannelFinished(index)) {
       Result result;
       if ((result = FillElementBuffer(elem, true)) != Result::SUCCESS)
         return result;
     }
-    if (elem->NumRecords() > 0) {
+    if (!elem->IsEmpty()) {
       if (FillToPriorityQueue<false>(this, elem)) return Result::OOM;
     } else {
       // FillElementBuffer() filled one record at least, current channel must
@@ -281,7 +286,7 @@ MergeSort::Result MergeSort::Read(uchar **buf, RowDataInfo *&rowdata) {
     // After Priority_queue re-heapify, get new top element. It has one record
     // at least.
     elem = m_priority_queue->top();
-    assert(elem->NumRecords() > 0);
+    assert(!elem->IsEmpty());
   }
 
   *buf = elem->CurrentRecord(&rowdata);
