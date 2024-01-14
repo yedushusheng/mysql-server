@@ -431,22 +431,18 @@ RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector) {
 }
 class Query_result_to_collector : public Query_result_interceptor {
  private:
-  comm::RowChannel *m_row_channel;
   comm::RowExchangeWriter *m_row_exchange_writer;
   Temp_table_param *m_tmp_table_param;
   TABLE *m_table{nullptr};
 
  public:
-  Query_result_to_collector(comm::RowChannel *row_channel,
-                            comm::RowExchangeWriter *row_exchange_writer,
+  Query_result_to_collector(comm::RowExchangeWriter *row_exchange_writer,
                             Temp_table_param *tmp_table_param)
-      : m_row_channel(row_channel),
-        m_row_exchange_writer(row_exchange_writer),
+      : m_row_exchange_writer(row_exchange_writer),
         m_tmp_table_param(tmp_table_param) {}
 
   void cleanup(THD *thd) override {
     Query_result_interceptor::cleanup(thd);
-    if (!m_row_channel->IsClosed()) m_row_channel->Close();
 
     if (m_table) {
       close_tmp_table(m_table);
@@ -503,7 +499,6 @@ class Query_result_to_collector : public Query_result_interceptor {
 
   bool send_eof(THD *) override {
     m_row_exchange_writer->WriteEOF();
-    m_row_channel->Close();
     return false;
   }
 };
@@ -575,10 +570,7 @@ bool PartialExecutor::PrepareQueryPlan(PartialExecutorContext *context) {
   THD *thd = m_thd;
   LEX *lex = thd->lex;
 
-  if (lex_start(thd)) {
-    NotifyAbort();
-    return true;
-  }
+  if (lex_start(thd)) return true;
 
   lex->is_partial_plan = true;
 
@@ -589,25 +581,21 @@ bool PartialExecutor::PrepareQueryPlan(PartialExecutorContext *context) {
   lex->sql_command = context->sql_command;
   lex->is_explain_analyze = context->is_explain_analyze;
   if (lex->is_explain_analyze &&
-      !(lex->explain_format = new (thd->mem_root) Explain_format_tree)) {
-    NotifyAbort();
+      !(lex->explain_format = new (thd->mem_root) Explain_format_tree))
     return true;
-  }
 
   auto *from_query_block = m_query_plan->QueryBlock();
   auto *from_join = from_query_block->join;
   auto *query_result = new (thd->mem_root) Query_result_to_collector(
-      m_sender_channel, &m_row_exchange_writer, &from_join->tmp_table_param);
+      &m_row_exchange_writer, &from_join->tmp_table_param);
 
   DBUG_EXECUTE_IF("pq_simulate_worker_prepare_query_plan_error_1", {
     my_error(ER_DA_UNKNOWN_ERROR_NUMBER, MYF(0), 2);
     query_result = nullptr;
   });
 
-  if (!query_result) {
-    NotifyAbort();
-    return true;
-  }
+  if (!query_result) return true;
+
   lex->result = query_result;
   auto *query_block = lex->query_block;
 
@@ -675,8 +663,6 @@ bool PartialExecutor::AttachTablesParallelScan() {
   return false;
 }
 
-void PartialExecutor::NotifyAbort() { m_sender_channel->Close(); }
-
 void PartialExecutor::ExecuteQuery(PartialExecutorContext *context) {
   THD *thd = m_thd;
   auto *lex = thd->lex;
@@ -716,6 +702,8 @@ void PartialExecutor::EndQuery() {
   Query_expression *unit = lex->unit;
 
   m_cleanup_func();
+
+   m_sender_channel->Close();
 
   THD_STAGE_INFO(thd, stage_end);
 
