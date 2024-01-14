@@ -147,7 +147,7 @@ bool MergeSort::Populate(THD *thd) {
       // skip full elements or finished elements
       if (elem->NumRecords() > 0 || m_source->IsChannelFinished(i)) continue;
 
-      if (FillElementBuffer(thd, elem, false) != Result::SUCCESS) return true;
+      if (FillElementBuffer(elem, false) != Result::SUCCESS) return true;
 
       if (elem->NumRecords() == 0) {
         if (m_source->IsChannelFinished(i)) nleft--;
@@ -169,7 +169,7 @@ bool MergeSort::Populate(THD *thd) {
   Fill up buffer of element from specified channel If succeed, the element is
   fully filled
 */
-MergeSort::Result MergeSort::FillElementBuffer(THD *thd, MergeSortElement *elem,
+MergeSort::Result MergeSort::FillElementBuffer(MergeSortElement *elem,
                                                bool block_for_first) {
   uint index = elem->ChannelIndex();
   size_t nbytes;
@@ -183,7 +183,7 @@ MergeSort::Result MergeSort::FillElementBuffer(THD *thd, MergeSortElement *elem,
   // rows, "logically" proceding the header record, which is to be returned.
   while (elem->NumRecords() < MAX_RECORDS_BUFFERED) {
     auto result =
-        m_source->ReadFromChannel(thd, index, &nbytes, &data, no_wait);
+        m_source->ReadFromChannel(index, &nbytes, &data, no_wait);
 
     // return RowExchangeResult::SUCCESS RowExchangeResult::WOULDBLOCK case.
     if (result == Result::NODATA) return Result::SUCCESS;
@@ -200,7 +200,7 @@ MergeSort::Result MergeSort::FillElementBuffer(THD *thd, MergeSortElement *elem,
   return Result::SUCCESS;
 }
 
-MergeSort::Result MergeSort::Read(THD *thd, uchar **buf) {
+MergeSort::Result MergeSort::Read(uchar **buf) {
   // Return end if nothing is pushed in Populate().
   if (m_priority_queue->size() == 0) return Result::END;
 
@@ -212,7 +212,7 @@ MergeSort::Result MergeSort::Read(THD *thd, uchar **buf) {
     // No record left, let's fill up this element from source channel
     if (!m_source->IsChannelFinished(index)) {
       Result result;
-      if ((result = FillElementBuffer(thd, elem, true)) != Result::SUCCESS)
+      if ((result = FillElementBuffer(elem, true)) != Result::SUCCESS)
         return result;
     }
     if (elem->NumRecords() > 0) {

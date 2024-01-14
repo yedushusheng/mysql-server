@@ -44,29 +44,40 @@ class MessageQueueEvent {
   mysql_cond_t m_cond;
 };
 
+class MessageQueueEndpointInfo {
+ public:
+  MessageQueueEndpointInfo(THD *thd, MessageQueueEvent *self_event,
+                           MessageQueueEvent *peer_event)
+      : m_thd(thd), m_self_event(self_event), m_peer_event(peer_event) {}
+
+  inline void NotifyPeer() { m_peer_event->Set(); }
+  inline void Wait() { m_self_event->Wait(m_thd); }
+  inline bool IsKilled() const;
+  inline THD *thd() const { return m_thd; }
+
+ private:
+  THD *m_thd;
+  MessageQueueEvent *m_self_event;
+  MessageQueueEvent *m_peer_event;
+};
+
 class MessageQueue {
  public:
   enum class Result { SUCCESS, DETACHED, WOULD_BLOCK, OOM, KILLED };
   friend class MessageQueueHandle;
   MessageQueue() = default;
   MessageQueue(const MessageQueue &) = delete;
-  virtual ~MessageQueue(){}
-
-  inline void SetEvent(MessageQueueEvent *event) { m_event = event; }
+  virtual ~MessageQueue() {}
 
   virtual bool Init(MEM_ROOT *mem_root) = 0;
-  inline void NotifyPeer() { m_event->Set(); }
-  inline void Wait(THD *thd) { m_event->Wait(thd); }
 
-  void Detach() {
+  void Detach(MessageQueueEndpointInfo *endpoint_info) {
     m_detached.store(true, std::memory_order_relaxed);
     HandleDetach();
-    NotifyPeer();
+    endpoint_info->NotifyPeer();
   }
 
  protected:
-  MessageQueueEvent *m_event{nullptr};
-
   std::atomic<bool> m_detached{false};
   virtual void HandleDetach() {}
   bool IsDetached() const { return m_detached.load(std::memory_order_relaxed); }
@@ -76,7 +87,7 @@ class MemMessageQueue : public MessageQueue {
  public:
   friend class MemMessageQueueHandle;
   MemMessageQueue(std::size_t queue_size);
-  virtual ~MemMessageQueue(){}
+  virtual ~MemMessageQueue() {}
   bool Init(MEM_ROOT *mem_root) override;
 
  protected:
@@ -84,10 +95,12 @@ class MemMessageQueue : public MessageQueue {
     atomic_thread_fence(std::memory_order_seq_cst);
   }
   void IncreaseBytesWritten(std::size_t n);
-  void IncreaseBytesRead(std::size_t n);
-  Result SendBytes(THD *thd, std::size_t nbytes, const void *data, bool nowait,
-                   std::size_t *bytes_written);
-  Result ReceiveBytes(THD *thd, std::size_t bytes_needed, bool nowait,
+  void IncreaseBytesRead(MessageQueueEndpointInfo *endpoint_info,
+                         std::size_t n);
+  Result SendBytes(MessageQueueEndpointInfo *endpoint_info, std::size_t nbytes,
+                   const void *data, bool nowait, std::size_t *bytes_written);
+  Result ReceiveBytes(MessageQueueEndpointInfo *endpoint_info,
+                      std::size_t bytes_needed, bool nowait,
                       std::size_t *nbytesp, void **datap,
                       std::size_t *consume_pending);
 
@@ -101,27 +114,29 @@ class MemMessageQueue : public MessageQueue {
 
 class MessageQueueHandle {
  public:
-  MessageQueueHandle(MessageQueue *smq) : m_queue(smq) {}
+  MessageQueueHandle(MessageQueue *smq, THD *thd, MessageQueueEvent *self_event,
+                     MessageQueueEvent *peer_event)
+      : m_queue(smq), m_endpoint_info(thd, self_event, peer_event) {}
   MessageQueueHandle(const MessageQueueHandle &) = delete;
-  virtual ~MessageQueueHandle(){}
-  virtual MessageQueue::Result Send(THD *thd, std::size_t nbytes,
-                                    const void *data, bool nowait) = 0;
-  virtual MessageQueue::Result Receive(THD *thd, std::size_t *nbytesp,
-                                       void **datap, bool nowait) = 0;
+  virtual ~MessageQueueHandle() {}
+  virtual MessageQueue::Result Send(std::size_t nbytes, const void *data,
+                                    bool nowait) = 0;
+  virtual MessageQueue::Result Receive(std::size_t *nbytesp, void **datap,
+                                       bool nowait) = 0;
   /**
     Notify counterparty that we're detaching from shared message queue.
   */
   void Detach() {
     if (m_closed) return;
-    m_queue->Detach();
+    m_queue->Detach(&m_endpoint_info);
     SetClosed();
   }
-
   inline bool IsClosed() { return m_closed; }
   inline void SetClosed() { m_closed = true; }
 
  protected:
   MessageQueue *m_queue;
+  MessageQueueEndpointInfo m_endpoint_info;
   /**
     The flag is set which means sender/receiver does not send/receive messages
     any more.
@@ -133,9 +148,9 @@ class MemMessageQueueHandle : public MessageQueueHandle {
   using MessageQueueHandle::MessageQueueHandle;
 
  public:
-  MessageQueue::Result Send(THD *thd, std::size_t nbytes, const void *data,
+  MessageQueue::Result Send(std::size_t nbytes, const void *data,
                             bool nowait) override;
-  MessageQueue::Result Receive(THD *thd, std::size_t *nbytesp, void **datap,
+  MessageQueue::Result Receive(std::size_t *nbytesp, void **datap,
                                bool nowait) override;
 
  private:

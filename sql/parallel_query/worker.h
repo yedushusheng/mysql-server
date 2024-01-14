@@ -22,7 +22,7 @@ class Worker {
          mysql_cond_t *state_cond);
   THD *thd() { return &m_thd; }
   THD *leader_thd() const { return m_leader_thd; }
-  bool Init();
+  bool Init(MessageQueueEvent *peer_event);
   int Start();
   bool IsStartFailed() const;
   bool IsRunning(bool need_state_lock);
@@ -32,8 +32,8 @@ class Worker {
   void ExecuteQuery();
   void EndQuery();
   bool is_error() { return m_thd.is_error(); }
-
-  pq::MessageQueue *MessageQueue() const { return m_message_queue; }
+  MessageQueue *message_queue() { return m_message_queue; }
+  MessageQueueEvent *message_queue_event() { return m_row_exchange_writer.Event(); }
   Diagnostics_area *stmt_da(ha_rows *found_rows, ha_rows *examined_rows);
   std::string *QueryPlanTimingData() { return m_query_plan_timing_data.get(); }
 #if !defined(NDEBUG)
@@ -58,9 +58,8 @@ class Worker {
 
   /// Communication facilities with leader
   RowExchange m_row_exchange{1};
-  pq::MessageQueue *m_message_queue;
+  MessageQueue *m_message_queue;
   RowExchangeWriter m_row_exchange_writer;
-
   State m_state{State::None};
   mysql_mutex_t *m_state_lock;
   mysql_cond_t *m_state_cond;

@@ -15,6 +15,8 @@ void MessageQueueEvent::Wait(THD *thd, bool auto_reset) {
   thd->EXIT_COND(nullptr);
 }
 
+bool MessageQueueEndpointInfo::IsKilled() const { return m_thd->killed; }
+
 MemMessageQueue::MemMessageQueue(std::size_t queue_size)
     : m_ring_size(queue_size) {
   m_bytes_written.store(0, std::memory_order_relaxed);
@@ -29,7 +31,8 @@ bool MemMessageQueue::Init(MEM_ROOT *mem_root) {
   return false;
 }
 
-void MemMessageQueue::IncreaseBytesRead(std::size_t n) {
+void MemMessageQueue::IncreaseBytesRead(MessageQueueEndpointInfo *endpoint_info,
+                                        std::size_t n) {
   /*
     Separate prior reads of m_buffer from the increment of m_bytes_read which
     follows. This pairs with the full barrier in SendBytes(). We only need a
@@ -44,7 +47,7 @@ void MemMessageQueue::IncreaseBytesRead(std::size_t n) {
   */
   m_bytes_read.store(m_bytes_read.load(std::memory_order_relaxed) + n,
                      std::memory_order_relaxed);
-  NotifyPeer();
+  endpoint_info->NotifyPeer();
 }
 
 void MemMessageQueue::IncreaseBytesWritten(std::size_t n) {
@@ -65,9 +68,9 @@ void MemMessageQueue::IncreaseBytesWritten(std::size_t n) {
 /**
   Write bytes into the shared message queue.
 */
-MessageQueue::Result MemMessageQueue::SendBytes(THD *thd, std::size_t nbytes,
-                                                const void *data, bool nowait,
-                                                std::size_t *bytes_written) {
+MessageQueue::Result MemMessageQueue::SendBytes(
+    MessageQueueEndpointInfo *endpoint_info, std::size_t nbytes,
+    const void *data, bool nowait, std::size_t *bytes_written) {
   std::size_t sent = 0;
   std::size_t used;
   std::size_t available;
@@ -98,7 +101,7 @@ MessageQueue::Result MemMessageQueue::SendBytes(THD *thd, std::size_t nbytes,
     }
 
     if (available == 0) {
-      NotifyPeer();
+      endpoint_info->NotifyPeer();
 
       /* Skip manipulation of our latch if nowait = true. */
       if (nowait) {
@@ -106,9 +109,9 @@ MessageQueue::Result MemMessageQueue::SendBytes(THD *thd, std::size_t nbytes,
         return Result::WOULD_BLOCK;
       }
 
-      Wait(thd);
+      endpoint_info->Wait();
 
-      if (unlikely(thd->killed)) return Result::KILLED;
+      if (unlikely(endpoint_info->IsKilled())) return Result::KILLED;
 
     } else {
       std::size_t offset = wb % (uint64)m_ring_size;
@@ -152,8 +155,9 @@ MessageQueue::Result MemMessageQueue::SendBytes(THD *thd, std::size_t nbytes,
   message queue, or until the buffer wraps around.
 */
 MessageQueue::Result MemMessageQueue::ReceiveBytes(
-    THD *thd, std::size_t bytes_needed, bool nowait, std::size_t *nbytesp,
-    void **datap, std::size_t *consume_pending) {
+    MessageQueueEndpointInfo *endpoint_info, std::size_t bytes_needed,
+    bool nowait, std::size_t *nbytesp, void **datap,
+    std::size_t *consume_pending) {
   std::size_t used;
   uint64_t written;
 
@@ -205,23 +209,23 @@ MessageQueue::Result MemMessageQueue::ReceiveBytes(
       previously-consumed as read to make more buffer space.
     */
     if (*consume_pending > 0) {
-      IncreaseBytesRead(*consume_pending);
+      IncreaseBytesRead(endpoint_info, *consume_pending);
       *consume_pending = 0;
     }
 
     /* Skip manipulation of our latch if nowait = true. */
     if (nowait) return Result::WOULD_BLOCK;
 
-    Wait(thd);
+    endpoint_info->Wait();
 
-    if (unlikely(thd->killed)) return Result::KILLED;
+    if (unlikely(endpoint_info->IsKilled())) return Result::KILLED;
   }
 }
 
 /**
   Write a message into a shared message queue.
 */
-MessageQueue::Result MemMessageQueueHandle::Send(THD *thd, std::size_t nbytes,
+MessageQueue::Result MemMessageQueueHandle::Send(std::size_t nbytes,
                                                  const void *data,
                                                  bool nowait) {
   MessageQueue::Result res;
@@ -231,9 +235,9 @@ MessageQueue::Result MemMessageQueueHandle::Send(THD *thd, std::size_t nbytes,
   while (!m_length_word_complete) {
     assert(m_partial_bytes < sizeof(std::size_t));
 
-    res = queue->SendBytes(thd, sizeof(std::size_t) - m_partial_bytes,
-                           ((char *)&nbytes) + m_partial_bytes, nowait,
-                           &bytes_written);
+    res = queue->SendBytes(
+        &m_endpoint_info, sizeof(std::size_t) - m_partial_bytes,
+        ((char *)&nbytes) + m_partial_bytes, nowait, &bytes_written);
 
     if (res != MessageQueue::Result::SUCCESS &&
         res != MessageQueue::Result::WOULD_BLOCK) {
@@ -257,7 +261,7 @@ MessageQueue::Result MemMessageQueueHandle::Send(THD *thd, std::size_t nbytes,
   /* Write the actual data bytes into the buffer. */
   assert(m_partial_bytes <= nbytes);
   do {
-    res = queue->SendBytes(thd, nbytes - m_partial_bytes,
+    res = queue->SendBytes(&m_endpoint_info, nbytes - m_partial_bytes,
                            static_cast<const char *>(data) + m_partial_bytes,
                            nowait, &bytes_written);
 
@@ -296,7 +300,7 @@ MessageQueue::Result MemMessageQueueHandle::Send(THD *thd, std::size_t nbytes,
     and we don't want to do it too often.
   */
   if (m_pending_bytes > queue->Size() / 4) {
-    queue->NotifyPeer();
+    m_endpoint_info.NotifyPeer();
     m_pending_bytes = 0;
   }
 
@@ -306,8 +310,7 @@ MessageQueue::Result MemMessageQueueHandle::Send(THD *thd, std::size_t nbytes,
 /**
   Receive a message from a shared message queue.
 */
-MessageQueue::Result MemMessageQueueHandle::Receive(THD *thd,
-                                                    std::size_t *nbytesp,
+MessageQueue::Result MemMessageQueueHandle::Receive(std::size_t *nbytesp,
                                                     void **datap, bool nowait) {
   MessageQueue::Result res;
   void *rawdata;
@@ -321,15 +324,16 @@ MessageQueue::Result MemMessageQueueHandle::Receive(THD *thd,
     fairly expensive and we don't want to do it too often.
   */
   if (m_pending_bytes > queue->Size() / 4) {
-    queue->IncreaseBytesRead(m_pending_bytes);
+    queue->IncreaseBytesRead(&m_endpoint_info, m_pending_bytes);
     m_pending_bytes = 0;
   }
 
   /* Try to read, or finish reading, the length word from the buffer. */
   while (!m_length_word_complete) {
     assert(m_partial_bytes < sizeof(std::size_t));
-    res = queue->ReceiveBytes(thd, sizeof(std::size_t) - m_partial_bytes,
-                              nowait, &rb, &rawdata, &m_pending_bytes);
+    res = queue->ReceiveBytes(&m_endpoint_info,
+                              sizeof(std::size_t) - m_partial_bytes, nowait,
+                              &rb, &rawdata, &m_pending_bytes);
     if (res != MessageQueue::Result::SUCCESS) return res;
 
     if (m_partial_bytes == 0 && rb >= sizeof(std::size_t)) {
@@ -360,6 +364,7 @@ MessageQueue::Result MemMessageQueueHandle::Receive(THD *thd,
 
       /* Message word is split; need buffer to reassemble. */
       if (!m_buffer) {
+        THD *thd = m_endpoint_info.thd();
         if (!(m_buffer = (char *)thd->mem_root->Alloc(initial_buffer_size)))
           return MessageQueue::Result::OOM;
 
@@ -394,7 +399,7 @@ MessageQueue::Result MemMessageQueueHandle::Receive(THD *thd,
       Try to obtain the whole message in a single chunk. If this works, we need
       not copy the data and can return a pointer directly into shared memory.
     */
-    res = queue->ReceiveBytes(thd, nbytes, nowait, &rb, &rawdata,
+    res = queue->ReceiveBytes(&m_endpoint_info, nbytes, nowait, &rb, &rawdata,
                               &m_pending_bytes);
     if (res != MessageQueue::Result::SUCCESS) return res;
 
@@ -423,6 +428,7 @@ MessageQueue::Result MemMessageQueueHandle::Receive(THD *thd,
         m_buflen = 0;
       }
 
+      THD *thd = m_endpoint_info.thd();
       if (!(m_buffer = (char *)thd->mem_root->Alloc(newbuflen)))
         return MessageQueue::Result::OOM;
       m_buflen = newbuflen;
@@ -451,8 +457,8 @@ MessageQueue::Result MemMessageQueueHandle::Receive(THD *thd,
 
     /* Wait for some more data */
     still_needed = nbytes - m_partial_bytes;
-    res = queue->ReceiveBytes(thd, still_needed, nowait, &rb, &rawdata,
-                              &m_pending_bytes);
+    res = queue->ReceiveBytes(&m_endpoint_info, still_needed, nowait, &rb,
+                              &rawdata, &m_pending_bytes);
     if (res != MessageQueue::Result::SUCCESS) return res;
     if (rb > still_needed) rb = still_needed;
   }

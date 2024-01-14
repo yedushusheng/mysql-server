@@ -79,7 +79,7 @@ class Query_result_to_collector : public Query_result_interceptor {
                     nullptr, false))
       return true;
 
-    auto res = m_row_exchange_writer->Write(thd, m_table->record[0],
+    auto res = m_row_exchange_writer->Write(m_table->record[0],
                                             (size_t)m_table->s->reclength);
 
     assert(res != RowExchange::Result::ERROR &&
@@ -115,7 +115,7 @@ Worker::Worker(THD *thd, uint worker_id, PartialPlan *plan,
       m_state_lock(state_lock),
       m_state_cond(state_cond) {}
 
-bool Worker::Init() {
+bool Worker::Init(MessageQueueEvent *peer_event) {
 #if defined(ENABLED_DEBUG_SYNC)
   debug_sync_set_eval_id(&m_thd, m_id);
   debug_sync_clone_actions(&m_thd, m_leader_thd);
@@ -126,7 +126,8 @@ bool Worker::Init() {
       m_message_queue->Init(m_leader_thd->mem_root) ||
       m_row_exchange.Init(m_leader_thd->mem_root,
                           [this](uint) { return m_message_queue; }) ||
-      m_row_exchange_writer.Init(m_leader_thd, nullptr))
+      m_row_exchange_writer.Init(m_leader_thd->mem_root, nullptr, &m_thd,
+                                 [peer_event](uint) { return peer_event; }))
     return true;
   if (m_leader_thd->lex->is_explain_analyze)
     m_query_plan_timing_data.reset(new std::string);
