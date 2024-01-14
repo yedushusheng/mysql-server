@@ -3607,13 +3607,16 @@ class Handler_share {
 typedef void *parallel_scan_handle_t;
 
 struct parallel_scan_desc_t {
-  uint keynr;            // Key number for parallel scan
-  key_range *min_key;    // Min key of range scan or ref key for ref scan
-  key_range *max_key;    // Max key of range scan, same with min_key for ref
-                         // scan, null ref key for JT_REF_OR_NULL
-  bool max_key_is_null;  // If true, max_key saves null ref key
-  uint16_t key_used;     // Part of keys used by parallel scan
-  bool is_asc;           // Ascending or descending order
+  // REF_OR_NULL is for JT_REF_OR_NULL, there are 2 round scans, first for
+  // value ref key, second for null ref key. INDEX_GROUP_BY is for
+  // QS_TYPE_GROUP_MIN_MAX of JT_RANGE.
+  enum type_t { NORMAL, REF_OR_NULL, INDEX_GROUP_BY } type;
+  uint keynr;          // Key number for parallel scan
+  key_range *min_key;  // Min key of range scan or ref key for ref scan
+  key_range *max_key;  // Max key of range scan, same with min_key for ref
+                       // scan, null ref key for REF_OR_NULL type
+  uint16_t key_used;   // Part of keys used by parallel scan
+  bool is_asc;         // Ascending or descending order
 };
 
 /**
