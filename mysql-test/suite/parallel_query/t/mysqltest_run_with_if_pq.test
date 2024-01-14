@@ -1,0 +1,46 @@
+if (!$PARALLEL_QUERY_TEST) {
+--skip "Need parallel-query"
+}
+CREATE TABLE t1(a INT, b char(2));
+INSERT INTO t1 VALUES(1, 'ab'), (2, 'AB'), (3, 'aB'), (4, 'Ab'), (5, 'ac'), (6, 'AC'), (1, 'ab'), (2, 'AB'), (3, 'aB'), (4, 'Ab'), (5, 'ac'), (6, 'AC');
+
+--echo ### Sorted and lowercase result
+--run_with_if_pq sorted_result lowercase_result
+SELECT * FROM t1;
+
+--echo ### NOT sorted and lowercase result
+SELECT /*+ no_parallel */ * FROM t1;
+
+--echo ### Disable result log
+--run_with_if_pq disable_result_log
+SELECT * FROM t1 LIMIT 4;
+
+--echo ### DISPLAY result log again
+SELECT * FROM t1 ORDER BY 1 LIMIT 4;
+
+--echo ### Disable warnings
+--run_with_if_pq disable_warnings
+EXPLAIN SELECT * FROM t1 LIMIT 4;
+
+--echo ### DISPLAY warnings again
+EXPLAIN SELECT * FROM t1 LIMIT 4;
+
+--source include/turn_off_only_full_group_by.inc
+--echo ### Replace 2nd column with #
+--run_with_if_pq replace_column=2,#
+SELECT a, b FROM t1 GROUP BY a;
+--echo ### NO replace 2nd column
+SELECT /*+ no_parallel */ a, b FROM t1 GROUP BY a;
+--source include/restore_sql_mode_after_turn_off_only_full_group_by.inc
+
+DROP TABLE t1;
+
+CREATE TABLE t2(a double);
+INSERT INTO t2 VALUES(100002.244432344), (222201.33443242), (3432233.44453434), (4322344.554443233), (63233.444333233);
+--echo ### Replace numeric round
+--run_with_if_pq replace_numeric_round
+SELECT avg(a) FROM t2;
+--echo ### NOT replace numeric round
+SELECT avg(a) FROM t2;
+
+DROP TABLE t2;

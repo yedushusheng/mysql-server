@@ -278,6 +278,7 @@ our $opt_gcov_err                  = "mysql-test-gcov.err";
 our $opt_gcov_exe                  = "gcov";
 our $opt_gcov_msg                  = "mysql-test-gcov.msg";
 our $opt_hypergraph                = 0;
+our $opt_parallel_query            = 0;
 our $opt_mem                       = $ENV{'MTR_MEM'} ? 1 : 0;
 our $opt_only_big_test             = 0;
 our $opt_parallel                  = $ENV{MTR_PARALLEL};
@@ -285,6 +286,7 @@ our $opt_quiet                     = $ENV{'MTR_QUIET'} || 0;
 our $opt_repeat                    = 1;
 our $opt_report_times              = 0;
 our $opt_resfile                   = $ENV{'MTR_RESULT_FILE'} || 0;
+our $opt_alternative_resfile_suffix= $ENV{'MTR_ALTERNATIVE_RESULT_FILE_SUFFIX'} || 0;
 our $opt_test_progress             = 1;
 our $opt_sanitize                  = 0;
 our $opt_shutdown_timeout          = $ENV{MTR_SHUTDOWN_TIMEOUT} || 20; # seconds
@@ -1468,6 +1470,7 @@ sub print_global_resfile {
   resfile_global("gprof",            $opt_gprof            ? 1 : 0);
   resfile_global("helgrind",         $opt_helgrind         ? 1 : 0);
   resfile_global("hypergraph",       $opt_hypergraph       ? 1 : 0);
+  resfile_global("parallel-query",   $opt_parallel_query   ? 1 : 0);
   resfile_global("initialize",       \@opt_extra_bootstrap_opt);
   resfile_global("max-connections",  $opt_max_connections);
   resfile_global("mem",              $opt_mem              ? 1 : 0);
@@ -1525,6 +1528,7 @@ sub command_line_setup {
     'cursor-protocol'       => \$opt_cursor_protocol,
     'explain-protocol'      => \$opt_explain_protocol,
     'hypergraph'            => \$opt_hypergraph,
+    'parallel-query'        => \$opt_parallel_query,
     'json-explain-protocol' => \$opt_json_explain_protocol,
     'opt-trace-protocol'    => \$opt_trace_protocol,
     'ps-protocol'           => \$opt_ps_protocol,
@@ -1672,6 +1676,7 @@ sub command_line_setup {
     'report-times'          => \$opt_report_times,
     'report-unstable-tests' => \$opt_report_unstable_tests,
     'result-file'           => \$opt_resfile,
+    'alternative-result-file-suffix=s' => \$opt_alternative_resfile_suffix,
     'retry-failure=i'       => \$opt_retry_failure,
     'retry=i'               => \$opt_retry,
     'shutdown-timeout=i'    => \$opt_shutdown_timeout,
@@ -2210,6 +2215,12 @@ sub command_line_setup {
   if ($opt_strace_client && ($^O ne "linux")) {
     $opt_strace_client = 0;
     mtr_warning("Strace only supported in Linux ");
+  }
+
+  # For parallel query we use pq as alternative result file suffix, it can
+  # be overrided if user intends.
+  if ($opt_parallel_query && not $opt_alternative_resfile_suffix) {
+    $opt_alternative_resfile_suffix = "pq";
   }
 
   mtr_report("Checking supported features");
@@ -3147,6 +3158,10 @@ sub environment_setup {
   # Create an environment variable to make it possible
   # to detect that the hypergraph optimizer is being used from test cases
   $ENV{'HYPERGRAPH_TEST'} = $opt_hypergraph;
+
+  # Create an environment variable to make it possible to detect that the
+  # force parallel query is being used from test cases
+  $ENV{'PARALLEL_QUERY_TEST'} = $opt_parallel_query;
 
   # Create an environment variable to make it possible
   # to detect that valgrind is being used from test cases
@@ -6049,6 +6064,13 @@ sub mysqld_arguments ($$$) {
     mtr_add_arg($args, "%s", "--core-file");
   }
 
+  if ($opt_parallel_query) {
+    mtr_add_arg($args, "--max-parallel-degree=4");
+    mtr_add_arg($args, "--parallel-plan-cost-threshold=0");
+    mtr_add_arg($args, "--parallel-scan-records-threshold=0");
+    mtr_add_arg($args, "--parallel-scan-ranges-threshold=0");
+  }
+
   return $args;
 }
 
@@ -6861,6 +6883,9 @@ sub start_mysqltest ($) {
   if ($opt_hypergraph) {
     mtr_add_arg($args, "--hypergraph");
   }
+  if ($opt_parallel_query) {
+    mtr_add_arg($args, "--parallel-query");
+  }
 
   foreach my $arg (@opt_extra_mysqltest_opt) {
     mtr_add_arg($args, $arg);
@@ -6892,6 +6917,13 @@ sub start_mysqltest ($) {
   mtr_add_arg($args, "--tail-lines=20");
 
   if (defined $tinfo->{'result_file'}) {
+    if ($opt_alternative_resfile_suffix) {
+      my $alternative_result_file = "$tinfo->{'result_file'}-$opt_alternative_resfile_suffix";
+      if ($opt_record || -f $alternative_result_file) {
+        $tinfo->{'result_file'} = $alternative_result_file;
+        mtr_report("Using result file: $tinfo->{'result_file'}");
+      }
+    }    
     mtr_add_arg($args, "--result-file=%s", $tinfo->{'result_file'});
   }
 
@@ -7408,6 +7440,7 @@ Options to control what engine/variation to run
   explain-protocol      Run 'EXPLAIN EXTENDED' on all SELECT, INSERT,
                         REPLACE, UPDATE and DELETE queries.
   hypergraph            Set the 'hypergraph_optimizer=on' optimizer switch.
+  parallel-query        Run with parallel query enable forcibly.
   json-explain-protocol Run 'EXPLAIN FORMAT=JSON' on all SELECT, INSERT,
                         REPLACE, UPDATE and DELETE queries.
   opt-trace-protocol    Print optimizer trace.
@@ -7652,6 +7685,9 @@ Misc options
                         separately in the end summary. If all failures
                         encountered are due to unstable tests, MTR will print
                         a warning and exit with a zero status code.
+  alternative-result-file-suffix=SUFFIX
+                        Use result file (.result) with this suffix to compare
+                        if the alternative result file exits.  
   retry-failure=N       Limit number of retries for a failed test.
   retry=N               Retry tests that fail N times, limit number of failures
                         to $opt_retry_failure.
