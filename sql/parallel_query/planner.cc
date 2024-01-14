@@ -273,14 +273,6 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  // Innodb fake parallel scan does not support parallel scan in records()
-  bool disable_select_count = true;
-  DBUG_EXECUTE_IF("pq_enable_select_count", disable_select_count = false;);
-  if (join->select_count && disable_select_count) {
-    cause = "plan_with_select_count";
-    return;
-  }
-
   // We just support single table
   // TODO: remove this block when deparser supports JOIN.
   if (join->primary_tables != 1) {

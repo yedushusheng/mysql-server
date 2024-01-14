@@ -11,24 +11,22 @@ class Item;
 
 namespace pq {
 #define INVALID_FIELD_INDEX UINT_MAX
+
 class DeField {
  public:
   enum type { NORMAL_ITEM, COUNT, AVG };
-  DeField(Item *f, uint index)
-      : m_type(NORMAL_ITEM), item(f), source_field_index(index) {}
-  DeField(Item *f, uint index, uint aux_index)
-      : m_type(AVG),
+  DeField(type typ, Item *f, uint index, uint aux_index)
+      : m_type(typ),
         item(f),
         source_field_index(index),
         source_field_aux_index(aux_index) {}
-  DeField(uint index) : m_type(COUNT), source_field_index(index) {}
 
   bool save(char *data);
   type m_type;
-  Item *item{nullptr};
+  Item *item;
   Field *to;
   uint source_field_index;
-  uint source_field_aux_index{INVALID_FIELD_INDEX};
+  uint source_field_aux_index;
 };
 
 class PlanDeparser {

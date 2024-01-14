@@ -12,7 +12,11 @@ bool PlanDeparser::deparse(THD *thd) {
   // transform fields, e.g. avg, min, max
   bool has_group_by = !join->group_list.empty();
 
+  // Has sum_funcs and not gorup list? For count(*) but no group list, it
+  // needs to handle specially.
   m_count_appended = !has_group_by && *join->sum_funcs != nullptr;
+  // Don't append count(0) if there are only COUNT
+  bool sum_only_has_count = true;
 
   uint cur_item_index = 0;
   for (auto *item : m_query_block->visible_fields()) {
@@ -20,21 +24,32 @@ bool PlanDeparser::deparse(THD *thd) {
     Item_sum *item_sum = item->type() == Item::SUM_FUNC_ITEM
                              ? down_cast<Item_sum *>(item)
                              : nullptr;
-    if (!item_sum || item_sum->sum_func() != Item_sum::AVG_FUNC) {
-      if (!(defield = new (thd->mem_root) DeField(item, cur_item_index++)) ||
-          m_deparse_fields.push_back(defield))
-        return true;
-      continue;
+
+    DeField::type detyp;
+    // If it is not an AVG item, then add it to the select fields directly.
+    if (!item_sum)
+      detyp = DeField::NORMAL_ITEM;
+    else if (item_sum->sum_func() == Item_sum::AVG_FUNC)
+      detyp = DeField::AVG;
+    else {
+      detyp = DeField::NORMAL_ITEM;
+      if (item_sum->sum_func() != Item_sum::COUNT_FUNC)
+        sum_only_has_count = false;
     }
-    auto avgindex = cur_item_index++;
-    if (!(defield =
-              new (thd->mem_root) DeField(item, avgindex, cur_item_index++)) ||
+
+    auto ind = cur_item_index++;
+    auto aux_ind =
+        detyp == DeField::AVG ? cur_item_index++ : INVALID_FIELD_INDEX;
+    if (!(defield = new (thd->mem_root) DeField(detyp, item, ind, aux_ind)) ||
         m_deparse_fields.push_back(defield))
       return true;
   }
+  if (m_count_appended && sum_only_has_count) m_count_appended = false;
 
-  if (m_count_appended)
-    m_deparse_fields.push_back(new (thd->mem_root) DeField(cur_item_index++));
+  if (m_count_appended &&
+      m_deparse_fields.push_back(new (thd->mem_root) DeField(
+          DeField::COUNT, nullptr, cur_item_index++, INVALID_FIELD_INDEX)))
+    return true;
 
   m_statement.append(STRING_WITH_LEN("select "));
   bool first = true;
