@@ -1,30 +1,50 @@
 #include "sql/parallel_query/merge_sort.h"
 
 #include "sql/filesort.h"
+#include "sql/parallel_query/row_exchange.h"
 #include "sql/sql_class.h"
 #include "sql/table.h"
 
 namespace pq {
 
-#define WIDER_SORTKEY_THRESHOLD 255
-#define MAX_RECORDS_BUFFERED 10
+constexpr uint wider_sortkey_threshold{255};
+constexpr uint max_records_buffered{10};
 
-bool MergeSortElement::Init(size_t index, THD *thd, ulong record_length,
-                            size_t key_size) {
+bool Mem_compare_queue_key::operator()(const MergeSortElement *e1,
+                                       const MergeSortElement *e2) const {
+  if (m_param->using_varlen_keys())
+    return cmp_varlen_keys(m_param->local_sortorder, m_param->use_hash,
+                           e2->m_key, e1->m_key);
+  else
+    // memcmp(s1, s2, 0) is guaranteed to return zero.
+    return memcmp(e2->m_key, e1->m_key, e2->m_key_length) < 0;
+}
+
+MergeSortElement::~MergeSortElement() {
+  my_free(m_key);
+  DestroyRowDataInfoArray(m_row_data, m_allocated_records);
+}
+
+bool MergeSortElement::Init(size_t index, THD *thd, size_t key_size,
+                            uint row_segments) {
   m_chn_index = index;
   // Building key from variable length field will do alignment to event number
   // of bytes, See make_sortkey_from_field() in filesort.cc. So, we need to
   // make one more byte larger.
-  if (!(m_key = (uchar *)my_malloc(PSI_NOT_INSTRUMENTED, key_size + 1, MYF(0))))
+  if (!(m_key = (uchar *)my_malloc(PSI_NOT_INSTRUMENTED, key_size + 1,
+                                   MYF(MY_WME))))
     return true;
   m_key_length = key_size;
 
   if (!(m_record_buffer = static_cast<uchar *>(
-            thd->mem_root->Alloc(record_length * MAX_RECORDS_BUFFERED))))
+            thd->mem_root->Alloc(m_record_length * m_allocated_records))))
     return true;
-  m_num_records = 0;
-  m_curr_record = m_record_buffer;
-  m_record_length = record_length;
+  if (!(m_row_data = AllocRowDataInfoArray(thd->mem_root, m_allocated_records,
+                                           row_segments)))
+    return true;
+
+  ResetRecordRead();
+
   return false;
 }
 
@@ -62,7 +82,8 @@ bool MergeSort::Init(THD *thd, Filesort *filesort, uint nelements) {
   assert(filesort->tables.size() == 1);
   m_table = filesort->tables[0];
 
-  if (!(m_elements = new (thd->mem_root) MergeSortElement[nelements]()))
+  if (!(m_elements = thd->mem_root->ArrayAlloc<MergeSortElement>(
+            nelements, m_table->s->reclength, max_records_buffered)))
     return true;
   m_num_elements = nelements;
 
@@ -91,15 +112,35 @@ bool MergeSort::Init(THD *thd, Filesort *filesort, uint nelements) {
   // buffer will be extended as needed.
   size_t start_size = max_sortkey_length;
   if (m_sort_param.using_varlen_keys() &&
-      max_sortkey_length > WIDER_SORTKEY_THRESHOLD)
-    start_size = WIDER_SORTKEY_THRESHOLD;
+      max_sortkey_length > wider_sortkey_threshold)
+    start_size = wider_sortkey_threshold;
 
   for (size_t i = 0; i < nelements; i++) {
-    if (m_elements[i].Init(i, thd, m_table->s->reclength, start_size))
+    if (m_elements[i].Init(i, thd, start_size, m_table->s->blob_fields + 1))
       return true;
   }
 
   return false;
+}
+
+uchar *MergeSortElement::CurrentRecord(RowDataInfo **rowdata) const {
+  if (rowdata) *rowdata = RowDataInfoAt(m_row_data, m_cur_record);
+
+  return m_read_cursor;
+}
+
+MergeSort::Result MergeSortElement::PushRecord(MergeSortSource *source,
+                                               bool nowait) {
+  uchar *offset = m_record_buffer + m_num_records * m_record_length;
+  auto result =
+      source->ReadFromChannel(m_chn_index, offset, m_record_length, nowait,
+                              RowDataInfoAt(m_row_data, m_num_records));
+
+  if (result != MergeSort::Result::SUCCESS) return result;
+
+  m_num_records++;
+
+  return result;
 }
 
 /// Define as a template function to do a little optimization.
@@ -125,17 +166,19 @@ template <bool Push>
 bool FillToPriorityQueue(MergeSort *merge_sort, MergeSortElement *elem) {
   TABLE *table = merge_sort->m_table;
   Sort_param *sort_param = &merge_sort->m_sort_param;
-  auto *pq = merge_sort->m_priority_queue;
+  uchar *rec = elem->CurrentRecord(nullptr);
 
-  uchar *offset = elem->CurrentRecord();
   // repoint tmp table's fields to refer to current record in element buffer
-  repoint_field_to_record(table, table->record[0], offset);
+  // TODO: Could we find actual used fields in make_sortkey(), then just
+  // repoint fields that are real used. The used fields should be exactly
+  // *sort_param->sortorder? Are they just item fields of collector table?
+  repoint_field_to_record(table, table->record[0], rec);
 
   if (elem->alloc_and_make_sortkey(sort_param, table)) return true;
 
-  PushPriorityQueue<Push>(pq, elem);
+  PushPriorityQueue<Push>(merge_sort->m_priority_queue, elem);
 
-  repoint_field_to_record(table, offset, table->record[0]);
+  repoint_field_to_record(table, rec, table->record[0]);
   return false;
 }
 
@@ -171,28 +214,19 @@ bool MergeSort::Populate(THD *thd) {
 */
 MergeSort::Result MergeSort::FillElementBuffer(MergeSortElement *elem,
                                                bool block_for_first) {
-  uint index = elem->ChannelIndex();
-  size_t nbytes;
-  void *data;
   bool no_wait = !block_for_first;
 
   assert(elem->NumRecords() == 0);
 
   // Issue waiting read for the first record if @param block_for_first is set,
-  // and nowait read for latter ones. Fill as many as MAX_RECORDS_BUFFERED - 1
+  // and nowait read for latter ones. Fill as many as max_records_buffered - 1
   // rows, "logically" proceding the header record, which is to be returned.
-  while (elem->NumRecords() < MAX_RECORDS_BUFFERED) {
-    auto result =
-        m_source->ReadFromChannel(index, &nbytes, &data, no_wait);
-
+  while (elem->NumRecords() < max_records_buffered) {
+    auto result = elem->PushRecord(m_source, no_wait);
     // return RowExchangeResult::SUCCESS RowExchangeResult::WOULDBLOCK case.
     if (result == Result::NODATA) return Result::SUCCESS;
 
     if (result != Result::SUCCESS) return result;
-
-    assert(nbytes == m_table->s->reclength);
-
-    elem->PushRecord(data);
 
     no_wait = true;
   }
@@ -200,7 +234,7 @@ MergeSort::Result MergeSort::FillElementBuffer(MergeSortElement *elem,
   return Result::SUCCESS;
 }
 
-MergeSort::Result MergeSort::Read(uchar **buf) {
+MergeSort::Result MergeSort::Read(uchar **buf, RowDataInfo *&rowdata) {
   // Return end if nothing is pushed in Populate().
   if (m_priority_queue->size() == 0) return Result::END;
 
@@ -232,7 +266,7 @@ MergeSort::Result MergeSort::Read(uchar **buf) {
     assert(elem->NumRecords() > 0);
   }
 
-  *buf = elem->CurrentRecord();
+  *buf = elem->CurrentRecord(&rowdata);
 
   // One record is returned, advance read cursor and decrease num_record, fill
   // PQ for next read.

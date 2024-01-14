@@ -5,10 +5,10 @@ EXPLAIN ANALYZE SELECT a FROM t1 GROUP BY a;
 EXPLAIN
 -> Table scan on <temporary>  (cost=0.20..2.66 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
     -> Temporary table with deduplication  (cost=3.05..5.51 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
-        -> Gather (slice: 1, workers: 4)  (actual time=N.NNN..N.NNN rows=6 loops=1)
+        -> Gather (slice: 1, workers: 4)  (actual time=N.NNN..N.NNN rows=8 loops=1)
             -> Table scan on <temporary>  (cost=0.20..2.66 rows=13) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
                 -> Temporary table with deduplication  (cost=3.05..5.51 rows=13) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
-                    -> Table scan on t1  (cost=1.55 rows=13) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+                    -> Table scan on t1, with parallel scan ranges: 400  (cost=1.55 rows=13) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
 
 EXPLAIN ANALYZE SELECT /*+ parallel(1) */ a FROM t1 GROUP BY a;
 EXPLAIN
@@ -17,6 +17,6 @@ EXPLAIN
         -> Gather (slice: 1, workers: 1)  (actual time=N.NNN..N.NNN rows=3 loops=1)
             -> Table scan on <temporary>  (cost=0.20..2.66 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
                 -> Temporary table with deduplication  (cost=3.05..5.51 rows=13) (actual time=N.NNN..N.NNN rows=3 loops=1)
-                    -> Table scan on t1  (cost=1.55 rows=13) (actual time=N.NNN..N.NNN rows=13 loops=1)
+                    -> Table scan on t1, with parallel scan ranges: 100  (cost=1.55 rows=13) (actual time=N.NNN..N.NNN rows=13 loops=1)
 
 DROP TABLE t1;

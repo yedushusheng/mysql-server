@@ -1,7 +1,5 @@
 #ifndef PARALLEL_QUERY_WORKER_H
 #define PARALLEL_QUERY_WORKER_H
-#include <sys/types.h>
-#include <memory>
 #include "sql/parallel_query/row_exchange.h"
 #include "sql/sql_class.h"
 

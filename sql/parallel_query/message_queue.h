@@ -44,6 +44,19 @@ class MessageQueueEvent {
   mysql_cond_t m_cond;
 };
 
+/**
+  For messages that are larger or happen to wrap, we reassemble the message
+  locally by copying the chunks into a local buffer. buf is the buffer,
+  and buflen is the number of bytes allocated for it.
+*/
+struct MessageReassembleBuffer {
+  char *buf{nullptr};
+  std::size_t buflen{0};
+
+  bool reserve(std::size_t len);
+  ~MessageReassembleBuffer();
+};
+
 class MessageQueueEndpointInfo {
  public:
   MessageQueueEndpointInfo(THD *thd, MessageQueueEvent *self_event,
@@ -114,15 +127,15 @@ class MemMessageQueue : public MessageQueue {
 
 class MessageQueueHandle {
  public:
+  using Result = MessageQueue::Result;
   MessageQueueHandle(MessageQueue *smq, THD *thd, MessageQueueEvent *self_event,
                      MessageQueueEvent *peer_event)
       : m_queue(smq), m_endpoint_info(thd, self_event, peer_event) {}
   MessageQueueHandle(const MessageQueueHandle &) = delete;
   virtual ~MessageQueueHandle() {}
-  virtual MessageQueue::Result Send(std::size_t nbytes, const void *data,
-                                    bool nowait) = 0;
-  virtual MessageQueue::Result Receive(std::size_t *nbytesp, void **datap,
-                                       bool nowait) = 0;
+  virtual Result Send(std::size_t nbytes, const void *data, bool nowait) = 0;
+  virtual Result Receive(std::size_t *nbytesp, void **datap, bool nowait,
+                         MessageReassembleBuffer *reassemble_buf) = 0;
   /**
     Notify counterparty that we're detaching from shared message queue.
   */
@@ -148,19 +161,11 @@ class MemMessageQueueHandle : public MessageQueueHandle {
   using MessageQueueHandle::MessageQueueHandle;
 
  public:
-  MessageQueue::Result Send(std::size_t nbytes, const void *data,
-                            bool nowait) override;
-  MessageQueue::Result Receive(std::size_t *nbytesp, void **datap,
-                               bool nowait) override;
+  Result Send(std::size_t nbytes, const void *data, bool nowait) override;
+  Result Receive(std::size_t *nbytesp, void **datap, bool nowait,
+                 MessageReassembleBuffer *reassemble_buf) override;
 
  private:
-  /**
-    For messages that are larger or happen to wrap, we reassemble the message
-    locally by copying the chunks into a local buffer. m_buffer is the buffer,
-    and m_buflen is the number of bytes allocated for it.
-  */
-  char *m_buffer{nullptr};
-  std::size_t m_buflen{0};
   /**
     Saves the count of bytes currently produced or consumed, try to notify
     sender or receiver and reset to zero when it exceeds a certain water level.
@@ -169,8 +174,6 @@ class MemMessageQueueHandle : public MessageQueueHandle {
   std::size_t m_partial_bytes{0};
   std::size_t m_expected_bytes{0};
   bool m_length_word_complete{false};
-  /// The initial size of m_buffer, could be enlarged by large message size.
-  static constexpr std::size_t initial_buffer_size{65536};
 };
 }  // namespace pq
 #endif

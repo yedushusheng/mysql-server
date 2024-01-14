@@ -652,7 +652,6 @@ class OriginItemRewriteContext : public Item_clone_context {
   }
 
   Item *replace_sum_arg(Item_sum *item_func, const Item *arg) override {
-    assert(item_func->arg_count <= 1);
     // Find table field no for pushed down item sum
     for (uint i = 0; i < m_partial_fields.size(); i++) {
       auto *pitem = m_partial_fields[i];
@@ -819,12 +818,6 @@ bool ParallelPlan::GeneratePartialPlan(
 
   if (CreateCollector(thd)) return true;
 
-  // We don't support blob type in row exchange
-  TABLE *table = m_collector->CollectorTable();
-  if (table->s->blob_fields > 0) {
-    trace.add_alnum("fallback_to_serial_plan_cause", "have_blob_fields");
-    return true;
-  }
   return false;
 }
 

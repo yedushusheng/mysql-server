@@ -1,17 +1,11 @@
 #include "sql/parallel_query/worker.h"
-#include "scope_guard.h"
+
 #include "sql/debug_sync.h"  // DEBUG_SYNC
-#include "sql/item.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/explain_access_path.h"
 #include "sql/mysqld.h"
-#include "sql/parallel_query/message_queue.h"
 #include "sql/parallel_query/planner.h"
-#include "sql/query_options.h"
 #include "sql/query_result.h"
-#include "sql/sql_base.h"
-#include "sql/sql_class.h"
-#include "sql/sql_lex.h"
 #include "sql/sql_optimizer.h"
 #include "sql/sql_tmp_table.h"
 #include "sql/transaction.h"
@@ -71,6 +65,10 @@ class Query_result_to_collector : public Query_result_interceptor {
                   TMP_TABLE_ALL_COLUMNS,
               HA_POS_ERROR, nullptr)))
       return true;
+
+    if (m_row_exchange_writer->CreateRowSegmentCodec(thd->mem_root, m_table))
+      return true;
+
     return false;
   }
 
