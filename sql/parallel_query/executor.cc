@@ -417,6 +417,8 @@ class FakeTimingIterator : public RowIterator {
       const_cast<FakeTimingIterator *>(this)->m_timing_data =
           GetOutputWorkersTimingData(m_collector);
 
+    assert(m_timing_data_cursor < m_timing_data.first->size() &&
+           m_timing_data_cursor < m_timing_data.second->size());
     ReadOneIteratorTimingData(m_timing_data.first->c_str(),
                               m_timing_data_cursor, &num_rows1,
                               &num_init_calls1, &time_spent_in_first_row1,

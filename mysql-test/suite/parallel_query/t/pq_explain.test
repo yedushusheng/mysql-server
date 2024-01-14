@@ -1,0 +1,11 @@
+--source suite/parallel_query/include/pq_default.inc
+
+# issue 1039: read invalid timing data on leader because missing some nodes data in workers.
+CREATE TABLE t1 (a char(1));
+INSERT INTO t1 VALUES ('A'),('B'),('A'),('B'),('A'),('B'),(NULL),('a'),('b'),(NULL),('A'),('B'),(NULL);
+
+--replace_regex /time=\d+\.\d+\.\.\d+\.\d+\/\d+\.\d+\.\.\d+\.\d+ rows=\d+\/\d+/time=N.NNN..N.NNN\/N.NNN..N.NNN rows=NNN\/NNN/ /time=\d+\.\d+\.\.\d+\.\d+/time=N.NNN..N.NNN/
+EXPLAIN ANALYZE SELECT a FROM t1 GROUP BY a;
+--replace_regex /time=\d+\.\d+\.\.\d+\.\d+/time=N.NNN..N.NNN/
+EXPLAIN ANALYZE SELECT /*+ parallel(1) */ a FROM t1 GROUP BY a;
+DROP TABLE t1;
