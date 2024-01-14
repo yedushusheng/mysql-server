@@ -30,6 +30,7 @@ DROP TABLE t1, t2;
 # one collector ended without call Init()
 CREATE TABLE t1(c1 INT);
 INSERT INTO t1 VALUES(1),(2),(3);
+--replace_regex /\d+/N/
 (SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2;
 DROP TABLE t1;
 
@@ -37,11 +38,14 @@ DROP TABLE t1;
 CREATE TABLE t1(id INT);
 INSERT INTO t1 VALUES(1),(2),(3),(2);
 
+--replace_regex /\d+/N/
 SELECT SQL_CALC_FOUND_ROWS id FROM t1 LIMIT 2;
 SELECT found_rows();
 
 # don't collect found rows from workers.
+--replace_regex /\d+/N/
 SELECT id FROM t1 LIMIT 2;
+--replace_regex /\d+/N/
 SELECT SQL_CALC_FOUND_ROWS id FROM t1 GROUP BY id LIMIT 2;
 SELECT found_rows();
 DROP TABLE t1;

@@ -7,12 +7,12 @@ EXPLAIN format=tree SELECT t1.a, SUM(t1.b) FROM t1 WHERE t1.a = (SELECT SUM(t2.b
 EXPLAIN
 -> Table scan on <temporary>
     -> Aggregate using temporary table
-        -> Filter: (t1.a = (select #2))  (cost=0.85 rows=6)
-            -> Table scan on t1  (cost=0.85 rows=6)
+        -> Filter: (t1.a = (select #2))  (cost=N.NNN rows=NNN)
+            -> Table scan on t1  (cost=N.NNN rows=NNN)
             -> Select #2 (subquery in condition; dependent)
-                -> Limit: 1 row(s)  (cost=1.45 rows=1)
-                    -> Aggregate: sum(t2.b)  (cost=1.45 rows=6)
-                        -> Table scan on t2  (cost=0.85 rows=6)
+                -> Limit: 1 row(s)  (cost=N.NNN rows=NNN)
+                    -> Aggregate: sum(t2.b)  (cost=N.NNN rows=NNN)
+                        -> Table scan on t2  (cost=N.NNN rows=NNN)
 
 Warnings:
 Note	1276	Field or reference 'test.t1.b' of SELECT #2 was resolved in SELECT #1
@@ -39,34 +39,34 @@ col1
 DROP TABLE t1, t2;
 CREATE TABLE t1(c1 INT);
 INSERT INTO t1 VALUES(1),(2),(3);
-(SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2;
-c1
-1
-2
+(SELECT cN FROM tN) UNION ALL (SELECT cN FROM tN) LIMIT N;
+cN
+N
+N
 DROP TABLE t1;
 CREATE TABLE t1(id INT);
 INSERT INTO t1 VALUES(1),(2),(3),(2);
-SELECT SQL_CALC_FOUND_ROWS id FROM t1 LIMIT 2;
+SELECT SQL_CALC_FOUND_ROWS id FROM tN LIMIT N;
 id
-1
-2
+N
+N
 Warnings:
-Warning	1287	SQL_CALC_FOUND_ROWS is deprecated and will be removed in a future release. Consider using two separate queries instead.
+Warning	N	SQL_CALC_FOUND_ROWS is deprecated and will be removed in a future release. Consider using two separate queries instead.
 SELECT found_rows();
 found_rows()
 4
 Warnings:
 Warning	1287	FOUND_ROWS() is deprecated and will be removed in a future release. Consider using COUNT(*) instead.
-SELECT id FROM t1 LIMIT 2;
+SELECT id FROM tN LIMIT N;
 id
-1
-2
-SELECT SQL_CALC_FOUND_ROWS id FROM t1 GROUP BY id LIMIT 2;
+N
+N
+SELECT SQL_CALC_FOUND_ROWS id FROM tN GROUP BY id LIMIT N;
 id
-2
-1
+N
+N
 Warnings:
-Warning	1287	SQL_CALC_FOUND_ROWS is deprecated and will be removed in a future release. Consider using two separate queries instead.
+Warning	N	SQL_CALC_FOUND_ROWS is deprecated and will be removed in a future release. Consider using two separate queries instead.
 SELECT found_rows();
 found_rows()
 3

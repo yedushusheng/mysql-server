@@ -5,6 +5,7 @@ CREATE TABLE t1(a INT);
 INSERT INTO t1 VALUES(1), (2);
 
 --echo ### worker initialization failure tests ###
+--sorted_result
 SELECT * FROM t1;
 SET debug = 'd,pq_simulate_worker_prepare_query_plan_error_1';
 --error ER_DA_UNKNOWN_ERROR_NUMBER

@@ -1,0 +1,37 @@
+--source include/have_debug.inc
+--source suite/parallel_query/include/pq_default.inc
+
+--echo ###
+--echo ### fake parallel scan test
+--echo ###
+
+CREATE TABLE t1(a INT, b INT, INDEX(b));
+
+INSERT INTO t1 VALUES(1, 1), (2, 2), (3, 3), (4, 4);
+INSERT INTO t1 VALUES(1, 1), (2, 2), (3, 3), (4, 4);
+
+--echo ### Table Scan
+let $degree = 8;
+while ($degree > 0)
+{
+  eval SET max_parallel_degree = $degree;
+  --replace_regex /cost=\d+\.\d+ rows=\d+/cost=N.NNN rows=NNN/ /time=\d+\.\d+\.\.\d+\.\d+\/\d+\.\d+\.\.\d+\.\d+ rows=\d+\/\d+/time=N.NNN..N.NNN\/N.NNN..N.NNN rows=NNN\/NNN/ /time=\d+\.\d+\.\.\d+\.\d+/time=N.NNN..N.NNN/
+  EXPLAIN ANALYZE SELECT * FROM t1;
+  --sorted_result
+  SELECT * FROM t1;
+  dec $degree;
+}
+
+--echo ### Index Scan
+let $degree = 8;
+while ($degree > 0)
+{
+  eval SET max_parallel_degree = $degree;
+  --replace_regex /cost=\d+\.\d+ rows=\d+/cost=N.NNN rows=NNN/ /time=\d+\.\d+\.\.\d+\.\d+\/\d+\.\d+\.\.\d+\.\d+ rows=\d+\/\d+/time=N.NNN..N.NNN\/N.NNN..N.NNN rows=NNN\/NNN/ /(Gather.*)time=\d+\.\d+\.\.\d+\.\d+ rows=\d+/\1time=N.NNN..N.NNN rows=NNN/ /time=\d+\.\d+\.\.\d+\.\d+/time=N.NNN..N.NNN/
+  EXPLAIN ANALYZE SELECT COUNT(a) FROM t1 GROUP BY b;
+  --sorted_result
+  SELECT COUNT(a) FROM t1 GROUP BY b;
+  dec $degree;
+}
+
+DROP TABLE t1;

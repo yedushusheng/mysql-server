@@ -1,0 +1,250 @@
+### enable parallel query forcibly with maximum parallel degree = 4 and cost/records threshold = 0 ###
+###
+### fake parallel scan test
+###
+CREATE TABLE t1(a INT, b INT, INDEX(b));
+INSERT INTO t1 VALUES(1, 1), (2, 2), (3, 3), (4, 4);
+INSERT INTO t1 VALUES(1, 1), (2, 2), (3, 3), (4, 4);
+### Table Scan
+SET max_parallel_degree = 8;
+EXPLAIN ANALYZE SELECT * FROM t1;
+EXPLAIN
+-> Gather (slice: 1, workers: 8)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=8 loops=1)
+    -> Table scan on t1  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT * FROM t1;
+a	b
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+SET max_parallel_degree = 7;
+EXPLAIN ANALYZE SELECT * FROM t1;
+EXPLAIN
+-> Gather (slice: 1, workers: 7)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=8 loops=1)
+    -> Table scan on t1  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT * FROM t1;
+a	b
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+SET max_parallel_degree = 6;
+EXPLAIN ANALYZE SELECT * FROM t1;
+EXPLAIN
+-> Gather (slice: 1, workers: 6)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=8 loops=1)
+    -> Table scan on t1  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT * FROM t1;
+a	b
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+SET max_parallel_degree = 5;
+EXPLAIN ANALYZE SELECT * FROM t1;
+EXPLAIN
+-> Gather (slice: 1, workers: 5)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=8 loops=1)
+    -> Table scan on t1  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT * FROM t1;
+a	b
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+SET max_parallel_degree = 4;
+EXPLAIN ANALYZE SELECT * FROM t1;
+EXPLAIN
+-> Gather (slice: 1, workers: 4)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=8 loops=1)
+    -> Table scan on t1  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT * FROM t1;
+a	b
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+SET max_parallel_degree = 3;
+EXPLAIN ANALYZE SELECT * FROM t1;
+EXPLAIN
+-> Gather (slice: 1, workers: 3)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=8 loops=1)
+    -> Table scan on t1  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT * FROM t1;
+a	b
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+SET max_parallel_degree = 2;
+EXPLAIN ANALYZE SELECT * FROM t1;
+EXPLAIN
+-> Gather (slice: 1, workers: 2)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=8 loops=1)
+    -> Table scan on t1  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT * FROM t1;
+a	b
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+SET max_parallel_degree = 1;
+EXPLAIN ANALYZE SELECT * FROM t1;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=8 loops=1)
+    -> Table scan on t1  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=8 loops=1)
+
+SELECT * FROM t1;
+a	b
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+### Index Scan
+SET max_parallel_degree = 8;
+EXPLAIN ANALYZE SELECT COUNT(a) FROM t1 GROUP BY b;
+EXPLAIN
+-> Group aggregate: count(a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=4 loops=1)
+    -> Gather (slice: 1, workers: 8) with merge sort: t1.b  (actual time=N.NNN..N.NNN rows=NNN loops=1)
+        -> Group aggregate: count(t1.a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+            -> Index scan on t1 using b  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT COUNT(a) FROM t1 GROUP BY b;
+COUNT(a)
+2
+2
+2
+2
+SET max_parallel_degree = 7;
+EXPLAIN ANALYZE SELECT COUNT(a) FROM t1 GROUP BY b;
+EXPLAIN
+-> Group aggregate: count(a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=4 loops=1)
+    -> Gather (slice: 1, workers: 7) with merge sort: t1.b  (actual time=N.NNN..N.NNN rows=NNN loops=1)
+        -> Group aggregate: count(t1.a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+            -> Index scan on t1 using b  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT COUNT(a) FROM t1 GROUP BY b;
+COUNT(a)
+2
+2
+2
+2
+SET max_parallel_degree = 6;
+EXPLAIN ANALYZE SELECT COUNT(a) FROM t1 GROUP BY b;
+EXPLAIN
+-> Group aggregate: count(a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=4 loops=1)
+    -> Gather (slice: 1, workers: 6) with merge sort: t1.b  (actual time=N.NNN..N.NNN rows=NNN loops=1)
+        -> Group aggregate: count(t1.a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+            -> Index scan on t1 using b  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT COUNT(a) FROM t1 GROUP BY b;
+COUNT(a)
+2
+2
+2
+2
+SET max_parallel_degree = 5;
+EXPLAIN ANALYZE SELECT COUNT(a) FROM t1 GROUP BY b;
+EXPLAIN
+-> Group aggregate: count(a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=4 loops=1)
+    -> Gather (slice: 1, workers: 5) with merge sort: t1.b  (actual time=N.NNN..N.NNN rows=NNN loops=1)
+        -> Group aggregate: count(t1.a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+            -> Index scan on t1 using b  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT COUNT(a) FROM t1 GROUP BY b;
+COUNT(a)
+2
+2
+2
+2
+SET max_parallel_degree = 4;
+EXPLAIN ANALYZE SELECT COUNT(a) FROM t1 GROUP BY b;
+EXPLAIN
+-> Group aggregate: count(a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=4 loops=1)
+    -> Gather (slice: 1, workers: 4) with merge sort: t1.b  (actual time=N.NNN..N.NNN rows=NNN loops=1)
+        -> Group aggregate: count(t1.a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+            -> Index scan on t1 using b  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT COUNT(a) FROM t1 GROUP BY b;
+COUNT(a)
+2
+2
+2
+2
+SET max_parallel_degree = 3;
+EXPLAIN ANALYZE SELECT COUNT(a) FROM t1 GROUP BY b;
+EXPLAIN
+-> Group aggregate: count(a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=4 loops=1)
+    -> Gather (slice: 1, workers: 3) with merge sort: t1.b  (actual time=N.NNN..N.NNN rows=NNN loops=1)
+        -> Group aggregate: count(t1.a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+            -> Index scan on t1 using b  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT COUNT(a) FROM t1 GROUP BY b;
+COUNT(a)
+2
+2
+2
+2
+SET max_parallel_degree = 2;
+EXPLAIN ANALYZE SELECT COUNT(a) FROM t1 GROUP BY b;
+EXPLAIN
+-> Group aggregate: count(a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=4 loops=1)
+    -> Gather (slice: 1, workers: 2) with merge sort: t1.b  (actual time=N.NNN..N.NNN rows=NNN loops=1)
+        -> Group aggregate: count(t1.a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+            -> Index scan on t1 using b  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN/N.NNN..N.NNN rows=NNN/NNN loops=1/1)
+
+SELECT COUNT(a) FROM t1 GROUP BY b;
+COUNT(a)
+2
+2
+2
+2
+SET max_parallel_degree = 1;
+EXPLAIN ANALYZE SELECT COUNT(a) FROM t1 GROUP BY b;
+EXPLAIN
+-> Group aggregate: count(a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=4 loops=1)
+    -> Gather (slice: 1, workers: 1) with merge sort: t1.b  (actual time=N.NNN..N.NNN rows=NNN loops=1)
+        -> Group aggregate: count(t1.a)  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=4 loops=1)
+            -> Index scan on t1 using b  (cost=N.NNN rows=NNN) (actual time=N.NNN..N.NNN rows=8 loops=1)
+
+SELECT COUNT(a) FROM t1 GROUP BY b;
+COUNT(a)
+2
+2
+2
+2
+DROP TABLE t1;

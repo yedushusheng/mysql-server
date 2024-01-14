@@ -1,3 +1,4 @@
+--replace_regex /cost=\d+.\d+ rows=\d+/cost=N.NNN rows=NNN/
 --eval EXPLAIN format=tree $query
 --sorted_result
 --eval $query

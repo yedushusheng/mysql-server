@@ -41,15 +41,25 @@ INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,
 
 --echo ### offset limit ###
 --let $query=SELECT * FROM t1 LIMIT 2 OFFSET 1
---source suite/parallel_query/include/explain_and_run.inc
+--replace_regex /cost=\d+\.\d+ rows=\d+/cost=N.NNN rows=NNN/
+--eval EXPLAIN format=tree $query
+--let $resb = query_get_value($query, b, 2)
+--let $assert_text = result value must be in table
+--let $assert_cond = [SELECT 1 FROM t1 WHERE b = $resb LIMIT 1] = 1
+--source include/assert.inc
 --let $query=SELECT * FROM t1 ORDER BY a LIMIT 2 OFFSET 1
 --source suite/parallel_query/include/explain_and_run.inc
 
 --echo ### having ###
 --let $query=SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5
 --source suite/parallel_query/include/explain_and_run.inc
---let $query=SELECT sum(b) FROM t1 GROUP BY a HAVING sum(b) > 5 LIMIT 1 OFFSET 2
---source suite/parallel_query/include/explain_and_run.inc
+--let $query=SELECT sum(b) as sumb FROM t1 GROUP BY a HAVING sum(b) > 5 LIMIT 1 OFFSET 2
+--replace_regex /cost=\d+\.\d+ rows=\d+/cost=N.NNN rows=NNN/
+--eval EXPLAIN format=tree $query
+--let $res_sumb = query_get_value($query, sumb, 1)
+--let $assert_text = value must be in query result
+--let $assert_cond = [SELECT 1 FROM t1 GROUP BY a HAVING sum(b) = $res_sumb limit 1] = 1
+--source include/assert.inc
 
 DROP TABLE t1;
 
@@ -63,7 +73,12 @@ INSERT INTO t1 VALUES(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5),(1,1,1),(2,2,2),(3,
 --let $query=SELECT b FROM t1
 --source suite/parallel_query/include/explain_and_run.inc
 --let $query=SELECT b FROM t1 LIMIT 4
---source suite/parallel_query/include/explain_and_run.inc
+--replace_regex /cost=\d+\.\d+ rows=\d+/cost=N.NNN rows=NNN/
+--eval EXPLAIN format=tree $query
+--let $resb = query_get_value($query, b, 2)
+--let $assert_text = result value must be in table
+--let $assert_cond = [SELECT 1 FROM t1 WHERE b = $resb LIMIT 1] = 1
+--source include/assert.inc
 --let $query=SELECT b FROM t1 ORDER BY b LIMIT 4
 --source suite/parallel_query/include/explain_and_run.inc
 --let $query=SELECT b FROM t1 GROUP BY b LIMIT 4

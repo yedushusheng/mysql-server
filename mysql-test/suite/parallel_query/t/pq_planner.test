@@ -63,5 +63,7 @@ DROP TABLE t1;
 CREATE TABLE t1(c1 INT);
 INSERT INTO t1 VALUES(1),(2),(3);
 --let $query = (SELECT c1 FROM t1) UNION ALL (SELECT c1 FROM t1) LIMIT 2
---source suite/parallel_query/include/explain_and_run.inc
+--eval EXPLAIN $query
+--replace_regex /\d+/N/
+--eval $query
 DROP TABLE t1;
