@@ -514,6 +514,9 @@ class PartialItemGenContext : public Item_clone_context {
                         const Item_view_ref *from) override {
     // The ref point to another query lex, so it's safe
     item->ref = from->ref;
+    if (from->get_first_inner_table())
+      item->set_first_inner_table(from->get_first_inner_table());
+
     return false;
   }
 };
@@ -664,6 +667,8 @@ class OriginItemRewriteContext : public Item_clone_context {
     // all Item_view_ref should be pushed down except const_item
     assert(from->const_item());
     item->ref = from->ref;
+    if (from->get_first_inner_table())
+      item->set_first_inner_table(from->get_first_inner_table());
     return false;
   }
 
@@ -922,11 +927,13 @@ bool add_tables_to_query_block(THD *thd, Query_block *query_block,
     LEX_CSTRING table_name{tl->table_name, tl->table_name_length};
     Table_ident table_ident(db_name, table_name);
     TABLE_LIST *added;
-    if (!(added = query_block->add_table_to_list(
-              thd, &table_ident, tl->alias, table_options,
-              tl->lock_descriptor().type, tl->mdl_request.type)))
+    // Here we don't want add_table_to_list() to check unique alias names
+    // because tables may be merged from other query block in parallel plan.
+    if (!(added = query_block->add_table_to_list(thd, &table_ident, tl->alias,
+                                                 table_options, TL_IGNORE,
+                                                 tl->mdl_request.type)))
       return true;
-
+    added->set_lock(tl->lock_descriptor());
     added->grant = tl->grant;
   }
 

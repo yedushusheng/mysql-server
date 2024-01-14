@@ -5867,6 +5867,8 @@ class Item_view_ref final : public Item_ref {
     return new Item_view_ref;
   }
   bool init_from(const Item *from, Item_clone_context *context) override;
+  TABLE_LIST *get_first_inner_table() const { return first_inner_table; }
+  void set_first_inner_table(TABLE_LIST *table) { first_inner_table = table; }
 
  protected:
   type_conversion_status save_in_field_inner(Field *field,
