@@ -57,6 +57,7 @@ bool AccessPathRewriter::do_rewrite(AccessPath *&path, AccessPath *curjoin,
     case AccessPath::REF_OR_NULL:
     case AccessPath::EQ_REF:
     case AccessPath::MRR:
+    case AccessPath::CONST_TABLE:
     // Note, bka_path is just used by bka iterator and it must be nullptr
     // since the iterator is not created yet.
     case AccessPath::INDEX_RANGE_SCAN:
@@ -160,6 +161,11 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *&path,
       assert(!end_of_out_path());
       dup = accesspath_dup(path);
       if (rewrite_mrr(path, dup)) return true;
+      break;
+    case AccessPath::CONST_TABLE:
+      assert(!end_of_out_path());
+      dup = accesspath_dup(path);
+      if (rewrite_const_table(path, dup)) return true;
       break;
     case AccessPath::INDEX_RANGE_SCAN:
       assert(!end_of_out_path());
@@ -853,6 +859,11 @@ bool PartialAccessPathRewriter::rewrite_eq_ref(AccessPath *, AccessPath *out) {
 
 bool PartialAccessPathRewriter::rewrite_mrr(AccessPath *, AccessPath *out) {
   return rewrite_base_ref(out->mrr());
+}
+
+bool PartialAccessPathRewriter::rewrite_const_table(AccessPath *,
+                                                    AccessPath *out) {
+  return rewrite_base_ref(out->const_table());
 }
 
 bool PartialAccessPathRewriter::rewrite_index_range_scan(AccessPath *,

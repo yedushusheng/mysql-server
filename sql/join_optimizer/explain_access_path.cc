@@ -453,7 +453,8 @@ ExplainData ExplainAccessPath(const AccessPath *path, JOIN *join,
       TABLE *table = path->const_table().table;
       assert(table->file->pushed_idx_cond == nullptr);
       assert(table->file->pushed_cond == nullptr);
-      description.push_back(string("Constant row from ") + table->alias);
+      description.push_back(string("Constant row from ") + table->alias +
+                            pq::ExplainTableParallelScan(join, table));
       break;
     }
     case AccessPath::MRR: {

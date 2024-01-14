@@ -138,6 +138,21 @@ insert into t1 (c1, c2) values(1, 'sss'), (3, 'sss'), (4, 'rrr'), (6, 'rrr');
 let drop_table_name=t1;
 --source include/drop_spider_table.inc
 
+--echo ### const table scan ###
+let create_table_sql=
+  CREATE TABLE t1(a INT PRIMARY KEY, b INT);
+let shardkey=a;
+--source include/create_spider_table.inc
+INSERT INTO t1 VALUES(1,1),(2,2);
+set optimizer_switch='subquery_to_derived=on';
+--let $query=SELECT a FROM t1 WHERE a = 1;
+--source ../include/explain_and_run.inc
+set optimizer_switch=default;
+
+# drop table t1
+let drop_table_name=t1;
+--source include/drop_spider_table.inc
+
 --echo ### group min max scan ###
 let create_table_sql=
   CREATE TABLE t1 (id int primary key auto_increment, a1 CHAR(64), a2 CHAR(64),

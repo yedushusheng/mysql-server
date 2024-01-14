@@ -316,6 +316,39 @@ create table for child
 create table for master
 "drop table on master"
 "Drop spider tables successfully."
+### const table scan ###
+"Start to create spider tables"
+create table for child
+"create table on child2_1"
+CREATE TABLE t1(a INT PRIMARY KEY, b INT) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+"create table on child2_2"
+CREATE TABLE t1(a INT PRIMARY KEY, b INT) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+create table for master
+CREATE TABLE t1(a INT PRIMARY KEY, b INT) ENGINE=Spider DEFAULT CHARSET=utf8
+PARTITION BY LIST (a % 2)
+(PARTITION pt0 VALUES IN (0) COMMENT = 'database "auto_test_remote", srv "s_2_1", shard_key "a"',
+PARTITION pt1 VALUES IN (1) COMMENT = 'database "auto_test_remote_2", srv "s_2_2", shard_key "a"'
+    );
+"Create spider tables successfully."
+INSERT INTO t1 VALUES(1,1),(2,2);
+set optimizer_switch='subquery_to_derived=on';
+EXPLAIN format=tree SELECT a FROM t1 WHERE a = 1;;
+EXPLAIN
+-> Gather (slice: 1, workers: 1)  (cost=0.35..0.35 rows=1)
+   Statement: select `t1`.`a` AS `a` from `t1` where (`t1`.`a` = 1)
+   Execution datasets: s_2_2
+
+SELECT a FROM t1 WHERE a = 1;;
+a
+1
+set optimizer_switch=default;
+"Start to drop spider tables"
+create table for child
+"drop table on child2_1"
+"drop table on child2_2"
+create table for master
+"drop table on master"
+"Drop spider tables successfully."
 ### group min max scan ###
 "Start to create spider tables"
 create table for child

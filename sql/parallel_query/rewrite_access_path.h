@@ -52,6 +52,7 @@ class AccessPathRewriter {
   virtual bool rewrite_ref_or_null(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_eq_ref(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_mrr(AccessPath *, AccessPath *) { return false; }
+  virtual bool rewrite_const_table(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_index_range_scan(AccessPath *, AccessPath *) {
     return false;
   }
@@ -171,6 +172,7 @@ class PartialAccessPathRewriter : public AccessPathRewriter {
   bool rewrite_ref_or_null(AccessPath *in, AccessPath *out) override;
   bool rewrite_eq_ref(AccessPath *in, AccessPath *out) override;
   bool rewrite_mrr(AccessPath *in, AccessPath *out) override;
+  bool rewrite_const_table(AccessPath *in, AccessPath *out) override;
   bool rewrite_index_range_scan(AccessPath *in, AccessPath *out) override;
   bool rewrite_unqualified_count(AccessPath *&, AccessPath *) override;
   template <typename aptype>
