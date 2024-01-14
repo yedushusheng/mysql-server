@@ -774,6 +774,8 @@ bool PartialAccessPathRewriter::rewrite_base_scan(aptype &out, uint keyno) {
   if (clone_handler_pushed_cond(m_item_clone_context, keyno, orig_table, table))
     return true;
 
+  if (orig_table->key_read) table->set_keyread(orig_table->key_read);
+
   out.table = table;
 
   set_sorting_info({table, REF_SLICE_SAVED_BASE});
