@@ -24,11 +24,6 @@ class RowChannel;
 */
 class Worker {
  public:
-  /// state "Cleaning" is for ER_QUERY_INTERRUPTED reported by workers, some
-  /// mtr test case uses this e.g. "bug30769515_QUERY_INTERRUPTED" in
-  /// QUICK_GROUP_MIN_MAX_SELECT::get_next(). When a worker is in Cleaning
-  /// state, Terminate() skips to send termination request to it.
-  enum class State { None, Starting, Started, Cleaning, Finished, StartFailed };
   Worker(uint id, comm::Event *state_event)
       : m_id(id), m_state_event(state_event) {}
   virtual ~Worker();
@@ -38,16 +33,9 @@ class Worker {
   virtual bool Init(comm::Event *comm_event) = 0;
   virtual bool Start() = 0;
   virtual void Terminate() = 0;
-
   // State interfaces
-  bool IsRunning() const {
-    auto cur_state = state();
-    bool is_running =
-        (cur_state == State::Started || cur_state == State::Cleaning ||
-         cur_state == State::Starting);
-    return is_running;
-  }
-  bool IsStartFailed() const { return state() == State::StartFailed; }
+  virtual bool IsRunning() = 0;
+  virtual bool IsStartFailed() = 0;
 
   virtual Diagnostics_area *stmt_da(bool finished_collect, ha_rows *found_rows,
                                     ha_rows *examined_rows) = 0;
@@ -62,9 +50,6 @@ class Worker {
 #endif
 
  protected:
-  // Internal state functions
-  virtual State state() const = 0;
-  virtual void SetState(State state);
 
   const uint m_id;
   /// Communication facilities for leader, leader use this channel to
@@ -72,8 +57,6 @@ class Worker {
   /// query plan, so we can put receiver channel here, move this to suitable
   /// position.
   comm::RowChannel *m_receiver_channel{nullptr};
-
- private:
   comm::Event *m_state_event;
 };
 
