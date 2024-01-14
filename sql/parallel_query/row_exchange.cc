@@ -45,8 +45,10 @@ class RowExchangeFIFOReader : public RowExchangeReader, RowSegmentCodec {
                         std::function<bool(uint)> queue_detach_handler)
       : RowExchangeReader(row_exchange, queue_detach_handler),
         RowSegmentCodec(table),
-        m_left_queues(row_exchange->NumQueues()),
-        m_row_data(NumSegments()) {}
+        m_left_queues(row_exchange->NumQueues()) {}
+  ~RowExchangeFIFOReader() {
+    DestroyRowDataInfoArray(m_row_data, m_row_exchange->NumQueues());
+  }
 
   bool Init(MEM_ROOT *mem_root, MY_BITMAP *closed_queues, THD *user_thd,
             std::function<MessageQueueEvent *(uint)> get_peer_event) override;
@@ -63,7 +65,7 @@ class RowExchangeFIFOReader : public RowExchangeReader, RowSegmentCodec {
 
   uint m_left_queues;
   uint m_next_queue{0};
-  RowDataInfo m_row_data;
+  RowDataInfo *m_row_data{nullptr};
 };
 
 /// Collect rows for multiple workers for gather operator with merge sort
@@ -239,8 +241,10 @@ bool RowExchangeFIFOReader::Init(
     MEM_ROOT *mem_root, MY_BITMAP *closed_queues, THD *user_thd,
     std::function<MessageQueueEvent *(uint)> get_peer_event) {
   if (RowExchangeReader::Init(mem_root, closed_queues, user_thd,
-                              get_peer_event) ||
-      m_row_data.init(mem_root))
+                              get_peer_event)) return true;
+
+  if (!(m_row_data = AllocRowDataInfoArray(
+            mem_root, m_row_exchange->NumQueues(), NumSegments())))
     return true;
 
   return false;
@@ -252,8 +256,9 @@ RowExchange::Result RowExchangeFIFOReader::Read(THD *thd, uchar *dest,
   uint visited = 0;
   for (;;) {
     if (thd->killed) return Result::KILLED;
-    auto result = ReadOneRow(m_message_queue_handles[m_next_queue], dest,
-                             nbytes, true, false, &m_row_data, this);
+    auto result =
+        ReadOneRow(m_message_queue_handles[m_next_queue], dest, nbytes, true,
+                   false, &m_row_data[m_next_queue], this);
     if (result == MessageQueue::Result::SUCCESS) return Result::SUCCESS;
 
     if (result == MessageQueue::Result::DETACHED) {
