@@ -48,7 +48,7 @@ class Collector {
   }
 
  private:
-  bool LaunchWorkers(THD *thd, bool *has_failed_worker);
+  bool LaunchWorkers(THD *thd);
   void TerminateWorkers(THD *thd);
   void CollectStatusFromWorkers(THD *thd);
   bool InitParallelScan();

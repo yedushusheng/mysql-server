@@ -6,7 +6,6 @@
 #include "sql/sql_array.h"
 
 class Filesort;
-struct MY_BITMAP;
 class TABLE;
 
 namespace pq {
@@ -20,8 +19,7 @@ class RowExchange {
   enum Result { SUCCESS, END, ERROR};
   RowExchange() = default;
   bool Init(MEM_ROOT *mem_root, uint num_channels,
-            std::function<RowChannel *(uint)> get_channel,
-            MY_BITMAP *closed_queues = nullptr);
+            std::function<RowChannel *(uint)> get_channel);
   void Reset() {
     m_channel_array.reset();
     m_event.Reset();
