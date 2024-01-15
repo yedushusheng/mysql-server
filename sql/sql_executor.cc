@@ -785,6 +785,37 @@ void ExtractConditions(Item *condition,
   }
 }
 
+bool ExistsConditions(Item *condition,
+                      Mem_root_array<Item *> *condition_parts) {
+  bool ret = false;
+  for (size_t i = 0; !ret && i < condition_parts->size(); ++i) {
+    Item *condition_part = (*condition_parts)[i];
+    if (condition_part->walk(&Item::ignore_ins, enum_walk::POSTFIX, nullptr))
+      assert(false); //TODO: check same need more strictly.
+    else if (condition_part->eq(condition, false))
+      ret = true;
+  }
+  return ret;
+}
+bool ExistsTablesList(TABLE_LIST *table,
+                      Mem_root_array<TABLE_LIST *> *table_set) {
+  for (TABLE_LIST *t : *table_set) {
+    if (table->table->s->get_table_def_version() ==
+      t->table->s->get_table_def_version())
+      return true;
+  }
+  return false;
+}
+TABLE_LIST *FindByTableId(Table_id table_id, TABLE_LIST *table_list) {
+  TABLE_LIST *next = table_list;
+  for (; next != nullptr; next = next->next_local) {
+    assert(next->table->s != nullptr);
+    if (next->table->s->get_table_def_version() == table_id)
+      return next;
+  }
+  return nullptr;
+}
+
 /**
   Return a new iterator that wraps "iterator" and that tests all of the given
   conditions (if any), ANDed together. If there are no conditions, just return

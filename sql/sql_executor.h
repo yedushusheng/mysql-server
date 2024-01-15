@@ -603,4 +603,18 @@ bool MaterializeIsDoingDeduplication(TABLE *table);
 void ExtractConditions(Item *condition,
                        Mem_root_array<Item *> *condition_parts);
 
+/**
+  Check whether condition is in condition_parts vector. Note that the
+  order of left and right should be ignored. E.g. a = b same b = a.
+ */
+bool ExistsConditions(Item *condition,
+                      Mem_root_array<Item *> *condition_parts);
+
+/** Check whether table is in table_list. */
+bool ExistsTablesList(TABLE_LIST *table,
+                      Mem_root_array<TABLE_LIST *> *table_set);
+
+/** Get table list by table_id, return nullptr if none. */
+TABLE_LIST *FindByTableId(Table_id table_id, TABLE_LIST *table_list);
+
 #endif /* SQL_EXECUTOR_INCLUDED */

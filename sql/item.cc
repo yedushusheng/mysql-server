@@ -881,6 +881,11 @@ bool Item_field::find_item_in_field_list_processor(uchar *arg) {
   return false;
 }
 
+bool Item_field::ignore_ins(uchar *) {
+  ignore_table_ins = true;
+  return false;
+}
+
 bool Item_field::check_column_from_derived_table(uchar *arg) {
   TABLE_LIST *tl = pointer_cast<TABLE_LIST *>(arg);
   if (field->table == tl->table) {
@@ -2976,7 +2981,7 @@ bool Item_field::eq(const Item *item, bool) const {
     where the semijoin-merged 'a' and the top query's 'a' are both named t1.a
     and coexist in the top query.
   */
-  if (fixed && item_field->fixed)
+  if (fixed && item_field->fixed && !ignore_table_ins)
     return base_item_field()->field == item_field->base_item_field()->field;
   /*
     We may come here when we are trying to find a function in a GROUP BY
@@ -7899,6 +7904,22 @@ void Item_ref_null_helper::print(const THD *thd, String *str,
   else
     str->append('?');
   str->append(')');
+}
+
+bool Item_ref::collect_item_ref_processor(uchar *arg) {
+  auto *info = pointer_cast<Collect_item_fields_or_refs *>(arg);
+  if (info->is_stopped(this)) return false;
+  Item::Type type = real_item()->type();
+  // Collect aggreate ref item which has SUM_FUNC_ITEM.
+  if (type == Item::SUM_FUNC_ITEM) info->m_items->push_back(this);
+  info->stop_at(this);
+  return false;
+}
+Item *Item_ref::replace_aggregate_ref(uchar *arg) {
+  auto *info = pointer_cast<Item::Item_aggregate_ref_replacement *>(arg);
+  if (this == info->m_target && info->m_curr_block == info->m_trans_block)
+    return info->m_replacement;
+  return this;
 }
 
 /**

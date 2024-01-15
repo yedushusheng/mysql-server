@@ -684,6 +684,11 @@ class Window {
   void set_ancestor(Window *a) { m_ancestor = a; }
 
   /**
+    An override used by the hypergraph join optimizer only.
+  */
+  void set_is_last(bool last) { m_last = last; }
+
+  /**
     Get the name of a window. Can be empty, cf. #printable_name which is not.
   */
   Item_string *name() const { return m_name; }
