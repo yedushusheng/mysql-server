@@ -117,10 +117,11 @@
 #include "sql/sql_executor.h"  // QEP_TAB
 #include "sql/sql_lex.h"       // LEX
 #include "sql/sql_list.h"
-#include "sql/sql_optimizer.h"  // JOIN
-#include "sql/sql_parse.h"      // command_name
-#include "sql/sql_partition.h"  // HA_USE_AUTO_PARTITION
-#include "sql/sql_plugin.h"     // PLUGIN_IS_DELETED, LOCK_plugin
+#include "sql/sql_optimizer.h"   // JOIN
+#include "sql/sql_parse.h"       // command_name
+#include "sql/sql_partition.h"   // HA_USE_AUTO_PARTITION
+#include "sql/sql_plan_cache.h"  // Distribute_plan_cache_stats
+#include "sql/sql_plugin.h"      // PLUGIN_IS_DELETED, LOCK_plugin
 #include "sql/sql_plugin_ref.h"
 #include "sql/sql_profile.h"    // query_profile_statistics_info
 #include "sql/sql_table.h"      // primary_key_name
@@ -560,6 +561,10 @@ bool Sql_cmd_show_profiles::execute_inner(THD *thd) {
 
 bool Sql_cmd_show_privileges::execute_inner(THD *thd) {
   return mysqld_show_privileges(thd);
+}
+
+bool Sql_cmd_show_plan_cache_stats::execute_inner(THD *thd) {
+  return mysqld_list_plan_cache_stats(thd);
 }
 
 bool Sql_cmd_show_processlist::check_privileges(THD *thd) {
@@ -2726,9 +2731,9 @@ class List_process_list : public Do_THD_Impl {
       thd_info->host = host;
     } else
       thd_info->host = m_client_thd->mem_strdup(
-          inspect_sctx_host_or_ip.str[0]
-              ? inspect_sctx_host_or_ip.str
-              : inspect_sctx_host.length ? inspect_sctx_host.str : "");
+          inspect_sctx_host_or_ip.str[0] ? inspect_sctx_host_or_ip.str
+          : inspect_sctx_host.length     ? inspect_sctx_host.str
+                                         : "");
 
     DBUG_EXECUTE_IF("processlist_acquiring_dump_threads_LOCK_thd_data", {
       if (inspect_thd->get_command() == COM_BINLOG_DUMP ||
@@ -3024,6 +3029,50 @@ static int fill_schema_processlist(THD *thd, TABLE_LIST *tables, Item *) {
   Fill_process_list fill_process_list(thd, tables);
   if (!thd->killed) {
     Global_THD_manager::get_instance()->do_for_all_thd_copy(&fill_process_list);
+  }
+  return 0;
+}
+
+bool mysqld_list_plan_cache_stats(THD *thd) {
+  Protocol *protocol = thd->get_protocol();
+  DBUG_TRACE;
+  mem_root_deque<Item *> field_list(thd->mem_root);
+  field_list.push_back(new Item_empty_string("sql", MAX_PLAN_CACHE_SQL_LEN));
+  field_list.push_back(new Item_empty_string("mode", MAX_PLAN_CACHE_SQL_LEN));
+  field_list.push_back(
+      new Item_int(NAME_STRING("hit"), 0, MY_INT64_NUM_DECIMAL_DIGITS));
+  if (thd->send_result_metadata(field_list,
+                                Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
+    return true;
+  std::vector<distribute_plan_cache_info> ret;
+  thd->plan_cache_stats.get_plan_cache_stat(ret);
+  for (size_t i = 0; i < ret.size(); i++) {
+    protocol->start_row();
+    protocol->store(ret[i].sql.c_str(), system_charset_info);
+    protocol->store(ret[i].mode == distribute_plan_cache_mode::PREPARE_STMT_MODE
+                        ? "PREPARE"
+                        : "NORMAL",
+                    system_charset_info);
+    protocol->store_longlong(ret[i].hits, true);
+    if (protocol->end_row()) break; /* purecov: inspected */
+  }
+  my_eof(thd);
+  return false;
+}
+
+int fill_plan_cache_stat_info(THD *thd, TABLE_LIST *tables,
+                              Item *__attribute__((unused))) {
+  DBUG_TRACE;
+  std::vector<distribute_plan_cache_info> ret;
+  thd->plan_cache_stats.get_plan_cache_stat(ret);
+  TABLE *table = tables->table;
+  for (size_t i = 0; i < ret.size(); i++) {
+    table->field[0]->store(ret[i].sql.c_str(), ret[i].sql.length(),
+                           system_charset_info);
+    table->field[1]->store(ret[i].sql.c_str(), ret[i].sql.length(),
+                           system_charset_info);
+    table->field[2]->store(ret[i].hits, true);
+    if (schema_table_store_record(thd, table)) return 1;
   }
   return 0;
 }
@@ -3786,11 +3835,10 @@ static int get_schema_tmp_table_columns_record(THD *thd, TABLE_LIST *tables,
 
     // COLUMN_KEY
     pos = pointer_cast<const uchar *>(
-        field->is_flag_set(PRI_KEY_FLAG)
-            ? "PRI"
-            : field->is_flag_set(UNIQUE_KEY_FLAG)
-                  ? "UNI"
-                  : field->is_flag_set(MULTIPLE_KEY_FLAG) ? "MUL" : "");
+        field->is_flag_set(PRI_KEY_FLAG)        ? "PRI"
+        : field->is_flag_set(UNIQUE_KEY_FLAG)   ? "UNI"
+        : field->is_flag_set(MULTIPLE_KEY_FLAG) ? "MUL"
+                                                : "");
     table->field[TMP_TABLE_COLUMNS_COLUMN_KEY]->store(
         (const char *)pos, strlen((const char *)pos), cs);
 
@@ -4873,6 +4921,12 @@ ST_FIELD_INFO tmp_table_columns_fields_info[] = {
      MYSQL_TYPE_STRING, 0, 0, "Generation expression", 0},
     {nullptr, 0, MYSQL_TYPE_STRING, 0, 0, nullptr, 0}};
 
+ST_FIELD_INFO txsql_plan_cache_stat_fields_info[] = {
+    {"SQL", 10240, MYSQL_TYPE_STRING, 0, 0, "SQL", 0},
+    {"MODE", 10240, MYSQL_TYPE_STRING, 0, 0, "MODE", 0},
+    {"HIT", 21, MYSQL_TYPE_LONGLONG, 0, MY_I_S_UNSIGNED, "HIT", 0},
+    {0, 0, MYSQL_TYPE_STRING, 0, 0, 0, 0}};
+
 /** For creating fields of information_schema.OPTIMIZER_TRACE */
 extern ST_FIELD_INFO optimizer_trace_info[];
 
@@ -4911,6 +4965,8 @@ ST_SCHEMA_TABLE schema_tables[] = {
      make_tmp_table_columns_format, get_schema_tmp_table_columns_record, true},
     {"TMP_TABLE_KEYS", tmp_table_keys_fields_info, show_temporary_tables,
      make_old_format, get_schema_tmp_table_keys_record, true},
+    {"TXSQL_PLAN_CACHE_STAT", txsql_plan_cache_stat_fields_info,
+     fill_plan_cache_stat_info, make_old_format, nullptr, false},
     {nullptr, nullptr, nullptr, nullptr, nullptr, false}};
 
 int initialize_schema_table(st_plugin_int *plugin) {

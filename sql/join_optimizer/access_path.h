@@ -587,6 +587,7 @@ struct AccessPath {
     struct {
       TABLE *table;
       TABLE_REF *ref;
+      Item *item;
     } const_table;
     struct {
       Item *cache_idx_cond;
@@ -849,7 +850,8 @@ inline AccessPath *NewFullTextSearchAccessPath(THD *thd, TABLE *table,
 
 inline AccessPath *NewConstTableAccessPath(THD *thd, TABLE *table,
                                            TABLE_REF *ref,
-                                           bool count_examined_rows) {
+                                           bool count_examined_rows,
+                                           Item *item = nullptr) {
   AccessPath *path = new (thd->mem_root) AccessPath;
   path->type = AccessPath::CONST_TABLE;
   path->count_examined_rows = count_examined_rows;
@@ -857,6 +859,7 @@ inline AccessPath *NewConstTableAccessPath(THD *thd, TABLE *table,
   path->cost = 0.0;
   path->const_table().table = table;
   path->const_table().ref = ref;
+  path->const_table().item = item;
   return path;
 }
 
@@ -1183,6 +1186,7 @@ inline AccessPath *NewInvalidatorAccessPath(THD *thd, AccessPath *child,
 }
 
 void FindTablesToGetRowidFor(AccessPath *path);
+bool CheckAccessPathCanBeCached(THD *thd, AccessPath *path);
 
 unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
     THD *thd, AccessPath *path, JOIN *join, bool eligible_for_batch_mode);

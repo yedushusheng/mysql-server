@@ -92,6 +92,19 @@ class RowIterator {
   virtual int Read() = 0;
 
   /**
+    Bind the params to physical iterator for cached plan.
+
+    Like Const iterator, Read key info from items in TABLE_REF to key_buff
+    according to the lastest parameters in prapare statement.
+
+    @retval
+      false   OK
+    @retval
+      true   Error then banding parameters to physical plan.
+   */
+  virtual bool rebind_parameters(THD *) { return false; }
+
+  /**
     Mark the current row buffer as containing a NULL row or not, so that if you
     read from it and the flag is true, you'll get only NULLs no matter what is
     actually in the buffer (typically some old leftover row). This is used
@@ -188,6 +201,7 @@ class RowIterator {
    */
   virtual RowIterator *real_iterator() { return this; }
   virtual const RowIterator *real_iterator() const { return this; }
+  virtual void set_table(TABLE *) {}
 
  protected:
   THD *thd() const { return m_thd; }
@@ -204,6 +218,7 @@ class TableRowIterator : public RowIterator {
   void SetNullRowFlag(bool is_null_row) override;
   void StartPSIBatchMode() override;
   void EndPSIBatchModeIfStarted() override;
+  void set_table(TABLE *table) override { m_table = table; }
 
  protected:
   int HandleError(int error);
@@ -211,7 +226,7 @@ class TableRowIterator : public RowIterator {
   TABLE *table() const { return m_table; }
 
  private:
-  TABLE *const m_table;
+  TABLE *m_table;
 
   friend class AlternativeIterator;
 };

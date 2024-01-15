@@ -125,6 +125,7 @@
 #include "tables_contained_in.h"
 #include "template_utils.h"
 #include "thr_lock.h"
+#include "sql/sql_const_folding.h"
 
 using std::make_pair;
 using std::max;
@@ -133,9 +134,11 @@ using std::pair;
 using std::string;
 using std::unique_ptr;
 using std::vector;
+enum Range_placement;
 
 static int read_system(TABLE *table);
-static int read_const(TABLE *table, TABLE_REF *ref);
+static int read_const(TABLE *table, TABLE_REF *ref, Item *item = nullptr);
+static bool extract_field_and_param(Item_func *func, Item_field *&left, Item **&right);
 static bool alloc_group_fields(JOIN *join, ORDER *group);
 static inline pair<uchar *, key_part_map> FindKeyBufferAndMap(
     const TABLE_REF *ref);
@@ -2853,6 +2856,13 @@ AccessPath *JOIN::create_root_access_path_for_join() {
         CopyCosts(*old_path, path);
       }
     }
+  } else if (thd->lex->may_be_cached()) {
+    // We check in the extract_const_table and postpone ConstIterator execution.
+    // New access path will be generated for const table situation.
+    // The access path will only generate ConstIterator.
+    Item *const_condition = thd->lex->current_query_block()->where_cond();
+    path = NewConstTableAccessPath(thd, qep_tab->table(), &qep_tab->ref(),
+                                   /*count_examined_rows=*/true, const_condition);
   } else {
     qep_tab_map unhandled_duplicates = 0;
     qep_tab_map conditions_depend_on_outer_tables = 0;
@@ -3447,10 +3457,11 @@ static int read_system(TABLE *table) {
 }
 
 ConstIterator::ConstIterator(THD *thd, TABLE *table, TABLE_REF *table_ref,
-                             ha_rows *examined_rows)
+                             ha_rows *examined_rows, Item *item)
     : TableRowIterator(thd, table),
       m_ref(table_ref),
-      m_examined_rows(examined_rows) {}
+      m_examined_rows(examined_rows),
+      m_condition(item) {}
 
 bool ConstIterator::Init() {
   m_first_record_since_init = true;
@@ -3471,7 +3482,7 @@ int ConstIterator::Read() {
     return -1;
   }
   m_first_record_since_init = false;
-  int err = read_const(table(), m_ref);
+  int err = read_const(table(), m_ref, m_condition);
   if (err == 0 && m_examined_rows != nullptr) {
     ++*m_examined_rows;
   }
@@ -3479,7 +3490,7 @@ int ConstIterator::Read() {
   return err;
 }
 
-static int read_const(TABLE *table, TABLE_REF *ref) {
+static int read_const(TABLE *table, TABLE_REF *ref, Item *item) {
   int error;
   DBUG_TRACE;
 
@@ -3524,6 +3535,21 @@ static int read_const(TABLE *table, TABLE_REF *ref) {
       Save record in case it is needed when table is in "started" state.
     */
     store_record(table, record[1]);
+    /*
+      Const iterator might perform loose key read because of converted thus
+      lossy values in the key buffer (TABLE_REF), which would be catched by
+      early evaluation during optimization as in regular (non-cached) processing.
+      See Item_equal::update_const() and substitute_for_best_equal_field().
+      However, query processing with cached physical plan skips optimization
+      totally, so the original condition is evaluated to do the catch.
+      In regular (non-cached) processing, item is set to nullptr.
+    */
+    if (item && item->val_int() == 0) {
+      table->set_no_row();
+      table->set_null_row();
+      empty_record(table);
+      return -1;
+    }    
   } else if (table->has_row() && table->is_nullable()) {
     /*
       Row buffer contains a row, but it may have been partially overwritten
@@ -3533,6 +3559,105 @@ static int read_const(TABLE *table, TABLE_REF *ref) {
     restore_record(table, record[1]);
   }
   return table->has_row() ? 0 : -1;
+}
+
+static void bind_table_ref(THD *thd, TABLE *table, TABLE_REF *ref) {
+  // binding the parameter fields to the table_ref.
+  uchar *key_buff = ref->key_buff;
+  KEY *const keyinfo = table->key_info + ref->key;
+  for (uint part_no = 0; part_no < ref->key_parts; part_no++) {
+    bool nullable = keyinfo->key_part[part_no].null_bit;
+    store_key_const_item s_key(thd, (&keyinfo->key_part[part_no])->field,
+                               key_buff + nullable,
+                               nullable ? key_buff : nullptr,
+                               (&keyinfo->key_part[part_no])->length,
+                               ref->items[part_no]);
+    (void)s_key.copy();
+    key_buff += keyinfo->key_part[part_no].store_length;
+  }
+}
+
+/**
+  @brief We confirm that input func is the `field = param` or `param = field`,
+        or `splocal = field`, `field = splocal`.
+        so use the function to get the left and right field.
+  @param func  input item_func to divided into left and right.
+  @param left  left is the Item_field.
+  @param right  right is the Item_param or Item_splocal.
+  @return true
+  @return false
+*/
+bool extract_field_and_param(Item_func *func, Item_field *&left, Item **&right) {
+  if (func == nullptr)
+    return true;
+  Item::Type type0 = func->arguments()[0]->type();
+  Item::Type type1 = func->arguments()[1]->type();
+  bool args0_is_splocal = func->arguments()[0]->is_splocal() ||
+                          type0 == Item::TRIGGER_FIELD_ITEM;
+  bool args1_is_splocal = func->arguments()[1]->is_splocal() ||
+                          type1 == Item::TRIGGER_FIELD_ITEM;;
+  if (type0 == Item::FIELD_ITEM && type1 == Item::PARAM_ITEM) {
+    left = down_cast<Item_field *>(func->arguments()[0]);
+    right = &(func->arguments()[1]);
+  } else if (type0 == Item::PARAM_ITEM && type1 == Item::FIELD_ITEM) {
+    left = down_cast<Item_field *>(func->arguments()[1]);
+    right = &(func->arguments()[0]);
+  } else if (type0 == Item::FIELD_ITEM && args1_is_splocal) {
+    left = down_cast<Item_field *>(func->arguments()[0]);
+    right = &(func->arguments()[1]);
+  } else if (args0_is_splocal && type1 == Item::FIELD_ITEM) {
+    left = down_cast<Item_field *>(func->arguments()[1]);
+    right = &(func->arguments()[0]);
+  } else
+    return true;
+  return false;
+}
+bool ConstIterator::rebind_parameters(THD *thd) {
+  Item *item = nullptr, **right = nullptr;
+  Item_func *func = nullptr;
+  Item_field *left = nullptr;
+  TABLE_LIST *table_list = thd->lex->query_tables;
+  set_table(table_list->table);
+  table()->in_use = thd; // set the current thd in opened table.
+  // Analyze the field constant here, all types.
+  // Checking was done to walk the item tree when resolving phase, to confirm that
+  // where condition is consist of `field = param` or `param = field`connnected by
+  // `COND_AND_FUNC`.
+  if (m_condition->type() == Item_func::FUNC_ITEM) {
+    enum Range_placement place;
+    bool discount_equal = false, negative = false;
+    func = down_cast<Item_func*>(m_condition);
+    if (extract_field_and_param(func, left, right)) {
+      return true;
+    } else if (analyze_field_constant(current_thd, left, right, func, true,
+                            &place, &discount_equal, &negative)) {
+      return true;
+    } else {
+      m_ref->items[0] = *right;
+    }
+  } else if (m_condition->type() == Item_func::COND_ITEM) {
+    int parts = 0;
+    List<Item> *args = ((Item_cond *)m_condition)->argument_list();
+    List_iterator<Item> li(*args);
+    while ((item = li++)) {
+      if (item->type() == Item::FUNC_ITEM &&
+        (func = down_cast<Item_func *>(item))) {
+        enum Range_placement place;
+        bool discount_equal, negative;
+        if (extract_field_and_param(func, left, right)) {
+          return true;
+        } else if (analyze_field_constant(current_thd, left, right, func, true,
+                              &place, &discount_equal, &negative)) {
+          return true;
+        } else {
+          uint position = m_ref->const_cols_pos[parts++];
+          m_ref->items[position] = *right;
+        }
+      }
+    }
+  } else { /*do nothing.*/ }
+  bind_table_ref(thd, table(), m_ref);
+  return false;
 }
 
 EQRefIterator::EQRefIterator(THD *thd, TABLE *table, TABLE_REF *ref,

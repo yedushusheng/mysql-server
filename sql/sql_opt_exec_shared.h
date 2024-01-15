@@ -69,6 +69,7 @@ struct TABLE_REF {
   */
   store_key **key_copy;
   Item **items;  ///< val()'s for each keypart
+  uint *const_cols_pos;  ///< store the parameter position in where condition
   /*
     Array of pointers to trigger variables. Some/all of the pointers may be
     NULL.  The ref access can be used iff
@@ -127,6 +128,7 @@ struct TABLE_REF {
         key_buff2(nullptr),
         key_copy(nullptr),
         items(nullptr),
+        const_cols_pos(nullptr),
         cond_guards(nullptr),
         null_rejecting(0),
         depend_map(0),

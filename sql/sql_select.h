@@ -183,12 +183,14 @@ class Key_use {
         sj_pred_no(UINT_MAX),
         bound_keyparts(0),
         fanout(0.0),
-        read_cost(0.0) {}
+        read_cost(0.0),
+        const_col_nr(0) {}
 
   Key_use(TABLE_LIST *table_ref_arg, Item *val_arg, table_map used_tables_arg,
           uint key_arg, uint keypart_arg, uint optimize_arg,
           key_part_map keypart_map_arg, ha_rows ref_table_rows_arg,
-          bool null_rejecting_arg, bool *cond_guard_arg, uint sj_pred_no_arg)
+          bool null_rejecting_arg, bool *cond_guard_arg, uint sj_pred_no_arg,
+          uint nr = 0)
       : table_ref(table_ref_arg),
         val(val_arg),
         used_tables(used_tables_arg),
@@ -202,7 +204,8 @@ class Key_use {
         sj_pred_no(sj_pred_no_arg),
         bound_keyparts(0),
         fanout(0.0),
-        read_cost(0.0) {}
+        read_cost(0.0),
+        const_col_nr(nr) {}
 
   TABLE_LIST *table_ref;  ///< table owning the index
 
@@ -291,6 +294,15 @@ class Key_use {
     This information is stored only in the first Key_use of the index.
   */
   double read_cost;
+  /**
+    const_col_nr means parameter placeholder position, which help to unify
+    sequence of item fields in where condition and primary key binary, to
+    bind parameters to table_ref.
+        ie. SQL1: select * from t1 where b = 1 and a = 2; t1 pk(a,b);
+    in SQL1, for a column, const_col_nr is 1 and for b it is 0.
+    const_col_nr only works to check where condition in PK&UK.
+  */
+  uint const_col_nr;  
 };
 
 /// @returns join type according to quick select type used
@@ -754,8 +766,12 @@ class JOIN_TAB : public QEP_shared_owner {
   /** true <=> AM will scan backward */
   bool reversed_access;
 
-  /** Clean up associated table after query execution, including resources */
-  void cleanup();
+  /** 
+    Clean up associated table after query execution, including resources.
+    @param reuse    Some datastructure won't be cleaned if the LEX can be
+                    saved in plan cache, when reuse is true.
+  */
+  void cleanup(bool reuse = false);
 
   /// @returns semijoin strategy for this table.
   uint get_sj_strategy() const;
@@ -840,6 +856,9 @@ class store_key {
   */
   store_key_result copy();
 
+  /* set the current table pointer to fields. */
+  void set_table(TABLE *t) { to_field->table = t; }
+
  protected:
   Field *to_field;  // Store data here
 
@@ -864,6 +883,31 @@ class store_key_field final : public store_key {
  protected:
   enum store_key_result copy_inner() override;
 };
+
+
+namespace {
+
+class store_key_const_item final : public store_key_item {
+  int cached_result = -1;
+
+ public:
+  store_key_const_item(THD *thd, Field *to_field_arg, uchar *ptr,
+                       uchar *null_ptr_arg, uint length, Item *item_arg)
+      : store_key_item(thd, to_field_arg, ptr, null_ptr_arg, length, item_arg) {
+  }
+  const char *name() const override { return STORE_KEY_CONST_NAME; }
+
+ protected:
+  enum store_key_result copy_inner() override {
+    if (cached_result == -1) {
+      cached_result = store_key_item::copy_inner();
+    }
+    return static_cast<store_key_result>(cached_result);
+  }
+};
+
+}  // namespace
+
 class store_key_item : public store_key {
  protected:
   Item *item;

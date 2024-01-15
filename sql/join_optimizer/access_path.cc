@@ -294,6 +294,75 @@ static TableCollection GetUsedTablesForAggregate(JOIN *join,
   return tables;
 }
 
+
+bool CheckAccessPathCanBeCached(THD *thd, AccessPath *path) {
+  const LEX *lex = thd->lex;
+  bool can_be_plan_cached = false;
+  // 1. non-table can not be saved, like `select sleep(10)`;
+  // 2. only single query block statement can be saved;
+  // 3. lex with 0 params will not be saved in plan cache;
+  if (!plan_cache_enabled() ||
+       lex->skip_cached() ||
+       lex->param_list.size() == 0 ||
+       lex->query_tables == nullptr ||
+       lex->query_tables->table == nullptr)
+    return false;
+  switch (path->type) {
+    case AccessPath::TABLE_SCAN:
+    case AccessPath::INDEX_SCAN:
+    case AccessPath::REF_OR_NULL:
+    case AccessPath::PUSHED_JOIN_REF:
+    case AccessPath::FULL_TEXT_SEARCH:
+    case AccessPath::MRR:
+    case AccessPath::FOLLOW_TAIL:
+    case AccessPath::INDEX_RANGE_SCAN:
+    case AccessPath::DYNAMIC_INDEX_RANGE_SCAN:
+    case AccessPath::TABLE_VALUE_CONSTRUCTOR:
+    case AccessPath::FAKE_SINGLE_ROW:
+    case AccessPath::ZERO_ROWS:
+    case AccessPath::ZERO_ROWS_AGGREGATED:
+    case AccessPath::MATERIALIZED_TABLE_FUNCTION:
+    case AccessPath::UNQUALIFIED_COUNT:
+    case AccessPath::NESTED_LOOP_SEMIJOIN_WITH_DUPLICATE_REMOVAL:
+    case AccessPath::BKA_JOIN:
+    case AccessPath::HASH_JOIN:
+    case AccessPath::FILTER:
+    case AccessPath::SORT:
+    case AccessPath::TEMPTABLE_AGGREGATE:
+    case AccessPath::STREAM:
+    case AccessPath::MATERIALIZE:
+    case AccessPath::MATERIALIZE_INFORMATION_SCHEMA_TABLE:
+    case AccessPath::APPEND:
+    case AccessPath::WEEDOUT:
+    case AccessPath::REMOVE_DUPLICATES:
+    case AccessPath::PARALLEL_COLLECTOR_SCAN:
+    case AccessPath::ALTERNATIVE:
+    case AccessPath::CACHE_INVALIDATOR:
+    case AccessPath::REF:
+    case AccessPath::LIMIT_OFFSET:
+    case AccessPath::EQ_REF:
+    case AccessPath::NESTED_LOOP_JOIN:
+    case AccessPath::AGGREGATE:
+    case AccessPath::WINDOW:
+    case AccessPath::REMOVE_DUPLICATES_ON_INDEX:
+      can_be_plan_cached = false;
+      break;
+    case AccessPath::CONST_TABLE: {
+      can_be_plan_cached = thd->lex->may_be_cached();
+      Item *condition = path->const_table().item;
+      if (!can_be_plan_cached) {/*do nothing.*/
+      } else if (condition == nullptr) {
+        can_be_plan_cached = false;
+      } else if (condition->walk(&Item::check_const_cond_valid,
+                      enum_walk::POSTFIX, nullptr)) {
+        can_be_plan_cached = false;
+      } else { /*do nothing.*/ }
+      break;
+    }
+  }
+  return can_be_plan_cached;
+}
+
 /** Note:外部接口
  * 从前面构造的AccessPath构造迭代器Iterator
  * 这里的Iterator会存储当前的算子的record结果集,期待行数等信息
@@ -389,7 +458,8 @@ unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
     case AccessPath::CONST_TABLE: {
       const auto &param = path->const_table();
       iterator = NewIterator<ConstIterator>(thd, param.table, param.ref,
-                                            examined_rows);
+                                            examined_rows,
+                                            path->const_table().item);
       break;
     }
     case AccessPath::MRR: {

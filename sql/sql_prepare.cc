@@ -1396,6 +1396,7 @@ bool Prepared_statement::prepare_query() {
     case SQLCOM_SHOW_OPEN_TABLES:
     case SQLCOM_SHOW_PLUGINS:
     case SQLCOM_SHOW_PRIVILEGES:
+    case SQLCOM_SHOW_PLAN_CACHE_STATS:
     case SQLCOM_SHOW_PROC_CODE:
     case SQLCOM_SHOW_PROCESSLIST:
     case SQLCOM_SHOW_PROFILE:
@@ -2371,6 +2372,8 @@ Prepared_statement::~Prepared_statement() {
     delete (st_lex_local *)lex;  // TRASH memory
   }
   free_root(&main_mem_root, MYF(0));
+  free_root(&main_opt_mem_root, MYF(0));
+  free_root(&main_exec_mem_root, MYF(0));  
 }
 
 void Prepared_statement::cleanup_stmt() {
@@ -2499,6 +2502,15 @@ bool Prepared_statement::prepare(const char *query_str, size_t query_length,
 
   lex_start(thd);
   lex->context_analysis_only |= CONTEXT_ANALYSIS_ONLY_PREPARE;
+  lex->is_from_ps = true;
+  // Store the prepare stmt query text for statistics on plan cache.
+  if (plan_cache_stats_enabled() && query_length > 0) {
+    thd->lex->prepared_stmt_code.length = query_length;
+    thd->lex->prepared_stmt_code.str = new (thd->mem_root) char[query_length + 1];
+    if (!thd->lex->prepared_stmt_code.str) return true;
+    memcpy(thd->lex->prepared_stmt_code.str, query_str, query_length);
+    thd->lex->prepared_stmt_code.str[query_length] = '\0';
+  }
 
   thd->m_digest = nullptr;
   thd->m_statement_psi = nullptr;
@@ -3157,6 +3169,8 @@ bool Prepared_statement::reprepare() {
       create_scope_guard([&]() { swap_prepared_statement(&copy); });
 
   thd->status_var.com_stmt_reprepare++;
+  //reset the `reuse_physical_plan` value when need to reprepare the stmt.
+  reuse_physical_plan = false;
 
   /*
     m_name has been moved to the copy. Allocate it again in the original
@@ -3263,6 +3277,8 @@ void Prepared_statement::swap_prepared_statement(Prepared_statement *copy) {
 
   /* Swap memory roots. */
   std::swap(main_mem_root, copy->main_mem_root);
+  std::swap(main_opt_mem_root, copy->main_opt_mem_root);
+  std::swap(main_exec_mem_root, copy->main_exec_mem_root);
 
   /* Swap the arenas */
   m_arena.swap_query_arena(copy->m_arena, &tmp_arena);
@@ -3319,11 +3335,13 @@ void Prepared_statement::swap_prepared_statement(Prepared_statement *copy) {
 */
 
 bool Prepared_statement::execute(String *expanded_query, bool open_cursor) {
-  Query_arena *old_stmt_arena;
+  MEM_ROOT *old_mem_root = nullptr;
+  Query_arena *old_stmt_arena = nullptr;
   char saved_cur_db_name_buf[NAME_LEN + 1];
   LEX_STRING saved_cur_db_name = {saved_cur_db_name_buf,
                                   sizeof(saved_cur_db_name_buf)};
   bool cur_db_changed;
+  const bool open_plan_cache = plan_cache_enabled();
 
   thd->status_var.com_stmt_execute++;
 
@@ -3419,6 +3437,13 @@ bool Prepared_statement::execute(String *expanded_query, bool open_cursor) {
   */
   old_stmt_arena = thd->stmt_arena;
   thd->stmt_arena = &m_arena;
+  if (open_plan_cache) {
+    // When `txsql_plan_cache` turns on, swap the mem_root to main_opt_mem_root
+    // and main_exec_mem_root to save plan cache. If the physical plan can be
+    // saved in plan cache, set `reused` to true.
+    old_mem_root = thd->mem_root;
+    thd->mem_root = reuse_physical_plan ? &main_exec_mem_root : &main_opt_mem_root;
+  } //Swap the mem_root when open plan cache.  
   bool error = lex->check_preparation_invalid(thd);
 
   /*
@@ -3529,7 +3554,9 @@ bool Prepared_statement::execute(String *expanded_query, bool open_cursor) {
    THD::m_query_string could end up as a dangling pointer
    (i.e. pointer to freed memory) once the PS MEM_ROOT is freed.
   */
+  bool plan_cached = false;
   mysql_mutex_lock(&thd->LOCK_thd_data);
+  plan_cached = thd->lex->confirm_cached();
   thd->lex = stmt_backup.lex();
   mysql_mutex_unlock(&thd->LOCK_thd_data);
   alloc_query(thd, thd->query().str, thd->query().length);
@@ -3546,6 +3573,18 @@ bool Prepared_statement::execute(String *expanded_query, bool open_cursor) {
     thd->get_protocol()->send_parameters(&this->lex->param_list,
                                          is_sql_prepare());
   flags &= ~(uint)IS_IN_USE;
+
+  if (thd->mem_root != old_mem_root) { // mem root has changed.
+    assert(plan_cached || !reuse_physical_plan);
+    if (plan_cached && !reuse_physical_plan)
+      reuse_physical_plan = true; // cached execution plan.
+    else
+      thd->mem_root->Clear();
+  } else { /*do nothing.*/ }
+
+  if (open_plan_cache) thd->mem_root = old_mem_root;
+  if (error) reuse_physical_plan = false;
+
   return error;
 }
 

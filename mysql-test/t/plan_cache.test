@@ -1,0 +1,835 @@
+--echo # Infrastructure for Enhanced Prepare once
+
+--disable_ps_protocol
+
+show grants;
+connect(conn1,localhost,root,,);
+select user();
+
+create database test1;
+use test1;
+
+create table t1(a int, b int, c int, unique key idx1(a));
+create table t2(a int, b int, c int, unique key idx2(a,b));
+create table t3(a int, b int, c int, unique key idx3(a,c));
+create table t4(a int, b int, c int, primary key (b,c));
+create table t5(a double, b int, primary key (a));
+create table t6(a char(32), b int, unique key idx6(a));
+create table t7(a varchar(32), b int, c double, primary key (a,b));
+create table t8(a char(32), b varchar(32), c int, d double, unique key idx8(a,b));
+create table t9(a datetime, b varchar(32), unique key idx9(a));
+create table t10(a datetime, b double, c varchar(32), unique key idx10(a,b));
+create table t11(a int primary key, b int, c int, key i1(b));
+create table t12(a int primary key, b int, c int, key i2(b,c));
+
+create user 'user1'@'%';
+grant all on test1.* to 'user1'@'%';
+
+insert into t1 values(1,2,3);
+insert into t1 values(2,3,4);
+insert into t1 values(3,2,3);
+insert into t1 values(4,3,4);
+insert into t1 values(5,2,3);
+insert into t1 values(6,3,4);
+insert into t2 values(1,2,3);
+insert into t2 values(2,3,4);
+insert into t2 values(3,2,3);
+insert into t2 values(4,3,4);
+insert into t2 values(4,4,5);
+insert into t2 values(4,6,6);
+insert into t3 values(1,2,3);
+insert into t3 values(2,3,4);
+insert into t3 values(10,20,30);
+insert into t4 values(1,2,3);
+insert into t4 values(2,3,4);
+insert into t4 values(3,4,5);
+insert into t5 values(1.1, 1);
+insert into t5 values(10.1, 11);
+insert into t6 values('tom', 23);
+insert into t6 values('mike', 21);
+insert into t7 values('jack', 1, 1.1);
+insert into t7 values('wilson', 2, 10.1);
+insert into t8 values('sam', 'shanghai', 1, 2.2);
+insert into t8 values('lily', 'beijing', 2, 10.9);
+insert into t9 values('2017-07-26 00:38:14', 'tom');
+insert into t9 values('2017-07-26 00:38:19', 'mike');
+insert into t10 values('2017-07-26 00:21:12', 99.9, 'mike');
+insert into t10 values('2017-09-12 12:12:11', 8.8, 'lily');
+insert into t11 values(1,2,3);
+insert into t11 values(2,3,4);
+insert into t11 values(3,4,5);
+insert into t11 values(4,4,6);
+insert into t12 values(1,2,3);
+insert into t12 values(2,3,4);
+insert into t12 values(3,4,5);
+insert into t12 values(4,5,6);
+
+set global distribute_plan_cache = on;
+set global distribute_plan_cache_stats = on;
+
+#1. `select list` and `where` condition.
+
+set session sql_mode='ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION';
+prepare stmt0 from "select b / ? from t1 where a = ?";
+set @val1 = 0;
+set @val2 = 2;
+execute stmt0 using @val1, @val2; #warning of div 0
+set @val1 = 1;
+set @val2 = 2;
+execute stmt0 using @val1, @val2;
+set @val1 = 0;
+set @val2 = 2;
+execute stmt0 using @val1, @val2;
+set @val1 = '0';
+set @val2 = 1;
+execute stmt0 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt0;
+
+set session sql_mode='ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,NO_ENGINE_SUBSTITUTION';
+
+prepare stmt0 from "select b / ? from t1 where a = ?";
+set @val1 = 1;
+set @val2 = 2;
+execute stmt0 using @val1, @val2;
+set @val1 = 0;
+set @val2 = 2;
+execute stmt0 using @val1, @val2;
+set @val1 = '1';
+set @val2 = '2';
+execute stmt0 using @val1, @val2;
+set @val1 = 1.32e-1;
+set @val2 = 2;
+execute stmt0 using @val1, @val2;
+set @val1 = 1.232;
+set @val2 = 1;
+execute stmt0 using @val1, @val2;
+set @val1 = 1.1111111111111111111111;
+set @val2 = 1;
+execute stmt0 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt0;
+
+
+prepare stmt1 from "select b from t1 where a = ?";
+set @value = 3;
+execute stmt1 using @value;
+--sorted_result
+show distribute_plan_cache_stat;
+set @value = 2;
+execute stmt1 using @value;
+set @value = 3.0;
+execute stmt1 using @value;
+set @value = '2.0';
+execute stmt1 using @value;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt1;
+
+prepare stmt2 from "select b + ? from t1 where a = ?";
+set @value1 = 9999;
+set @value2 = 2;
+execute stmt2 using @value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+set @value1 = 888;
+execute stmt2 using @value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+set @value2 = 3;
+execute stmt2 using @value1,@value2;
+set @value1 = 9.99e-3;
+set @value2 = 3.0;
+execute stmt2 using @value1,@value2;
+set @value1 = '0.00009';
+set @value2 = '2.0';
+execute stmt2 using @value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt2;
+
+prepare stmt3 from "select * from t2 where a = ? and b = ?";
+set @value1 = 1;
+set @value2 = 2;
+execute stmt3 using @value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+set @value1 = 4;
+set @value2 = 3;
+execute stmt3 using @value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+set @value1 = 1;
+set @value2 = 1;
+execute stmt3 using @value1,@value2;
+set @value1 = '1.2222e-1';
+set @value2 = 1.0e+1;
+execute stmt3 using @value1,@value2;
+set @value1 = '4.000000e+0';
+set @value2 = 3.0;
+execute stmt3 using @value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt3;
+
+prepare stmt4 from "select a + b + ? from t3 where a = ? and c = ?";
+set @value = 1000000;
+set @value1 = 1;
+set @value2 = 3;
+execute stmt4 using @value,@value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+set @value1 = 2;
+set @value2 = 4;
+execute stmt4 using @value,@value1,@value2;
+set @value1 = '2';
+set @value2 = '4';
+execute stmt4 using @value,@value1,@value2;
+set @value1 = 2.0;
+set @value2 = 4.0;
+execute stmt4 using @value,@value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt4;
+
+prepare stmt5 from "select a, b, b + c + ? from t4 where b = ? and c = ?";
+set @value = 1000;
+set @value1 = 2;
+set @value2 = 3;
+execute stmt5 using @value,@value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+set @value1 = 3;
+set @value2 = 4;
+execute stmt5 using @value,@value1,@value2;
+set @value1 = '3';
+set @value2 = 4.00000;
+execute stmt5 using @value,@value1,@value2;
+set @value1 = 3.00000e+0;
+set @value2 = '4.000000';
+execute stmt5 using @value,@value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt5;
+
+prepare stmt6 from "select a, b, b + c + ? from t4 where b = ? + ? and c = ?";
+set @value1 = 10;
+set @value2 = 1;
+set @value3 = 2;
+set @value4 = 4;
+execute stmt6 using @value1,@value2,@value3,@value4;
+--sorted_result
+show distribute_plan_cache_stat;
+set @value1 = 100;
+set @value2 = 1;
+set @value3 = 1;
+set @value4 = 3;
+execute stmt6 using @value1,@value2,@value3,@value4;
+--sorted_result
+show distribute_plan_cache_stat;
+set @value1 = 10.09;
+set @value2 = 1;
+set @value3 = 1;
+set @value4 = 3;
+execute stmt6 using @value1,@value2,@value3,@value4;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt6;
+
+prepare stmt7 from "select a, b, b + c + ? + ? from t4 where b = ? and c = ?";
+set @value1 = 10.1e-3;
+set @value2 = 1.21232414;
+set @value3 = 2.0;
+set @value4 = '3.0';
+execute stmt7 using @value1,@value2,@value3,@value4;
+set @value1 = '10.1e-3';
+set @value2 = '1.21232414';
+set @value3 = '2.0';
+set @value4 = 3.0e+0;
+execute stmt7 using @value1,@value2,@value3,@value4;
+set @value1 = 10.1;
+set @value2 = 1.2;
+set @value3 = 2;
+set @value4 = 4;
+execute stmt7 using @value1,@value2,@value3,@value4;
+--sorted_result
+show distribute_plan_cache_stat;
+set @value1 = 100.9;
+set @value2 = 1.7;
+set @value3 = 2;
+set @value4 = 3;
+execute stmt7 using @value1,@value2,@value3,@value4;
+--sorted_result
+show distribute_plan_cache_stat;
+set @value1 = 10.09;
+set @value2 = 1;
+set @value3 = null;
+set @value4 = 3;
+execute stmt7 using @value1,@value2,@value3,@value4;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt7;
+
+# we ignore the situation which has `= false` in where condition.
+prepare stmt8 from "select b from t1 where a = ?";
+set @value1 = null;
+execute stmt8 using @value1; #normal execution.
+--sorted_result
+show distribute_plan_cache_stat;
+set @value2 = 2;
+execute stmt8 using @value2; #normal execution.
+--sorted_result
+show distribute_plan_cache_stat;
+set @value3 = 3;
+execute stmt8 using @value3; #skip optimization phase.
+set @value3 = null;
+execute stmt8 using @value3; #skip optimization phase.
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt8;
+
+# 2. test other data types.
+# decimal specifilly handled.
+prepare stmt9 from "select * from t5 where a = ?";
+set @value1 = 1.1;
+execute stmt9 using @value1;
+set @value1 = 10.1;
+execute stmt9 using @value1;
+set @value1 = '10.1';
+execute stmt9 using @value1;
+set @value1 = 1010e-2;
+execute stmt9 using @value1;
+deallocate prepare stmt9;
+
+prepare stmt10 from 'select b, a from t6 where a = ?';
+set @value = 'tom';
+execute stmt10 using @value;
+set @value = 'mike';
+execute stmt10 using @value;
+deallocate prepare stmt10;
+
+prepare stmt11 from 'select * from t7 where a = ? and b = ?';
+set @value1 = 'jack';
+set @value2 = 1;
+execute stmt11 using @value1, @value2;
+set @value1 = 'wilson';
+set @value2 = 2;
+execute stmt11 using @value1, @value2;
+set @value1 = 'wilson';
+set @value2 = 2.0;
+execute stmt11 using @value1, @value2;
+set @value1 = 'wilson';
+set @value2 = 2.0;
+execute stmt11 using @value1, @value2;
+set @value1 = 'wilson';
+set @value2 = '2.0';
+execute stmt11 using @value1, @value2;
+set @value1 = 'wilson';
+set @value2 = 2;
+execute stmt11 using @value1, @value2;
+deallocate prepare stmt11;
+
+prepare stmt12 from 'select * from t8 where a = ? and b = ?';
+set @value1 = 'sam';
+set @value2 = 'shanghai';
+execute stmt12 using @value1, @value2;
+set @value1 = 'lily';
+set @value2 = 'beijing';
+execute stmt12 using @value1, @value2;
+deallocate prepare stmt12;
+
+# datetime speacifilly handled.
+prepare stmt13 from 'select * from t9 where a = ?';
+set @value = '2017-07-26 00:38:14';
+execute stmt13 using @value;
+set @value = '2017-07-26 00:38:19';
+execute stmt13 using @value;
+deallocate prepare stmt13;
+
+prepare stmt14 from "select * from t10 where a = ? and b = ?";
+set @value1 = '2017-07-26 00:21:12';
+set @value2 = 99.9;
+execute stmt14 using @value1,@value2;
+set @value1 = '2017-09-12 12:12:11';
+set @value2 = 8.8;
+execute stmt14 using @value1,@value2;
+deallocate prepare stmt14;
+
+prepare stmt15 from 'select * from t9 where ? = a';
+set @value = '2017-07-26 00:38:14';
+execute stmt15 using @value;
+set @value = '2017-07-26 00:38:19';
+execute stmt15 using @value;
+deallocate prepare stmt15;
+
+prepare stmt16 from "select * from t10 where a = ? and ? = b";
+set @value1 = '2017-07-26 00:21:12';
+set @value2 = 99.9;
+execute stmt16 using @value1,@value2;
+set @value1 = '2017-09-12 12:12:11';
+set @value2 = 8.8;
+execute stmt16 using @value1,@value2;
+deallocate prepare stmt16;
+
+prepare stmt17 from "select * from t10 where b = ? and a = ?";
+set @value1 = 99.9;
+set @value2 = '2017-07-26 00:21:12';
+execute stmt17 using @value1,@value2;
+set @value1 = 8.8;
+set @value2 = '2017-09-12 12:12:11';
+execute stmt17 using @value1,@value2;
+deallocate prepare stmt17;
+
+prepare stmt18 from "select * from t10 where ? = b and ? = a";
+set @value1 = 99.9;
+set @value2 = '2017-07-26 00:21:12';
+execute stmt18 using @value1,@value2;
+set @value1 = 8.8;
+set @value2 = '2017-09-12 12:12:11';
+execute stmt18 using @value1,@value2;
+deallocate prepare stmt18;
+
+prepare stmt19 from "select * from t10 where ? = b and ? = a and a = ?";
+set @value1 = 99.9;
+set @value2 = '2017-07-26 00:21:12';
+execute stmt19 using @value1,@value2,@value2;
+set @value1 = 8.8;
+set @value2 = '2017-09-12 12:12:11';
+execute stmt19 using @value1,@value2,@value2;
+deallocate prepare stmt19;
+
+# 3. situations in where condition.
+prepare stmt21 from "select * from t1 where a = ? and false";#not cached
+set @value = 1;
+execute stmt21 using @value;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt21;
+
+prepare stmt22 from "select * from t1 where a = ? and ?";#not cached
+set @value = 1;
+execute stmt22 using @value,@value;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt22;
+
+prepare stmt23 from "select * from t1 where a = ? and true";#not cached
+set @value = 1;
+execute stmt23 using @value;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt23;
+
+prepare stmt24 from "select * from t1 where a = ? and b = ?";#not cached
+set @value = 1;
+set @value1 = 2;
+execute stmt24 using @value,@value1;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt24;
+
+prepare stmt25 from "select * from t1 where a = ? or b = ?";#not cached
+set @value1 = 1;
+set @value2 = 2;
+execute stmt25 using @value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt25;
+
+prepare stmt26 from "select * from t2 where a = ? and (b = ? and c = ?)";#not cached
+set @value1 = 1;
+set @value2 = 2;
+set @value3 = 3;
+execute stmt26 using @value1,@value2,@value3;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt26;
+
+prepare stmt27 from "select * from t2 where a = ? and (b = ? or c = ?)";#not cached
+set @value1 = 1;
+set @value2 = 2;
+set @value3 = 3;
+execute stmt27 using @value1,@value2,@value3;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt27;
+
+prepare stmt28 from "select * from t2 where a = ? or (b = ?)";#not cached
+set @value1 = 1;
+set @value2 = 2;
+execute stmt28 using @value1,@value2;
+--sorted_result
+show distribute_plan_cache_stat;
+deallocate prepare stmt28;
+
+# 4. others
+drop table if exists t_o1;
+create table t_o1 (t1 char(3) primary key) charset utf8mb4;
+insert into t_o1 values("ABC");
+insert into t_o1 values("ABA");
+insert into t_o1 values("AB%");
+prepare stmt41 from "select * from t_o1 where t1 = ?";
+set @value = 'ABC';
+execute stmt41 using @value;
+set @value = 'ABCD';
+execute stmt41 using @value; #no records found.
+--sorted_result
+show distribute_plan_cache_stat;
+drop table t_o1;
+
+# 5. switch the session.
+connect(conn2,localhost,root,,);#another THD
+--sorted_result
+show distribute_plan_cache_stat;
+connect(conn3,localhost,user1,,);#another THD
+--sorted_result
+show distribute_plan_cache_stat;
+
+# 6. add ref+limit+agg+join+eqref case
+connect(conn4,localhost,root,,);#another THD
+use test1;
+
+set global distribute_plan_cache = on;
+set global distribute_plan_cache_stats = on;
+
+prepare stmt61 from "select * from t11 where b = ? limit ?";
+set @val1 = 4;
+set @val2 = 1;
+execute stmt61 using @val1,@val2;
+execute stmt61 using @val1,@val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+prepare stmt62 from "select * from t11 where ? = b limit ?";
+set @val1 = 4;
+set @val2 = 1;
+execute stmt62 using @val1,@val2;
+execute stmt62 using @val1,@val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+prepare stmt63 from "select b + a from t12 where b = ? and c = ? limit ?";
+set @val1 = 2;
+set @val2 = 3;
+set @val3 = 1;
+execute stmt63 using @val1,@val2,@val3;
+execute stmt63 using @val1,@val2,@val3;
+execute stmt63 using @val1,@val2,@val3;
+set @val2 = 4;
+execute stmt63 using @val1,@val2,@val3;
+
+prepare stmt64 from "select b + a from t12 where b = ? and ? = c limit ?";
+set @val1 = 2;
+set @val2 = 3;
+set @val3 = 1;
+execute stmt64 using @val1,@val2,@val3;
+execute stmt64 using @val1,@val2,@val3;
+execute stmt64 using @val1,@val2,@val3;
+set @val2 = 4;
+execute stmt64 using @val1,@val2,@val3;
+--sorted_result
+show distribute_plan_cache_stat;
+
+prepare stmt65 from "select * from t12, t1 where t12.b = ? and ? = t12.c and t12.a = t1.a";
+set @val1 = 2;
+set @val2 = 3;
+execute stmt65 using @val1,@val2;
+execute stmt65 using @val1,@val2;
+execute stmt65 using @val1,@val2;
+set @val1 = 3;
+set @val2 = 4;
+execute stmt65 using @val1,@val2;
+--sorted_result
+show distribute_plan_cache_stat;
+set @val1 = '3';
+set @val2 = '4';
+execute stmt65 using @val1,@val2;
+set @val1 = 3e-1;
+set @val2 = '0.4e-3';
+execute stmt65 using @val1,@val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+--sorted_result
+show distribute_plan_cache_stat;
+
+set global distribute_plan_cache = off;
+set global distribute_plan_cache_stats = off;
+
+# 7. plan cache invalid.
+connect(conn5,localhost,root,,);#another THD
+set global distribute_plan_cache = on;
+set global distribute_plan_cache_stats = on;
+create database test9;
+use test9;
+create table t91(a int primary key, b int, c int);
+create table t92(a int primary key, b int, c int, key i3(b));
+create table t93(a int primary key, b int, c int, key i4(b,c));
+insert into t91 values(1,2,3);
+insert into t91 values(2,3,4);
+insert into t91 values(3,4,5);
+insert into t92 values(1,2,3);
+insert into t92 values(2,3,4);
+insert into t92 values(3,4,5);
+insert into t93 values(1,2,3);
+insert into t93 values(2,3,4);
+insert into t93 values(3,4,5);
+
+prepare stmt91 from "select b + ? from t91 where a = ?";
+set @val1 = 1;
+set @val2 = 2;
+execute stmt91 using @val1, @val2;
+execute stmt91 using @val1, @val2;
+set @val1 = 1.2e-2;
+set @val2 = 2.2e+2;
+execute stmt91 using @val1, @val2;
+set @val1 = 1.2e-3;
+set @val2 = 2;
+execute stmt91 using @val1, @val2;
+
+prepare stmt93 from "select * from t92 where ? = b limit ?";
+set @val1 = 2;
+set @val2 = 1;
+execute stmt93 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+
+prepare stmt94 from "select * from t93, t91 where t93.b = ? and ? = t93.c and t93.a = t91.a";
+set @val1 = 2;
+set @val2 = 1;
+execute stmt94 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+connect(conn6,localhost,root,,);#another THD
+drop database test9;
+
+connection conn5;
+--error 1049
+execute stmt91 using @val1, @val2;
+--error 1049
+execute stmt93 using @val1, @val2;
+--error 1049
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+create database test9;
+use test9;
+create table t91(a int primary key, b int, c int);
+create table t92(a int primary key, b int, c int, key i3(b));
+create table t93(a int primary key, b int, c int, key i4(b,c));
+insert into t91 values(1,2,3);
+insert into t91 values(2,3,4);
+insert into t91 values(3,4,5);
+insert into t92 values(1,2,3);
+insert into t92 values(2,3,4);
+insert into t92 values(3,4,5);
+insert into t93 values(1,2,3);
+insert into t93 values(2,3,4);
+insert into t93 values(3,4,5);
+
+execute stmt91 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+execute stmt91 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+connection conn6;
+use test9;
+alter table t91 add column d double not null;
+
+connection conn5;
+--sorted_result
+show distribute_plan_cache_stat;
+execute stmt91 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+connection conn6;
+drop database test9;
+
+connection conn5;
+
+create database test9;
+use test9;
+create table t91(a int primary key, b int, c int);
+create table t92(a int primary key, b int, c int, key i3(b));
+create table t93(a int primary key, b int, c int, key i4(b,c));
+insert into t91 values(1,2,3);
+insert into t91 values(2,3,4);
+insert into t91 values(3,4,5);
+insert into t92 values(1,2,3);
+insert into t92 values(2,3,4);
+insert into t92 values(3,4,5);
+insert into t93 values(1,2,3);
+insert into t93 values(2,3,4);
+insert into t93 values(3,4,5);
+
+execute stmt91 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+execute stmt91 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+connection conn6;
+use test9;
+drop table t91;
+drop table t92;
+drop table t93;
+
+connection conn5;
+--error 1146
+execute stmt91 using @val1, @val2;
+--error 1146
+execute stmt93 using @val1, @val2;
+--error 1146
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+use test9;
+create table t91(a int primary key, b int, c int);
+create table t92(a int primary key, b int, c int, key i3(b));
+create table t93(a int primary key, b int, c int, key i4(b,c));
+insert into t91 values(1,2,3);
+insert into t91 values(2,3,4);
+insert into t91 values(3,4,5);
+insert into t92 values(1,2,3);
+insert into t92 values(2,3,4);
+insert into t92 values(3,4,5);
+insert into t93 values(1,2,3);
+insert into t93 values(2,3,4);
+insert into t93 values(3,4,5);
+
+execute stmt91 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+execute stmt91 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+connection conn6;
+use test9;
+alter table t91 drop column a;
+alter table t92 drop column b;
+alter table t93 drop column c;
+
+connection conn5;
+--error 1054
+execute stmt91 using @val1, @val2;
+--error 1054
+execute stmt93 using @val1, @val2;
+--error 1054
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+alter table t91 add column a int;
+alter table t92 add column b int;
+alter table t93 add column c int;
+execute stmt91 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+execute stmt91 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+use test9;
+drop table t91;
+drop table t92;
+drop table t93;
+create table t91(a int primary key, b int, c int);
+create table t92(a int primary key, b int, c int, key i3(b));
+create table t93(a int primary key, b int, c int, key i4(b,c));
+insert into t91 values(1,2,3);
+insert into t91 values(2,3,4);
+insert into t91 values(3,4,5);
+insert into t92 values(1,2,3);
+insert into t92 values(2,3,4);
+insert into t92 values(3,4,5);
+insert into t93 values(1,2,3);
+insert into t93 values(2,3,4);
+insert into t93 values(3,4,5);
+
+connection conn6;
+use test9;
+alter table t91 drop primary key;
+alter table t92 drop index i3;
+alter table t93 drop index i4;
+
+connection conn5;
+execute stmt91 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+connection conn6;
+use test9;
+alter table t91 add primary key(a);
+alter table t92 add index i3(b);
+alter table t93 add index i4(b,c);
+
+connection conn5; #first time.
+execute stmt91 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+
+--sorted_result
+show distribute_plan_cache_stat; #hit the plan cache.
+execute stmt91 using @val1, @val2;
+execute stmt93 using @val1, @val2;
+execute stmt94 using @val1, @val2;
+--sorted_result
+show distribute_plan_cache_stat;
+
+#drop table t91;
+#drop table t92;
+#drop table t93;
+drop database test9;
+
+set global distribute_plan_cache = off;
+set global distribute_plan_cache_stats = off;
+
+connection conn1;
+--sorted_result
+show distribute_plan_cache_stat;#already destroy
+set global distribute_plan_cache = off;
+set global distribute_plan_cache_stats = off;
+
+drop table t1;
+drop table t2;
+drop table t3;
+drop table t4;
+drop table t5;
+drop table t6;
+drop table t7;
+drop table t8;
+drop table t9;
+drop table t10;
+drop table t11;
+drop table t12;
+drop database test1;
+drop user 'user1'@'%';

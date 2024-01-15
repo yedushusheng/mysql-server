@@ -155,7 +155,8 @@
 #include "sql/sql_help.h"     // mysqld_help
 #include "sql/sql_lex.h"
 #include "sql/sql_list.h"
-#include "sql/sql_prepare.h"  // mysql_stmt_execute
+#include "sql/sql_plan_cache.h"  //Distribute_plan_cache_stats
+#include "sql/sql_prepare.h"     // mysql_stmt_execute
 #include "sql/sql_profile.h"
 #include "sql/sql_query_rewrite.h"  // invoke_pre_parse_rewrite_plugins
 #include "sql/sql_reload.h"         // handle_reload_request
@@ -177,6 +178,7 @@
 #include "template_utils.h"
 #include "thr_lock.h"
 #include "violite.h"
+
 
 #ifdef WITH_LOCK_ORDER
 #include "sql/debug_lock_order.h"
@@ -552,6 +554,7 @@ void init_sql_command_flags(void) {
   sql_command_flags[SQLCOM_SHOW_ENGINE_LOGS] = CF_STATUS_COMMAND;
   sql_command_flags[SQLCOM_SHOW_PROCESSLIST] = CF_STATUS_COMMAND;
   sql_command_flags[SQLCOM_SHOW_GRANTS] = CF_STATUS_COMMAND;
+  sql_command_flags[SQLCOM_SHOW_PLAN_CACHE_STATS] = CF_STATUS_COMMAND;
   sql_command_flags[SQLCOM_SHOW_CREATE_DB] = CF_STATUS_COMMAND;
   sql_command_flags[SQLCOM_SHOW_CREATE] = CF_STATUS_COMMAND;
   sql_command_flags[SQLCOM_SHOW_MASTER_STAT] = CF_STATUS_COMMAND;
@@ -841,6 +844,7 @@ void init_sql_command_flags(void) {
   sql_command_flags[SQLCOM_SHOW_CREATE] |= CF_ALLOW_PROTOCOL_PLUGIN;
   sql_command_flags[SQLCOM_SHOW_CHARSETS] |= CF_ALLOW_PROTOCOL_PLUGIN;
   sql_command_flags[SQLCOM_SHOW_COLLATIONS] |= CF_ALLOW_PROTOCOL_PLUGIN;
+  sql_command_flags[SQLCOM_SHOW_PLAN_CACHE_STATS] |= CF_ALLOW_PROTOCOL_PLUGIN;
   sql_command_flags[SQLCOM_SHOW_CREATE_DB] |= CF_ALLOW_PROTOCOL_PLUGIN;
   sql_command_flags[SQLCOM_SHOW_TABLE_STATUS] |= CF_ALLOW_PROTOCOL_PLUGIN;
   sql_command_flags[SQLCOM_SHOW_TRIGGERS] |= CF_ALLOW_PROTOCOL_PLUGIN;
@@ -1207,8 +1211,8 @@ void bind_fields(Item *first) {
  * ->handle_connection
  * 	->do_command
  * 参考:https://zhuanlan.zhihu.com/p/121772222
- * 
-*/
+ *
+ */
 bool do_command(THD *thd) {
   bool return_value;
   int rc;
@@ -1242,7 +1246,7 @@ bool do_command(THD *thd) {
   net = thd->get_protocol_classic()->get_net();
   /** Note:首先,设置vio读取的超时,即my_net_set_read_timeout,
    * 其中vio为Virtual I/O,主要为了封装linux和window不同的IO接口.
-  */
+   */
   my_net_set_read_timeout(net, thd->variables.net_wait_timeout);
   net_new_transaction(net);
 
@@ -1278,7 +1282,7 @@ bool do_command(THD *thd) {
    * 一个是从vio中读取命令,通过调用my_net_read->net_read_packet读取数据包(如果有多个包,则需要读取多次).
    * 对于该过程,先读取包头,然后再根据包头大小去读取数据,同时会检查是否超过最大包上限.
    * 另外,如果包是被压缩过的,则需要解压,有两种解压方式:zstd_uncompress和zlib_uncompress.
-  */
+   */
   rc = thd->get_protocol()->get_command(&com_data, &command);
   thd->m_server_idle = false;
 
@@ -1564,7 +1568,8 @@ static void copy_bind_parameter_values(THD *thd, PS_PARAM *parameters,
  * 		mysql_audit_acquire_plugins
  * 			check_audit_mask
  * 			acquire_lookup_mask,
- * 			acquire_plugins：Acquire and lock any additional audit plugins, whose subscription mask overlaps with the lookup_mask.
+ * 			acquire_plugins：Acquire and lock any additional audit
+ * plugins, whose subscription mask overlaps with the lookup_mask.
  * 			add_audit_mask
  * 		event_class_dispatch_error
  * 			event_class_dispatch
@@ -1579,7 +1584,7 @@ static void copy_bind_parameter_values(THD *thd, PS_PARAM *parameters,
  * COM_STMT_EXECUTE,COM_STMT_FETCH,COM_STMT_SEND_LONG_DATA,COM_STMT_PREPARE,COM_STMT_CLOSE,COM_STMT_RESET,COM_QUERY,COM_FIELD_LIST
  * 未实现:
  * COM_SLEEP,COM_CONNECT,COM_TIME,COM_DELAYED_INSERT,COM_END
-*/
+ */
 bool dispatch_command(THD *thd, const COM_DATA *com_data,
                       enum enum_server_command command) {
   bool error = false;
@@ -1675,7 +1680,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
     beginning of each command.
   */
   thd->server_status &= ~SERVER_STATUS_CLEAR_SET;
-  
+
   // Note:如果请求协议类型是PROTOCOL_PLUGIN,但该命令不允许PROTOCOL_PLUGIN,那么将断开该连接
   if (thd->get_protocol()->type() == Protocol::PROTOCOL_PLUGIN &&
       !(server_command_flags[command] & CF_ALLOW_PROTOCOL_PLUGIN)) {
@@ -1900,7 +1905,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
 
       copy_bind_parameter_values(thd, com_data->com_query.parameters,
                                  com_data->com_query.parameter_count);
-      
+
       // Note:分发SQL
       dispatch_sql_command(thd, &parser_state);
 
@@ -2760,7 +2765,7 @@ static inline void binlog_gtid_end_transaction(THD *thd) {
  * ->->->->lex_start
  * ->->->->parse_sql:语法解析
  * ->->->->THD::sql_parser(解析sql_yacc.yy)
- * ->->->->mysql_execute_command() 
+ * ->->->->mysql_execute_command()
  * 具体调用流程(8.0.13):
  * mysql_execute_command()
  *   lex->m_sql_cmd->execute()
@@ -2774,22 +2779,18 @@ static inline void binlog_gtid_end_transaction(THD *thd) {
  *           SELECT_LEX::prepare()
  *             ......
  *     2.Sql_cmd_dml::execute_inner
- *         2.1 SELECT_LEX_UNIT::optimize() (not simple or simple SELECT_LEX::optimize)
- *           SELECT_LEX::optimize()  
- *             JOIN::optimize()  // optimizer is from here ... MySQL8.0与5.6一致
- *             SELECT_LEX_UNIT::optimize()
+ *         2.1 SELECT_LEX_UNIT::optimize() (not simple or simple
+ * SELECT_LEX::optimize) SELECT_LEX::optimize() JOIN::optimize()  // optimizer
+ * is from here ... MySQL8.0与5.6一致 SELECT_LEX_UNIT::optimize()
  *               ......
- *         2.2 SELECT_LEX_UNIT::execute() (not simple or simple SELECT_LEX::optimize)
- *           SELECT_LEX::execute()  
- *             JOIN::exec()  // MySQL8.0 Sql_cmd_dml::execute_inner
- *               JOIN::prepare_result()
- *               do_select()
- *                 sub_select()
+ *         2.2 SELECT_LEX_UNIT::execute() (not simple or simple
+ * SELECT_LEX::optimize) SELECT_LEX::execute() JOIN::exec()  // MySQL8.0
+ * Sql_cmd_dml::execute_inner JOIN::prepare_result() do_select() sub_select()
  *                   ......
  *             SELECT_LEX_UNIT::execute()
  *               ......
  *     3.SELECT_LEX_UNIT::cleanup(false)
-*/
+ */
 /**
   Execute command saved in thd and lex->sql_command.
 
@@ -2814,7 +2815,7 @@ static inline void binlog_gtid_end_transaction(THD *thd) {
  * ->mysql_execute_command
  * 2.sql_prepare.cc/Execute_sql_statement::execute_server_code
  * ->mysql_execute_command
-*/
+ */
 int mysql_execute_command(THD *thd, bool first_level) {
   int res = false;
   LEX *const lex = thd->lex;
@@ -4639,6 +4640,10 @@ int mysql_execute_command(THD *thd, bool first_level) {
       res = mysql_alter_user(thd, lex->users_list, lex->drop_if_exists);
       break;
     }
+    case SQLCOM_SHOW_PLAN_CACHE_STATS: {
+      res = mysqld_list_plan_cache_stats(thd);
+      break;
+    }
     default:
       DBUG_ASSERT(0); /* Impossible */
       my_ok(thd);
@@ -4993,7 +4998,7 @@ void THD::reset_for_next_command() {
  * 说明:
  * MySQL5.7是mysql_parse函数
  * MySQL8.0是dispatch_sql_command函数
-*/
+ */
 void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
   DBUG_TRACE;
   DBUG_PRINT("dispatch_sql_command", ("query: '%s'", thd->query().str));
@@ -5001,7 +5006,7 @@ void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
   DBUG_EXECUTE_IF("parser_debug", turn_parser_debug_on(););
 
   mysql_reset_thd_for_next_command(thd);
-  //NOTE:初始化语法分析器
+  // NOTE:初始化语法分析器
   lex_start(thd);
 
   thd->m_parser_state = parser_state;
@@ -5011,12 +5016,13 @@ void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
   enable_digest_if_any_plugin_needs_it(thd, parser_state);
 
   LEX *lex = thd->lex;
+  lex->set_cached_state(UNKNOWN_STATE);
   const char *found_semicolon = nullptr;
 
   bool err = thd->get_stmt_da()->is_error();
 
   if (!err) {
-    //NOTE:分析SQL
+    // NOTE:分析SQL
     err = parse_sql(thd, parser_state, nullptr);
     if (!err) err = invoke_post_parse_rewrite_plugins(thd, false);
 
@@ -5052,7 +5058,7 @@ void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
     } else {
       thd->set_query_for_display(thd->query().str, thd->query().length);
     }
-    //NOTE:查询缓存命中,只做日志记录(不再需要执行SQL语句的分析和执行工作)
+    // NOTE:查询缓存命中,只做日志记录(不再需要执行SQL语句的分析和执行工作)
     if (!(opt_general_log_raw || thd->slave_thread)) {
       if (thd->rewritten_query().length())
         query_logger.general_log_write(thd, COM_QUERY,
@@ -5158,9 +5164,10 @@ void dispatch_sql_command(THD *thd, Parser_state *parser_state) {
   THD_STAGE_INFO(thd, stage_freeing_items);
   sp_cache_enforce_limit(thd->sp_proc_cache, stored_program_cache_size);
   sp_cache_enforce_limit(thd->sp_func_cache, stored_program_cache_size);
+  thd->lex->set_cached_state(UNKNOWN_STATE);
   thd->lex->destroy();
   thd->end_statement();
-  thd->cleanup_after_query();//NOTE:结束语法分析,清理环境等
+  thd->cleanup_after_query();  // NOTE:结束语法分析,清理环境等
   DBUG_ASSERT(thd->change_list.is_empty());
 
   DEBUG_SYNC(thd, "query_rewritten");
@@ -6851,7 +6858,7 @@ class Parser_oom_handler : public Internal_error_handler {
 */
 /** Note:内部函数 外部接口
  * 解析SQL,转换为AST(抽象语法树)
-*/
+ */
 bool parse_sql(THD *thd, Parser_state *parser_state,
                Object_creation_ctx *creation_ctx) {
   DBUG_TRACE;

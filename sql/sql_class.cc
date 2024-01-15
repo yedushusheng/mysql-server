@@ -1091,6 +1091,8 @@ THD::~THD() {
   THD_CHECK_SENTRY(this);
   DBUG_TRACE;
   DBUG_PRINT("info", ("THD dtor, this %p", this));
+  if (plan_cache_stats_enabled())
+    plan_cache_stats.clear_plan_cache_info();
 
   if (!m_release_resources_done) release_resources();
 

@@ -529,6 +529,7 @@ SET(SQL_SHARED_SOURCES
   sql_reload.cc
   sql_rename.cc
   sql_resolver.cc
+  sql_plan_cache.cc
   sql_restart_server.cc
   sql_rewrite.cc
   sql_select.cc

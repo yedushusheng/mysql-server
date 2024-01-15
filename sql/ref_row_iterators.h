@@ -127,10 +127,12 @@ class ConstIterator final : public TableRowIterator {
  public:
   // "examined_rows", if not nullptr, is incremented for each successful Read().
   ConstIterator(THD *thd, TABLE *table, TABLE_REF *table_ref,
-                ha_rows *examined_rows);
+                ha_rows *examined_rows, Item *item = nullptr);
 
   bool Init() override;
   int Read() override;
+
+  bool rebind_parameters(THD *thd) override;
 
   /**
     Rows from const tables are read once but potentially used
@@ -143,6 +145,7 @@ class ConstIterator final : public TableRowIterator {
   TABLE_REF *const m_ref;
   bool m_first_record_since_init;
   ha_rows *const m_examined_rows;
+  Item *m_condition;
 };
 
 /** An iterator that does a search through a full-text index. */

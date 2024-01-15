@@ -463,6 +463,33 @@ enum sub_select_type {
   OLAP_TYPE
 };
 
+
+/**
+  MySQL query processing consists of parsing, preparation, optimization and execution
+  phases. Preparation in turn consists of resolving and transformation.
+
+  At the beginning, the cache state of LEX is initialized as UNKNOWN_STATE.
+
+  Serveral checks are performed against the resolved parse tree and the access plan.
+  If any fails, the state is set to REFUSE_CACHED, which suggests regular (non-cached)
+  processing. At last, when SQL processing finished, memory will be cleared if the
+  state is set to REFUSE_CACHED.
+
+  As of now, in certain const table cases, query optimization is hacked and the state
+  is set to MAY_CACHED.
+
+  Physical plan of a MAY_CACHED query is handled separately and the state is finalized
+  to CONFIRM_CACHED. In this case, the plan is not destroyed at the end as in regular
+  processing.
+*/
+enum plan_cache_state {
+  UNKNOWN_STATE,  // initial state of the LEX.
+  REFUSE_CACHED,  // set when 1. check LEX before transformation.
+                  //          2. check before check access path.
+  MAY_CACHED,     // physical plan may be saved in plan cache in PK&UK.
+  CONFIRM_CACHED  // confirm that physical plan can be saved in plan cache.
+};
+
 /*
   String names used to print a statement with index hints.
   Keep in sync with index_hint_type.
@@ -1070,6 +1097,7 @@ class SELECT_LEX_UNIT {
 
   void restore_cmd_properties();
   bool save_cmd_properties(THD *thd);
+  bool rebind_parameters(THD *thd);
 
   friend class SELECT_LEX;
 
@@ -2310,6 +2338,10 @@ class SELECT_LEX {
   /// Hidden items added during optimization
   /// @note that using this means we modify resolved data during optimization
   uint hidden_items_from_optimization{0};
+
+  /// This is the columns' number of condition, this will be used for PK&UK
+  /// optimization for skipping optimize phase.
+  uint cond_cols{0};
 
  private:
   friend class SELECT_LEX_UNIT;
@@ -4096,6 +4128,8 @@ struct LEX : public Query_tables_list {
   bool has_udf() const { return m_has_udf; }
   st_parsing_options parsing_options;
   Alter_info *alter_info;  //NOTE:解析ALTER命令
+  bool is_from_ps;
+  bool is_from_sp;  
   /* Prepared statements SQL syntax:*/
   LEX_CSTRING prepared_stmt_name; /* Statement name (in all queries) */
   /*
@@ -4211,6 +4245,30 @@ struct LEX : public Query_tables_list {
            (sroutines != nullptr && !sroutines->empty());
   }
 
+  /// Check if the LEX can be saved in plan cache, we confirm that only single query
+  /// block statement may be saved in plan cache, so check it before prepare because
+  /// transformation in prepare will damage that.
+  void set_multi_query_block_cache_state() {
+    if ((!is_from_ps) || is_from_sp)
+      cached_state = REFUSE_CACHED;
+    else if (!unit->is_simple() || //union stmt can't be saved in plan cache.
+             !check_command_can_be_cached() || //only SELECT can be saved.
+             is_explain() || //`EXPLAIN` stmt can't be saved in plan cache.
+             //only single query block can be saved in plan cache.
+             current_query_block()->first_inner_query_expression() != nullptr ||
+             current_query_block()->outer_query_block() != nullptr)
+      cached_state = REFUSE_CACHED;
+  }
+
+  /// set the LEX cached state at certain phase of SQL executin.
+  /// currently we can set `UNKNOWN_STATE`, `REFUSE_CACHED`, `MAY_CACHED`
+  /// and `CONFIRM_CACHED`.
+  void set_cached_state(plan_cache_state state) { cached_state = state; }
+
+  inline bool skip_cached() const { return cached_state == REFUSE_CACHED; }
+  inline bool confirm_cached() const { return cached_state == CONFIRM_CACHED; }
+  inline bool may_be_cached() const { return cached_state == MAY_CACHED; }
+
  public:
   st_sp_chistics sp_chistics;
 
@@ -4265,6 +4323,14 @@ struct LEX : public Query_tables_list {
     tree. When we get a pure parser this will not be needed.
   */
   bool will_contextualize;
+  // Plan cache state which represents this LEX.
+  plan_cache_state cached_state = UNKNOWN_STATE;
+
+  /**
+    LEX query cost, store it in LEX for plan reuse.
+    @sa system_status_var::last_query_cost
+  */
+  double m_query_cost{0.0};
 
   LEX();
 
@@ -4367,6 +4433,7 @@ struct LEX : public Query_tables_list {
   }
 
   bool save_cmd_properties(THD *thd) { return unit->save_cmd_properties(thd); }
+  bool rebind_parameters(THD *thd) { return unit->rebind_parameters(thd); }
 
   bool can_use_merged();
   bool can_not_use_merged();
@@ -4394,6 +4461,16 @@ struct LEX : public Query_tables_list {
       default:
         return false;
     }
+  }
+  /*
+    Currently we only allow that `SQLCOM_SELECT` dml can be saved in plan cache.
+
+    RETURN
+      true   supported to saved in plan cache.
+      false  not support
+  */
+  inline bool check_command_can_be_cached() {
+    return sql_command == SQLCOM_SELECT; // only support SELECT clause.
   }
 
   void cleanup_after_one_table_open();

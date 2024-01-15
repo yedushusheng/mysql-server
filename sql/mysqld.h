@@ -245,6 +245,8 @@ extern bool relay_log_recovery;
 extern std::atomic<bool> offline_mode;
 extern uint test_flags, select_errors, ha_open_options;
 extern uint protocol_version, mysqld_port;
+extern bool distribute_plan_cache_enabled;
+extern bool distribute_plan_cache_stats_enabled;
 
 enum enum_delay_key_write {
   DELAY_KEY_WRITE_NONE,

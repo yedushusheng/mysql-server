@@ -190,6 +190,15 @@ class Sql_cmd_dml : public Sql_cmd {
   virtual bool execute_inner(THD *thd);
 
   /**
+    The inner parts of query execution by using plan cache.
+
+    @param thd Thread handler
+
+    @returns false on success, true on error
+  */
+  virtual bool execute_inner_using_cached_plan(THD *thd);
+
+  /**
     Restore command properties before execution
     - Bind metadata for tables and fields
     - Restore clauses (e.g ORDER BY, GROUP BY) that were destroyed in
@@ -199,6 +208,9 @@ class Sql_cmd_dml : public Sql_cmd {
 
   /// Save command properties, such as prepared query details and table props
   virtual bool save_cmd_properties(THD *thd);
+
+  /// Close the table file handler and set keyread to false.
+  virtual bool clean_up_for_reuse();
 
  protected:
   LEX *lex;              ///< Pointer to LEX for this statement

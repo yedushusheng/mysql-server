@@ -3678,6 +3678,26 @@ static Sys_var_ulong Sys_trans_prealloc_size(
     BLOCK_SIZE(1024), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr),
     ON_UPDATE(fix_trans_mem_root));
 
+
+static Sys_var_bool Sys_distribute_plan_cache_enabled(
+    "distribute_plan_cache",
+    "Plan cache switch. When distribute_plan_cache turns on, "
+    "some SQL execution plan will be saved and optimize once. "
+    "Currently it works on some limited prepare statement. ",
+    GLOBAL_VAR(distribute_plan_cache_enabled),
+    CMD_LINE(OPT_ARG), DEFAULT(false),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(NULL), ON_UPDATE(NULL));
+
+static Sys_var_bool Sys_distribute_plan_cache_stats_enabled(
+    "distribute_plan_cache_stats",
+    "Statistics of plan cache hit info. When distribute_plan_cache_stats turns on, "
+    "THD level statistics can be showed.",
+    GLOBAL_VAR(distribute_plan_cache_stats_enabled),
+    CMD_LINE(OPT_ARG), DEFAULT(false),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(NULL), ON_UPDATE(NULL));
+
 static const char *thread_handling_names[] = {
     "one-thread-per-connection", "no-threads", "loaded-dynamically", nullptr};
 static Sys_var_enum Sys_thread_handling(

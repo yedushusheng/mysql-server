@@ -298,8 +298,12 @@ class QEP_TAB : public QEP_shared_owner {
 
   /// Initializes the object from a JOIN_TAB
   void init(JOIN_TAB *jt);
-  // Cleans up.
-  void cleanup();
+  /**
+    Clean up query execution plan description after query execution.
+    @param reuse    Some datastructure won't be cleaned if the LEX can be
+                    saved in plan cache, when reuse is true.
+  */
+  void cleanup(bool reuse = false);
 
   // Getters and setters
 

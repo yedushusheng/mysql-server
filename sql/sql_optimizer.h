@@ -647,6 +647,21 @@ class JOIN {
   /// True if plan is const, ie it will return zero or one rows.
   bool plan_is_const() const { return const_tables == primary_tables; }
 
+  /// Skip the const table optimization for plan cache mode.
+  bool skip_const_table() const {
+    return plan_cache_enabled() &&
+           (thd->lex->is_from_ps && !thd->lex->is_from_sp) &&
+           thd->lex->query_tables->table &&
+           thd->lex->unit->is_simple() &&
+           thd->lex->current_query_block()->first_inner_query_expression() == nullptr &&
+           thd->lex->current_query_block()->outer_query_block() == nullptr &&
+           thd->lex->unit->first_query_block()->leaf_table_count == 1 &&
+           thd->lex->unit->first_query_block()->order_list.elements == 0 &&
+           thd->lex->unit->first_query_block()->group_list.elements == 0 &&
+           thd->lex->unit->first_query_block()->m_windows.elements == 0 &&
+           !thd->lex->unit->first_query_block()->agg_func_used();
+  }
+
   /**
     True if plan contains one non-const primary table (ie not including
     tables taking part in semi-join materialization).

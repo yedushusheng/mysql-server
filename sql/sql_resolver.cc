@@ -1748,6 +1748,16 @@ bool SELECT_LEX::setup_conds(THD *thd) {
     DBUG_ASSERT(m_where_cond->is_bool_func());
     resolve_place = SELECT_LEX::RESOLVE_CONDITION;
     thd->where = "where clause";
+    // Count the `field = param` or `param = field` number which is connected
+    // by `COND_AND_FUNC` in where condition.
+    if (plan_cache_enabled() && 
+          !m_where_cond->walk(&Item::check_and_connected_equal_item,
+          enum_walk::POSTFIX, nullptr)) {
+      if (m_where_cond->type() == Item_func::COND_ITEM)
+        cond_cols = ((Item_cond *)m_where_cond)->argument_list()->size();
+      else if (m_where_cond->type() == Item_func::FUNC_ITEM)
+        cond_cols = 1;
+    }    
     if ((!m_where_cond->fixed &&
          m_where_cond->fix_fields(thd, &m_where_cond)) ||
         m_where_cond->check_cols(1))

@@ -378,6 +378,22 @@ class Prepared_statement final {
   */
   MEM_ROOT main_mem_root;
 
+  /**
+    The memory root to allocate optimize phase data structure. It will be
+    released when ~Prepare_statement().
+  */
+  MEM_ROOT main_opt_mem_root;
+  /**
+    The memory root to allocate execution phase data structure. It will be
+    released when every execution finished.
+  */
+  MEM_ROOT main_exec_mem_root;
+  /**
+    LEX in prepare statement has already been optimized and saved when
+    reuse_physical_plan is true.
+  */
+  bool reuse_physical_plan = false;
+
  public:
   Prepared_statement(THD *thd_arg);
   virtual ~Prepared_statement();

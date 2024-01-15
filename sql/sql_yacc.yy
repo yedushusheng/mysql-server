@@ -1354,6 +1354,7 @@ void warn_about_deprecated_binary(THD *thd)
 %token<lexer.keyword> SOURCE_TLS_VERSION_SYM 1186              /* MYSQL */
 %token<lexer.keyword> SOURCE_USER_SYM 1187                     /* MYSQL */
 %token<lexer.keyword> SOURCE_ZSTD_COMPRESSION_LEVEL_SYM 1188   /* MYSQL */
+%token<lexer.keyword> DISTRIBUTE_PLAN_CACHE_STAT_SYM 1367
 
 /*
   Precedence rules used to resolve the ambiguity when using keywords as idents
@@ -1849,6 +1850,7 @@ void warn_about_deprecated_binary(THD *thd)
         show_create_trigger_stmt
         show_create_user_stmt
         show_create_view_stmt
+        show_plan_cache_stats
         show_databases_stmt
         show_engine_logs_stmt
         show_engine_mutex_stmt
@@ -2344,6 +2346,7 @@ simple_statement:
         | show_create_trigger_stmt
         | show_create_user_stmt
         | show_create_view_stmt
+        | show_plan_cache_stats
         | show_databases_stmt
         | show_engine_logs_stmt
         | show_engine_mutex_stmt
@@ -13771,6 +13774,13 @@ show_create_user_stmt:
           }
         ;
 
+show_plan_cache_stats:
+          SHOW DISTRIBUTE_PLAN_CACHE_STAT_SYM
+          {
+             $$ = NEW_PTN PT_show_plan_cache_stat(@$);
+          }
+        ;
+
 engine_or_all:
           ident_or_text
         | ALL           { $$ = {}; }
@@ -15078,6 +15088,7 @@ ident_keywords_unambiguous:
         | BUCKETS_SYM
         | CASCADED
         | CATALOG_NAME_SYM
+        | DISTRIBUTE_PLAN_CACHE_STAT_SYM
         | CHAIN_SYM
         | CHANGED
         | CHANNEL_SYM

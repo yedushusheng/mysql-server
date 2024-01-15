@@ -115,6 +115,7 @@
 #include "sql/temp_table_param.h"
 #include "sql/thd_raii.h"
 #include "sql/window.h"  // ignore_gaf_const_opt
+#include "sql/sql_plan_cache.h"  //Txsql_plan_cache_stats
 #include "sql_string.h"
 #include "template_utils.h"
 #include "thr_lock.h"

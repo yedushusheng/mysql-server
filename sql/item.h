@@ -2469,6 +2469,8 @@ class Item : public Parse_tree_node {
   virtual bool is_non_const_over_literals(uchar *) {
     return !basic_const_item();
   }
+  virtual bool check_and_connected_equal_item(uchar *) { return false; }
+  virtual bool check_const_cond_valid(uchar *) { return false; }
   /// Is this an Item_field which references the given Field argument?
   virtual bool find_field_processor(uchar *) { return false; }
   /// Wrap incompatible arguments in CAST nodes to the expected data types

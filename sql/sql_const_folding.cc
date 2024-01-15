@@ -46,75 +46,12 @@
 #include "my_time.h"                       // TIME_to_longlong_datetime_packed
 #include "mysql/udf_registration_types.h"  // INT_RESULT, STRING_RESULT
 #include "mysql_time.h"                    // MYSQL_TIME
-#include "sql/field.h"                     // Field_real, Field
-#include "sql/item.h"                      // Item, Item_field, Item_int
-#include "sql/item_cmpfunc.h"              // Item_bool_func2, Item_cond
-#include "sql/item_func.h"                 // Item_func, Item_func::LE_FUNC
-#include "sql/item_timefunc.h"             // Item_date_literal
 #include "sql/sql_class.h"                 // THD
 #include "sql/sql_list.h"                  // List_iterator
 #include "sql/sql_time.h"                  // my_time_set, actual_decimals
 #include "sql/tztime.h"                    // Time_zone, my_tz_UTC
 #include "sql_string.h"                    // String
 #include "template_utils.h"                // down_cast
-
-/**
-  fold_condition uses analyze_field_constant to analyze constants in
-  comparisons expressions with a view to fold the expression. The analysis
-  will determine the range characteristic of the constant, as represented by
-  one value of this set. In the simple case, if the constant is within the range
-  of the field to which it is being compared, the value used is RP_INSIDE.
-*/
-enum Range_placement {
-  /**
-    The constant is larger than the highest value in the range
-  */
-  RP_OUTSIDE_HIGH,
-  /**
-    The constant is lower than the lowest value in the range
-  */
-  RP_OUTSIDE_LOW,
-  /**
-    The constant has the value of the lowest value in the range. Only used
-    for integer types and the YEAR type.
-   */
-  RP_ON_MIN,
-  /**
-    The constant has the value of the highest value in the range. Only used
-    for integer types and the YEAR type.
-  */
-  RP_ON_MAX,
-  /**
-    The constant has a value within the range, but that is *not* on one of the
-    borders if applicable for the type, cf. RP_ON_MIN and RP_ON_MAX.
-  */
-  RP_INSIDE,
-  /**
-    The constant has a value within the range, but was truncated. Used
-    for DECIMAL if the constant has more precision in the fraction than the
-    field and for floating point underflow.
-  */
-  RP_INSIDE_TRUNCATED,
-  /**
-    The YEAR type has a discontinuous range {0} U [1901, 2155]. If the constant
-    is larger than 0, but less than 1901, we represent that with this value.
-  */
-  RP_INSIDE_YEAR_HOLE,
-  /**
-    The constant has been rounded down, i.e.\ to the left on the number line,
-    due to restriction on field length (FLOAT or DOUBLE) or because we have a
-    FLOAT type and the constant given has a mantissa with more significant
-    digits than allowed for FLOAT.
-  */
-  RP_ROUNDED_DOWN,
-  /**
-    The constant has been rounded up, i.e.\ to the right on the number line, due
-    to restriction on field length (FLOAT or DOUBLE) or because we have a FLOAT
-    type and the constant given has a mantissa with more significant digits
-    than allowed for FLOAT.
-  */
-  RP_ROUNDED_UP
-};
 
 /**
   Minion of analyze_int_field_constant.
@@ -966,31 +903,10 @@ static bool analyze_time_field_constant(THD *thd, Item **const_val) {
   return false;
 }
 
-/**
-  Analyze a constant's placement within (or without) the type range of the
-  field f. Also normalize the given constant to the type of the field if
-  applicable.
-
-  @param      thd       the session context
-  @param      f         the field
-  @param[out] const_val a pointer to an item tree pointer containing the
-                        constant (at execution time). May be modified if
-                        we replace or fold the constant.
-  @param      func      the function of the comparison
-  @param      left_has_field
-                        the field is the left operand
-  @param[out] place     the placement of the const_val relative to
-                        the range of f
-  @param[out] discount_equal
-                        set to true: caller should replace GE with GT or LE
-                        with LT.
-  @param[out] negative  true if the constant (decimal) is has a (minus) sign
-  @returns   true on error
-*/
-static bool analyze_field_constant(THD *thd, Item_field *f, Item **const_val,
-                                   Item_func *func, bool left_has_field,
-                                   Range_placement *place, bool *discount_equal,
-                                   bool *negative) {
+bool analyze_field_constant(THD *thd, Item_field *f, Item **const_val,
+                            Item_func *func, bool left_has_field,
+                            Range_placement *place, bool *discount_equal,
+                            bool *negative) {
   *place = RP_INSIDE;  // a priori
 
   if ((*const_val)->is_null()) return false;

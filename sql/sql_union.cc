@@ -85,7 +85,8 @@
 #include "sql/sql_executor.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_list.h"
-#include "sql/sql_optimizer.h"  // JOIN
+#include "sql/sql_optimizer.h"   // JOIN
+#include "sql/sql_plan_cache.h"  // Distribute_plan_cache_stats
 #include "sql/sql_select.h"
 #include "sql/sql_tmp_table.h"   // tmp tables
 #include "sql/table_function.h"  // Table_function
@@ -93,6 +94,7 @@
 #include "sql/timing_iterator.h"
 #include "sql/window.h"  // Window
 #include "template_utils.h"
+
 
 using std::move;
 using std::vector;
@@ -329,7 +331,7 @@ class Change_current_select {
 
   @returns false if success, true if error
 */
-//NOTE:内部函数
+// NOTE:内部函数
 bool SELECT_LEX_UNIT::prepare_fake_select_lex(THD *thd_arg) {
   DBUG_TRACE;
 
@@ -382,7 +384,7 @@ bool SELECT_LEX_UNIT::prepare_fake_select_lex(THD *thd_arg) {
   return false;
 }
 
-//NOTE:外部接口 内部函数
+// NOTE:外部接口 内部函数
 bool SELECT_LEX_UNIT::can_materialize_directly_into_result() const {
   // There's no point in doing this if we're not already trying to materialize.
   if (!is_union()) {
@@ -407,7 +409,7 @@ bool SELECT_LEX_UNIT::can_materialize_directly_into_result() const {
 
   @returns false if success, true if error
  */
-//NOTE:外部接口 unit的prepare入口
+// NOTE:外部接口 unit的prepare入口
 bool SELECT_LEX_UNIT::prepare(THD *thd, Query_result *sel_result,
                               mem_root_deque<Item *> *insert_field_list,
                               ulonglong added_options,
@@ -453,7 +455,7 @@ bool SELECT_LEX_UNIT::prepare(THD *thd, Query_result *sel_result,
         return true; /* purecov: inspected */
       if (fake_select_lex != nullptr) fake_select_lex = nullptr;
       instantiate_tmp_table = false;
-    } else {  //NOTE:创建连接结果集
+    } else {  // NOTE:创建连接结果集
       if (!(tmp_result = union_result =
                 new (thd->mem_root) Query_result_union()))
         return true; /* purecov: inspected */
@@ -615,7 +617,7 @@ bool SELECT_LEX_UNIT::prepare(THD *thd, Query_result *sel_result,
     }
     ulonglong create_options =
         first_select()->active_options() | TMP_TABLE_ALL_COLUMNS;
-    //NOTE:union_result创建中间表
+    // NOTE:union_result创建中间表
     if (union_result->create_result_table(thd, types, union_distinct != nullptr,
                                           create_options, "", false,
                                           instantiate_tmp_table))
@@ -666,7 +668,7 @@ bool SELECT_LEX_UNIT::prepare(THD *thd, Query_result *sel_result,
  * 调用：
  * Sql_cmd_dml::execute_inner
  * ->SELECT_LEX_UNIT::optimize() (not simple or simple SELECT_LEX::optimize)
- * ->->SELECT_LEX::optimize()  
+ * ->->SELECT_LEX::optimize()
  * ->->->JOIN::optimize()  // optimizer is from here ... MySQL8.0与5.6一致
  * ->->->SELECT_LEX_UNIT::optimize()
  * ->->SELECT_LEX_UNIT::create_access_paths:执行优化后创建AccessPath
@@ -675,7 +677,7 @@ bool SELECT_LEX_UNIT::prepare(THD *thd, Query_result *sel_result,
  * SELECT块语句的优化入口SELECT_LEX::optimize
  * SELECT优化器JOIN::optimize
  * UNION优化器SELECT_LEX_UNIT::optimize
-*/
+ */
 bool SELECT_LEX_UNIT::optimize(THD *thd, TABLE *materialize_destination,
                                bool create_iterators) {
   DBUG_TRACE;
@@ -694,7 +696,7 @@ bool SELECT_LEX_UNIT::optimize(THD *thd, TABLE *materialize_destination,
 
     // LIMIT is required for optimization
     if (set_limit(thd, sl)) return true; /* purecov: inspected */
-    
+
     // Note:优化器
     if (sl->optimize(thd)) return true;
 
@@ -805,7 +807,7 @@ bool SELECT_LEX_UNIT::optimize(THD *thd, TABLE *materialize_destination,
 
   /** Note:标记一下所有的查询块(Query Block)都已经优化完毕,更新状态
    * 接着创建AccessPath,然后初始化对应的迭代器Iterator
-  */
+   */
   set_optimized();  // All query blocks optimized, update the state
 
   if (item != nullptr) {
@@ -830,6 +832,27 @@ bool SELECT_LEX_UNIT::optimize(THD *thd, TABLE *materialize_destination,
     } else {
       join = nullptr;
     }
+    // Before generating the physical plan, we traverse `access path` to check
+    // whether it's physical iterator can be saved in plan cache. If all
+    // iterators the `access path` convert to can be saved in plan cache, set
+    // the lex to `CONFIRM_CACHED`. optimize phase will be executed only once.
+    // ie. SQL:
+    //   explain format=tree select * from t93, t91
+    //                       where t93.b = 2 and 3 = t93.c and t93.a = t91.a\G;
+    //   *************************** 1. row ***************************
+    //   EXPLAIN: -> Nested loop inner join (cost=0.70 rows=1)
+    //   -> Index lookup on t93 using i4 (b=2, c=3) (cost=0.35 rows=1)
+    //   -> Single-row index lookup on t91 using PRIMARY (a=t93.a) (cost=0.35
+    //   rows=1)
+    // since we can cache NESTED_LOOP_JOIN, REF and EQ_REF, so cache it.
+    bool plan_cached = CheckAccessPathCanBeCached(thd, m_root_access_path);
+    /// set the cached state of LEX.
+    thd->lex->set_cached_state(plan_cached ? CONFIRM_CACHED : UNKNOWN_STATE);
+    /// log the info into `plan_cache_info` view if switch on.
+    if (plan_cache_stats_enabled() && plan_cached)
+      thd->plan_cache_stats.add_plan_cache_info(
+          thd->lex->prepared_stmt_code.str);
+
     // Note:优化结束后构造AccessPath
     m_root_iterator = CreateIteratorFromAccessPath(
         thd, m_root_access_path, join, /*eligible_for_batch_mode=*/true);
@@ -855,7 +878,7 @@ bool SELECT_LEX_UNIT::force_create_iterators(THD *thd) {
   return m_root_iterator == nullptr;
 }
 
-//NOTE:内部函数
+// NOTE:内部函数
 Mem_root_array<MaterializePathParameters::QueryBlock>
 SELECT_LEX_UNIT::setup_materialization(THD *thd, TABLE *dst_table,
                                        bool union_distinct_only) {
@@ -898,7 +921,7 @@ SELECT_LEX_UNIT::setup_materialization(THD *thd, TABLE *dst_table,
 
 /** Note:外部接口
  * 执行完优化后调用该接口创建AccessPath,然后调用不同的初始化函数创建不同的迭代器
-*/
+ */
 void SELECT_LEX_UNIT::create_access_paths(THD *thd) {
   if (is_simple()) {
     JOIN *join = first_select()->join;
@@ -1159,7 +1182,7 @@ bool SELECT_LEX_UNIT::ClearForExecution(THD *thd) {
  * 调用:
  * SELECT_LEX_UNIT::execute
  * 迭代器模型/火山模型执行入口
-*/
+ */
 bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
   THD_STAGE_INFO(thd, stage_executing);
   DEBUG_SYNC(thd, "before_join_exec");
@@ -1169,7 +1192,7 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
   Opt_trace_object trace_exec(trace, "join_execution");
   /** Note:判断一个查询表达式是否有union或者多级order,如果没有说明这个查询语句简单.
    * 如果是简单的SQL,就执行​​add_select_number.
-  */
+   */
   if (is_simple()) {
     trace_exec.add_select_number(first_select()->select_number);
   }
@@ -1182,7 +1205,7 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
 
   /** Note:运行​​get_field_list()​​,获取查询表达式的字段列表,并将所有字段都放到一个deque中,即​​mem_root_deque<Item*>​​;
    * 对于查询块的并集,返回在准备期间生成的字段列表,对于单个查询块,尽可能返回字段列表
-  */
+   */
   mem_root_deque<Item *> *fields = get_field_list();
   Query_result *query_result = this->query_result();
   DBUG_ASSERT(query_result != nullptr);
@@ -1195,15 +1218,17 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
   }
 
   /** Note:运行​​start_execution​​,准备执行查询表达式或DML查询
-  */
+   */
   set_executed();
 
   // Hand over the query to the secondary engine if needed.
   /** Note:接下来的一些操作与第二引擎有关,关于该引擎见:
    * https://www.h5w3.com/123061.html.
-   * Secondary Engine实际上是MySQL sever上同时支持两个存储引擎,把一部分主引擎上的数据,在Secondary Engine上也保存一份,
+   * Secondary Engine实际上是MySQL
+   * sever上同时支持两个存储引擎,把一部分主引擎上的数据,在Secondary
+   * Engine上也保存一份,
    * 然后查询的时候会根据优化器的的选择决定在哪个引擎上处理数据.
-  */
+   */
   if (first_select()->join->override_executor_func != nullptr) {
     thd->current_found_rows = 0;
     for (SELECT_LEX *select = first_select(); select != nullptr;
@@ -1227,7 +1252,7 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
 
   if (item) {
     /** Note:如果该查询用于子查询,那么重新reset,指向子查询
-    */
+     */
     item->reset_value_registration();
 
     if (item->assigned()) {
@@ -1242,14 +1267,15 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
   // SQL_CALC_FOUND_ROWS, we can use a local variable here instead.
   /** Note:接下来是对于复杂句以及简单句的不同处理,从而给​​send_records_ptr​​赋值.
    * 情况一:
-   * 如果该查询块具有UNION或者多级的ORDER BY/LIMIT的话UNION with LIMIT的话,​found_rows()​​用于最外层.
+   * 如果该查询块具有UNION或者多级的ORDER BY/LIMIT的话UNION with
+   * LIMIT的话,​found_rows()​​用于最外层.
    * LimitOffsetIterator​​​跳过偏移量行写入​​send_records​​.
    * 情况二:
    * 如果是个简单句的话,found_rows()​​直接用到join上.
    * LimitOffsetIterator​​​跳过偏移量行写入​​send_records​​.
    * 情况三:
    * 如果是UNION,但是没有LIMIT.found_rows()​​用于最外层.
-  */
+   */
   ha_rows *send_records_ptr;
   if (fake_select_lex != nullptr) {
     // UNION with LIMIT: found_rows() applies to the outermost block.
@@ -1274,11 +1300,11 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
 
   {
     /** Note:接下来是一个对查询块遍历,逐个释放内存的操作,用以增加并发性并减少内存消耗.
-    */
+     */
     auto join_cleanup = create_scope_guard([this, thd] {
       for (SELECT_LEX *sl = first_select(); sl; sl = sl->next_select()) {
         JOIN *join = sl->join;
-        join->join_free();
+        if (!thd->lex->confirm_cached()) join->join_free();
         thd->inc_examined_row_count(join->examined_rows);
       }
       if (fake_select_lex != nullptr) {
@@ -1297,7 +1323,7 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
      * 如果出错就直接返回.
      * 如果收到kill信号,也返回.
      * 在循环中对​​send_records_ptr​​进行累加.行计数器++,指向下一行.
-    */
+     */
     for (;;) {
       // Note:根迭代器开始读取数据
       int error = m_root_iterator->Read();
@@ -1339,7 +1365,7 @@ bool SELECT_LEX_UNIT::ExecuteIteratorQuery(THD *thd) {
 
   @returns false if success, true if error
 */
-/** NOTE:外部接口 执行入口 
+/** NOTE:外部接口 执行入口
  * 调用:
  * mysql_executor_command
  * ->Sql_cmd_dml::execute
@@ -1381,7 +1407,7 @@ void SELECT_LEX_UNIT::cleanup(THD *thd, bool full) {
 
   cleaned = (full ? UC_CLEAN : UC_PART_CLEAN);
 
-  if (full) {
+  if (full && !thd->lex->confirm_cached()) {
     m_root_iterator.reset();
   }
 
@@ -1396,7 +1422,7 @@ void SELECT_LEX_UNIT::cleanup(THD *thd, bool full) {
 
   // subselect_hash_sj_engine may hold iterators that need to be cleaned up
   // before the MEM_ROOT goes away.
-  if (item != nullptr) {
+  if (item != nullptr && !thd->lex->confirm_cached()) {
     item->cleanup();
   }
 
@@ -1607,16 +1633,19 @@ static void destroy_materialized(TABLE_LIST *list) {
 
 void SELECT_LEX::cleanup(THD *thd, bool full) {
   if (join) {
-    if (full) {
+    if (full && !thd->lex->confirm_cached()) {
       DBUG_ASSERT(join->select_lex == this);
       join->destroy();
       ::destroy(join);
       join = nullptr;
+    } else if (full && thd->lex->confirm_cached()) {
+      assert(join->query_block == this);
+      join->destroy();
     } else
       join->cleanup();
   }
 
-  if (full) {
+  if (full && !thd->lex->confirm_cached()) {
     remove_materialized(thd, get_table_list());
     if (hidden_items_from_optimization > 0) remove_hidden_items();
     if (m_windows.elements > 0) {

@@ -3535,6 +3535,19 @@ class PT_show_privileges final : public PT_show_base {
   Sql_cmd_show_privileges m_sql_cmd;
 };
 
+/// Parse tree node for SHOW PLAN_CACHE STAT INFO
+
+class PT_show_plan_cache_stat final : public PT_show_base {
+public:
+  PT_show_plan_cache_stat(const POS &pos)
+      : PT_show_base(pos, SQLCOM_SHOW_PLAN_CACHE_STATS) {}
+
+  Sql_cmd *make_cmd(THD *thd) override;
+
+ private:
+  Sql_cmd_show_plan_cache_stats m_sql_cmd;
+};
+
 /// Parse tree node for SHOW FUNCTION CODE statement.
 
 class PT_show_procedure_code final : public PT_show_routine_code {

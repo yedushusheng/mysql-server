@@ -435,6 +435,9 @@ def	information_schema	TRIGGERS	DEFINER	19	NULL	NO	varchar	288	864	NULL	NULL	NUL
 def	information_schema	TRIGGERS	CHARACTER_SET_CLIENT	20	NULL	NO	varchar	64	192	NULL	NULL	NULL	utf8	utf8_general_ci	varchar(64)			select			NULL
 def	information_schema	TRIGGERS	COLLATION_CONNECTION	21	NULL	NO	varchar	64	192	NULL	NULL	NULL	utf8	utf8_general_ci	varchar(64)			select			NULL
 def	information_schema	TRIGGERS	DATABASE_COLLATION	22	NULL	NO	varchar	64	192	NULL	NULL	NULL	utf8	utf8_general_ci	varchar(64)			select			NULL
+def	information_schema	TXSQL_PLAN_CACHE_STAT	SQL	1		NO	varchar	3413	10240	NULL	NULL	NULL	utf8	utf8_general_ci	varchar(10240)			select			NULL
+def	information_schema	TXSQL_PLAN_CACHE_STAT	MODE	2		NO	varchar	3413	10240	NULL	NULL	NULL	utf8	utf8_general_ci	varchar(10240)			select			NULL
+def	information_schema	TXSQL_PLAN_CACHE_STAT	HIT	3		NO	bigint	NULL	NULL	NULL	NULL	NULL	NULL	NULL	bigint unsigned			select			NULL
 def	information_schema	USER_ATTRIBUTES	USER	1		NO	char	32	96	NULL	NULL	NULL	utf8	utf8_bin	char(32)			select			NULL
 def	information_schema	USER_ATTRIBUTES	HOST	2		NO	char	255	255	NULL	NULL	NULL	ascii	ascii_general_ci	char(255)			select			NULL
 def	information_schema	USER_ATTRIBUTES	ATTRIBUTE	3	NULL	YES	longtext	4294967295	4294967295	NULL	NULL	NULL	utf8mb4	utf8mb4_bin	longtext			select			NULL
@@ -503,6 +506,7 @@ COL_CML	DATA_TYPE	CHARACTER_SET_NAME	COLLATION_NAME
 3.0000	char	utf8	utf8_general_ci
 3.0000	set	utf8	utf8_general_ci
 3.0000	varchar	utf8	utf8_general_ci
+3.0003	varchar	utf8	utf8_general_ci
 3.0029	varchar	utf8	utf8_general_ci
 3.0103	varchar	utf8	utf8_general_ci
 3.0118	varchar	utf8	utf8_general_ci
@@ -975,10 +979,9 @@ NULL	information_schema	TRIGGERS	ACTION_REFERENCE_NEW_TABLE	binary	0	0	NULL	NULL
 3.0000	information_schema	TRIGGERS	ACTION_REFERENCE_NEW_ROW	varchar	3	9	utf8	utf8_general_ci	varchar(3)
 NULL	information_schema	TRIGGERS	CREATED	timestamp	NULL	NULL	NULL	NULL	timestamp(2)
 3.0000	information_schema	TRIGGERS	SQL_MODE	set	520	1560	utf8	utf8_bin	set('REAL_AS_FLOAT','PIPES_AS_CONCAT','ANSI_QUOTES','IGNORE_SPACE','NOT_USED','ONLY_FULL_GROUP_BY','NO_UNSIGNED_SUBTRACTION','NO_DIR_IN_CREATE','NOT_USED_9','NOT_USED_10','NOT_USED_11','NOT_USED_12','NOT_USED_13','NOT_USED_14','NOT_USED_15','NOT_USED_16','NOT_USED_17','NOT_USED_18','ANSI','NO_AUTO_VALUE_ON_ZERO','NO_BACKSLASH_ESCAPES','STRICT_TRANS_TABLES','STRICT_ALL_TABLES','NO_ZERO_IN_DATE','NO_ZERO_DATE','ALLOW_INVALID_DATES','ERROR_FOR_DIVISION_BY_ZERO','TRADITIONAL','NOT_USED_29','HIGH_NOT_PRECEDENCE','NO_ENGINE_SUBSTITUTION','PAD_CHAR_TO_FULL_LENGTH','TIME_TRUNCATE_FRACTIONAL')
-3.0000	information_schema	TRIGGERS	DEFINER	varchar	288	864	utf8	utf8_bin	varchar(288)
-3.0000	information_schema	TRIGGERS	CHARACTER_SET_CLIENT	varchar	64	192	utf8	utf8_general_ci	varchar(64)
-3.0000	information_schema	TRIGGERS	COLLATION_CONNECTION	varchar	64	192	utf8	utf8_general_ci	varchar(64)
-3.0000	information_schema	TRIGGERS	DATABASE_COLLATION	varchar	64	192	utf8	utf8_general_ci	varchar(64)
+3.0003	information_schema	TXSQL_PLAN_CACHE_STAT	SQL	varchar	3413	10240	utf8	utf8_general_ci	varchar(10240)
+3.0003	information_schema	TXSQL_PLAN_CACHE_STAT	MODE	varchar	3413	10240	utf8	utf8_general_ci	varchar(10240)
+NULL	information_schema	TXSQL_PLAN_CACHE_STAT	HIT	bigint	NULL	NULL	NULL	NULL	bigint unsigned
 3.0000	information_schema	USER_ATTRIBUTES	USER	char	32	96	utf8	utf8_bin	char(32)
 1.0000	information_schema	USER_ATTRIBUTES	HOST	char	255	255	ascii	ascii_general_ci	char(255)
 1.0000	information_schema	USER_ATTRIBUTES	ATTRIBUTE	longtext	4294967295	4294967295	utf8mb4	utf8mb4_bin	longtext

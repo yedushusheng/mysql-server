@@ -109,6 +109,7 @@
 #include "template_utils.h"
 #include "thr_lock.h"
 #include "violite.h"
+#include "sql/sql_plan_cache.h"
 
 enum enum_check_fields : int;
 enum enum_tx_isolation : int;
@@ -233,8 +234,11 @@ class Query_arena {
 
  public:
   MEM_ROOT *mem_root;  // Pointer to current memroot
+  MEM_ROOT *opt_mem_root{nullptr};  //Pointer to opt memroot
   /// To check whether a reprepare operation is active
   bool is_repreparing{false};
+ public:
+  Distribute_plan_cache_stats plan_cache_stats;  
   /*
     The states reflects three different life cycles for three
     different types of statements:

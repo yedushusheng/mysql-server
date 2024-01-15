@@ -69,6 +69,7 @@ bool mysqld_show_create(THD *thd, TABLE_LIST *table_list);
 bool mysqld_show_create_db(THD *thd, char *dbname, HA_CREATE_INFO *create);
 
 void mysqld_list_processes(THD *thd, const char *user, bool verbose);
+bool mysqld_list_plan_cache_stats(THD *thd);
 bool mysqld_show_privileges(THD *thd);
 void calc_sum_of_all_status(System_status_var *to);
 void append_definer(const THD *thd, String *buffer,
@@ -459,6 +460,14 @@ class Sql_cmd_show_plugins : public Sql_cmd_show {
 class Sql_cmd_show_privileges : public Sql_cmd_show_noplan {
  public:
   Sql_cmd_show_privileges() : Sql_cmd_show_noplan(SQLCOM_SHOW_PRIVILEGES) {}
+  bool execute_inner(THD *thd) override;
+};
+
+/// Represents SHOW PLAN CACHE STATS.
+
+class Sql_cmd_show_plan_cache_stats : public Sql_cmd_show_noplan {
+ public:
+  Sql_cmd_show_plan_cache_stats() : Sql_cmd_show_noplan(SQLCOM_SHOW_PLAN_CACHE_STATS) {}
   bool execute_inner(THD *thd) override;
 };
 

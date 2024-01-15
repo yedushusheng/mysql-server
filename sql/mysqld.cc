@@ -1164,6 +1164,8 @@ bool opt_show_slave_auth_info;
 bool opt_log_slave_updates = false;
 char *opt_slave_skip_errors;
 bool opt_slave_allow_batching = false;
+bool distribute_plan_cache_enabled = false;
+bool distribute_plan_cache_stats_enabled = false;
 
 /**
   compatibility option:
@@ -4233,6 +4235,10 @@ SHOW_VAR com_status_vars[] = {
      (char *)offsetof(System_status_var,
                       com_stat[(uint)SQLCOM_SHOW_CREATE_USER]),
      SHOW_LONG_STATUS, SHOW_SCOPE_ALL},
+    {"show_plan_cache_stat",
+     (char*) offsetof(System_status_var,
+                      com_stat[(uint)SQLCOM_SHOW_PLAN_CACHE_STATS]),
+     SHOW_LONG_STATUS, SHOW_SCOPE_ALL},     
     {"shutdown",
      (char *)offsetof(System_status_var, com_stat[(uint)SQLCOM_SHUTDOWN]),
      SHOW_LONG_STATUS, SHOW_SCOPE_ALL},

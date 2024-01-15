@@ -5576,6 +5576,7 @@ bool JOIN::extract_func_dependent_tables() {
 
           table_map refs = 0;
           Key_map const_ref, eq_part;
+          uint key_parts = 0;
           do {
             if (keyuse->val->type() != Item::NULL_ITEM && !keyuse->optimize) {
               if (!((~found_const_table_map) & keyuse->used_tables))
@@ -5585,6 +5586,7 @@ bool JOIN::extract_func_dependent_tables() {
               eq_part.set_bit(keyuse->keypart);
             }
             keyuse++;
+            key_parts++;
           } while (keyuse->table_ref == tl && keyuse->key == key);
 
           /*
@@ -5608,19 +5610,23 @@ bool JOIN::extract_func_dependent_tables() {
               table->is_created()) {                                      // 6
             if (table->key_info[key].flags & HA_NOSAME) {
               if (const_ref == eq_part) {  // Found everything for ref.
-                ref_changed = true;
-                mark_const_table(tab, start_keyuse);
-                if (create_ref_for_key(this, tab, start_keyuse,
-                                       found_const_table_map))
-                  return true;
-                const int status =
-                    join_read_const_table(tab, positions + const_tables - 1);
-                //NOTE:
-                if (status > 0)
-                  return true;
-                else if (status == 0)
-                  found_const_table_map |= tl->map();
-                break;
+                uint cond_cols = thd->lex->current_query_block()->cond_cols;
+                if (skip_const_table() && key_parts == cond_cols) {
+                  thd->lex->set_cached_state(MAY_CACHED);
+                } else {
+                 ref_changed = true;
+                 mark_const_table(tab, start_keyuse);
+                 if (create_ref_for_key(this, tab, start_keyuse,
+                                        found_const_table_map))
+                   return true;
+                 const int status =
+                     join_read_const_table(tab, positions + const_tables - 1);
+                 if (status > 0)
+                   return true;
+                 else if (status == 0)
+                   found_const_table_map |= tl->map();
+                 break;
+                }
               } else
                 found_ref |= refs;  // Table is const if all refs are const
             } else if (const_ref == eq_part)
@@ -7660,7 +7666,7 @@ static bool add_key_fields(THD *thd, JOIN *join, Key_field **key_fields,
    1 - Out of memory.
 */
 
-static bool add_key_part(Key_use_array *keyuse_array, Key_field *key_field) {
+static bool add_key_part(Key_use_array *keyuse_array, Key_field *key_field, uint nr = 0) {
   if (key_field->eq_func && !(key_field->optimize & KEY_OPTIMIZE_EXISTS)) {
     const Field *const field = key_field->item_field->field;
     TABLE_LIST *const tl = key_field->item_field->table_ref;
@@ -7680,7 +7686,7 @@ static bool add_key_part(Key_use_array *keyuse_array, Key_field *key_field) {
                                (key_part_map)1 << part,
                                ~(ha_rows)0,  // will be set in optimize_keyuse
                                key_field->null_rejecting, key_field->cond_guard,
-                               key_field->sj_pred_no);
+                               key_field->sj_pred_no, nr);
           if (keyuse_array->push_back(keyuse))
             return true; /* purecov: inspected */
         }
@@ -8252,8 +8258,8 @@ static bool update_ref_and_keys(THD *thd, Key_use_array *keyuse,
     if (join->generate_derived_keys()) return true;
   }
   /* fill keyuse with found key parts */
-  for (; field != end; field++) {
-    if (add_key_part(keyuse, field)) return true;
+  for (uint nr = 0; field != end; field++, nr++) {
+    if (add_key_part(keyuse, field, nr)) return true;
   }
 
   if (select_lex->ftfunc_list->elements) {

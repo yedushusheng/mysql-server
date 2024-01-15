@@ -495,6 +495,59 @@ class Item_func : public Item_result_field, public Func_args_handle {
   void traverse_cond(Cond_traverser traverser, void *arg,
                      traverse_order order) override;
 
+  /*
+    Walk the root item by using check_and_connected_equal_item, if `field = param`
+    or `param = field` is connected by `COND_AND_FUNC`, return false.
+  */
+  bool check_and_connected_equal_item(uchar *) override {
+    /**
+      We cache the sql's plan whose where condition `field = param` or
+      `param = field` connected by `COND_AND_FUNC`.
+    */
+    if (type() == COND_ITEM) return functype() != COND_AND_FUNC;
+    if (type() == FUNC_ITEM) {
+      if (functype() != EQ_FUNC) return true;
+      Item::Type type0 = args[0]->type();
+      Item::Type type1 = args[1]->type();
+      if ((type0 != PARAM_ITEM && type0 != FIELD_ITEM && !args[0]->is_splocal()) ||
+          (type1 != PARAM_ITEM && type1 != FIELD_ITEM && !args[1]->is_splocal()))
+        return true;
+    }
+    return false;
+  }
+
+  /*
+    After check access path, we need walk to check whether LEX can be
+    saved in plan cache. If not return true.
+  */
+  bool check_const_cond_valid(uchar *) override {
+    /**
+      We confirm that const table condition mode should be compacted with
+      that binding phase has.
+    */
+    if (type() == COND_ITEM) return functype() != COND_AND_FUNC;
+    if (type() == FUNC_ITEM) {
+      if (functype() != EQ_FUNC) return true;
+      Item::Type type0 = args[0]->type();
+      Item::Type type1 = args[1]->type();
+      bool args0_is_splocal = args[0]->is_splocal() ||
+                              type0 == Item::TRIGGER_FIELD_ITEM;
+      bool args1_is_splocal = args[1]->is_splocal() ||
+                              type1 == Item::TRIGGER_FIELD_ITEM;
+      if (type0 == Item::FIELD_ITEM && type1 == Item::PARAM_ITEM)
+        return false;
+      else if (type0 == Item::PARAM_ITEM && type1 == Item::FIELD_ITEM)
+        return false;
+      else if (type0 == Item::FIELD_ITEM && args1_is_splocal)
+        return false;
+      else if (args0_is_splocal && type1 == Item::FIELD_ITEM)
+        return false;
+      else
+        return true;
+    }
+    return false;
+  }
+  
   /**
      Throw an error if the input double number is not finite, i.e. is either
      +/-INF or NAN.

@@ -443,6 +443,8 @@ void LEX::reset() {
   insert_table_leaf = nullptr;
   parsing_options.reset();
   alter_info = nullptr;
+  is_from_ps = false;
+  is_from_sp = false;  
   part_info = nullptr;
   duplicates = DUP_ERROR;
   ignore = false;
@@ -3826,6 +3828,13 @@ void SELECT_LEX_UNIT::restore_cmd_properties() {
 }
 
 /**
+  Bind the parameters to physical iterator tree.
+*/
+bool Query_expression::rebind_parameters(THD *thd) {
+  return root_iterator()->rebind_parameters(thd);
+}
+
+/**
   @brief Set the initial purpose of this TABLE_LIST object in the list of used
     tables.
 
@@ -4729,7 +4738,8 @@ void SELECT_LEX::restore_cmd_properties() {
     tbl->restore_properties();
     tbl->table->m_record_buffer = Record_buffer{0, 0, nullptr};
   }
-  DBUG_ASSERT(join == nullptr);
+  // assert `join == nullptr` when lex cann't be saved in plan cache.
+  if (!parent_lex->confirm_cached()) { assert(join == nullptr); }
 
   // Restore GROUP BY list
   if (group_list_ptrs && group_list_ptrs->size() > 0) {
