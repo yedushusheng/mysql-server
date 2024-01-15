@@ -271,8 +271,8 @@ prepare `Ã¼` from 'select 1234';
 execute `Ã¼` ;
 set names latin1;
 --character_set latin1
-execute `ü`;
-deallocate prepare `ü`;
+execute `ï¿½`;
+deallocate prepare `ï¿½`;
 set names default;
 --character_set utf8mb4
 
@@ -1354,7 +1354,6 @@ execute stmt using @offset, @limit;
 select * from t1 limit 3, 2;
 prepare stmt from "select * from t1 limit ?";
 execute stmt using @limit;
---error 1235
 prepare stmt from "select * from t1 where a in (select a from t1 limit ?)";
 prepare stmt from "select * from t1 union all select * from t1 limit ?, ?";
 set @offset=9;

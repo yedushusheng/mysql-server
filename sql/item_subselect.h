@@ -936,6 +936,8 @@ class subselect_indexsubquery_engine {
   virtual void create_iterators(THD *) {}
 };
 
+PT_subquery *create_pt_derived_table(PT_subquery *pt_subselect);
+
 /*
   This function is actually defined in sql_parse.cc, but it depends on
   chooser_compare_func_creator defined in this file.

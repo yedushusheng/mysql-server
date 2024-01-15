@@ -778,6 +778,7 @@ class PT_query_expression_body : public Parse_tree_node {
 
   virtual bool is_table_value_constructor() const = 0;
   virtual PT_insert_values_list *get_row_value_list() const = 0;
+  virtual bool is_order_by_limit_clause() const { return false; }
 };
 
 class PT_internal_variable_name : public Parse_tree_node {
@@ -1571,6 +1572,10 @@ class PT_query_expression final : public PT_query_primary {
     return m_body->get_row_value_list();
   }
 
+  bool is_order_by_limit_clause() const override {
+    return (nullptr == m_limit) ? false : true;
+  }
+
  private:
   /**
     Contextualizes the order and limit clauses, re-interpreting them according
@@ -1649,6 +1654,7 @@ class PT_subquery : public Parse_tree_node {
   bool contextualize(Parse_context *pc) override;
 
   SELECT_LEX *value() { return select_lex; }
+  bool has_pt_limit() { return qe->is_order_by_limit_clause(); }
 };
 
 class PT_union : public PT_query_expression_body {

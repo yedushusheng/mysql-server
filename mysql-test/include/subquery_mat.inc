@@ -107,7 +107,6 @@ execute st2;
 explain
 select * from t1 where (a1, a2) in (select b1, min(b2) from t2i where b1 > '0' group by b1);
 select * from t1 where (a1, a2) in (select b1, min(b2) from t2i where b1 > '0' group by b1);
--- error 1235
 select * from t1 where (a1, a2) in (select b1, min(b2) from t2i limit 1,1);
 
 # materialize the result of ORDER BY

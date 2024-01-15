@@ -6457,6 +6457,14 @@ static Sys_var_bool Sys_show_old_temporals(
     DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr),
     ON_UPDATE(nullptr), DEPRECATED_VAR(""));
 
+static Sys_var_bool Sys_opt_support_subquery_in_limit(
+    "support_subquery_in_limit",
+    "support_subquery_in_limit switch, open 'LIMIT & IN/ALL/ANY/SOME subquery' ",
+    SESSION_VAR(support_subquery_in_limit),
+    CMD_LINE(OPT_ARG), DEFAULT(true),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG,
+    ON_CHECK(nullptr), ON_UPDATE(nullptr));
+
 static Sys_var_charptr Sys_disabled_storage_engines(
     "disabled_storage_engines",
     "Limit CREATE TABLE for the storage engines listed",

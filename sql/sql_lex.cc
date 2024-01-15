@@ -2365,9 +2365,11 @@ void SELECT_LEX::mark_as_dependent(SELECT_LEX *last, bool aggregate) {
   prohibit using LIMIT clause
 */
 bool SELECT_LEX::test_limit() {
-  if (select_limit != nullptr) {
-    my_error(ER_NOT_SUPPORTED_YET, MYF(0), "LIMIT & IN/ALL/ANY/SOME subquery");
-    return (true);
+  if (!current_thd->variables.support_subquery_in_limit) {  
+    if (select_limit != nullptr) {
+      my_error(ER_NOT_SUPPORTED_YET, MYF(0), "LIMIT & IN/ALL/ANY/SOME subquery");
+      return (true);
+    }
   }
   return (false);
 }

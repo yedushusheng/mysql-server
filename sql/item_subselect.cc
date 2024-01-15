@@ -1424,8 +1424,54 @@ Item_in_subselect::Item_in_subselect(const POS &pos, Item *left_exp,
   reset();
 }
 
+PT_subquery *create_pt_derived_table(PT_subquery *pt_subselect) {
+  /* ... AS d */
+  static const LEX_CSTRING table_d = {STRING_WITH_LEN("<temporary>")};
+  Create_col_name_list column_names;
+  column_names.init(current_thd->mem_root);
+  PT_derived_table *derived_table = new (current_thd->mem_root)
+      PT_derived_table(false, pt_subselect, table_d, &column_names);
+  if (derived_table == nullptr) return nullptr;
+
+  Mem_root_array_YY<PT_table_reference *> table_reference_list;
+  table_reference_list.init(current_thd->mem_root);
+  if (table_reference_list.push_back(derived_table)) return nullptr;
+
+  /* SELECT <star> */
+  Item_asterisk *ident_star =
+      new (current_thd->mem_root) Item_asterisk(POS(), nullptr, nullptr);
+  if (ident_star == nullptr) return nullptr;
+
+  PT_select_item_list *item_list =
+      new (current_thd->mem_root) PT_select_item_list();
+  if (item_list == nullptr) return nullptr;
+  item_list->push_back(ident_star);
+
+  /* SELECT * FROM (SELECT ... FROM ) as d */
+  const Query_options options = {0 /* query_spec_options */};
+  PT_query_specification *query_specification =
+      new (current_thd->mem_root) PT_query_specification(
+          options, item_list, table_reference_list, nullptr);
+  if (query_specification == nullptr) return nullptr;
+
+  PT_query_expression *query_expression =
+      new (current_thd->mem_root) PT_query_expression(query_specification);
+  if (query_expression == nullptr) return nullptr;
+
+  PT_subquery *new_in_sub_query =
+      new (current_thd->mem_root) PT_subquery(POS(), query_expression);
+  if (new_in_sub_query == nullptr) return nullptr;
+
+  return new_in_sub_query;
+}
+
 bool Item_in_subselect::itemize(Parse_context *pc, Item **res) {
   if (skip_itemize(res)) return false;
+  if (current_thd->variables.support_subquery_in_limit &&
+      nullptr != pt_subselect && pt_subselect->has_pt_limit()) {
+    pt_subselect = create_pt_derived_table(pt_subselect);
+    if (nullptr == pt_subselect) return true;
+  }  
   if (super::itemize(pc, res) || left_expr->itemize(pc, &left_expr) ||
       pt_subselect->contextualize(pc))
     return true;

@@ -279,10 +279,10 @@ execute `Ã¼` ;
 1234
 1234
 set names latin1;
-execute `ü`;
+execute `ï¿½`;
 1234
 1234
-deallocate prepare `ü`;
+deallocate prepare `ï¿½`;
 set names default;
 create table t1 (a varchar(10)) charset=utf8;
 Warnings:
@@ -1352,7 +1352,6 @@ a
 1
 2
 prepare stmt from "select * from t1 where a in (select a from t1 limit ?)";
-ERROR 42000: This version of MySQL doesn't yet support 'LIMIT & IN/ALL/ANY/SOME subquery'
 prepare stmt from "select * from t1 union all select * from t1 limit ?, ?";
 set @offset=9;
 set @limit=2;

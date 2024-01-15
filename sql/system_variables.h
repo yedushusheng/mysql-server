@@ -422,6 +422,8 @@ struct System_variables {
     @sa Sys_select_disk_sync_delay
   */
   uint select_into_disk_sync_delay;
+
+  bool support_subquery_in_limit;  
 };
 
 /**

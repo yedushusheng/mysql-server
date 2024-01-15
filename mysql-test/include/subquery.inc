@@ -487,11 +487,9 @@ drop table t1,t2,t3;
 
 #LIMIT is not supported now
 create table t1 (a float);
--- error ER_NOT_SUPPORTED_YET
 select 10.5 IN (SELECT * from t1 LIMIT 1);
 -- error ER_PARSE_ERROR
 select 10.5 IN (SELECT * from t1 LIMIT 1 UNION SELECT 1.5);
--- error ER_NOT_SUPPORTED_YET
 select 10.5 IN (SELECT * from t1 UNION SELECT 1.5 LIMIT 1);
 drop table t1;
 
@@ -6487,7 +6485,6 @@ SELECT 1 as col FROM t1 WHERE a IN (SELECT a FROM DUAL HAVING 0);
 eval EXPLAIN $query;
 eval $query;
 
---error ER_NOT_SUPPORTED_YET
 SELECT 1 as col FROM t1 WHERE a IN (SELECT a FROM DUAL LIMIT 0);
 
 let $query=SELECT 1 as col FROM t1

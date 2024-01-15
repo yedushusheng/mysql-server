@@ -172,6 +172,11 @@ bool PTI_comp_op::itemize(Parse_context *pc, Item **res) {
 }
 
 bool PTI_comp_op_all::itemize(Parse_context *pc, Item **res) {
+  if (current_thd->variables.support_subquery_in_limit &&
+      nullptr != subselect && subselect->has_pt_limit()) {
+    subselect = create_pt_derived_table(subselect);
+    if (nullptr == subselect) return true;
+  }  
   if (super::itemize(pc, res) || left->itemize(pc, &left) ||
       subselect->contextualize(pc))
     return true;
