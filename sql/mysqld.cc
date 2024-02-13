@@ -11095,6 +11095,7 @@ PSI_rwlock_key key_rwlock_Binlog_storage_delegate_lock;
 PSI_rwlock_key key_rwlock_Binlog_transmit_delegate_lock;
 PSI_rwlock_key key_rwlock_Binlog_relay_IO_delegate_lock;
 PSI_rwlock_key key_rwlock_resource_group_mgr_map_lock;
+PSI_rwlock_key key_rwlock_table_share_lock;
 
 /* clang-format off */
 static PSI_rwlock_info all_server_rwlocks[]=

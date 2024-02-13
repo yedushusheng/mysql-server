@@ -729,8 +729,8 @@ struct TABLE_SHARE {
     @retval nullptr if no basic column statistics is found
     @retval a pointer to a basic column statistics if one is found
   */
-  const dd::BasicColumnStat *find_basic_column_stats(uint field_index) const;
- 
+  const dd::BasicColumnStat *find_basic_column_stats(uint field_index);
+  
   /** Category of this table. */
   TABLE_CATEGORY table_category{TABLE_UNKNOWN_CATEGORY};
 
@@ -1037,6 +1037,8 @@ struct TABLE_SHARE {
 
   // List of check constraint share instances.
   Sql_check_constraint_share_list *check_constraint_share_list{nullptr};
+  // lock statistics info cached in TABLE_SHARE
+  mysql_rwlock_t m_rwlock;
 
   /**
     Schema's read only mode - ON (true) or OFF (false). This is filled in

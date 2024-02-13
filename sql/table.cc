@@ -427,6 +427,7 @@ TABLE_SHARE *alloc_table_share(const char *db, const char *table_name,
     share->mem_root = std::move(mem_root);
     mysql_mutex_init(key_TABLE_SHARE_LOCK_ha_data, &share->LOCK_ha_data,
                      MY_MUTEX_INIT_FAST);
+    mysql_rwlock_init(key_rwlock_table_share_lock, &share->m_rwlock);
   }
   return share;
 }
@@ -544,6 +545,8 @@ void TABLE_SHARE::destroy() {
   }
   /* The mutex is initialized only for shares that are part of the TDC */
   if (tmp_table == NO_TMP_TABLE) mysql_mutex_destroy(&LOCK_ha_data);
+  mysql_rwlock_destroy(&m_rwlock);
+    
   delete name_hash;
   name_hash = nullptr;
 
@@ -3951,19 +3954,26 @@ end:
   return result;
 }
 
-
 const dd::BasicColumnStat *TABLE_SHARE::find_basic_column_stats(
-    uint field_index) const {
+    uint field_index) {
   if (m_basic_column_stats == nullptr) return nullptr;
 
+  // Acquire read lock
+  mysql_rwlock_rdlock(&m_rwlock);
   const auto found = m_basic_column_stats->find(field_index);
-  if (found == m_basic_column_stats->end()) return nullptr;
+  if (found == m_basic_column_stats->end()) {
+    // Release the lock if no match is found
+    mysql_rwlock_unlock(&m_rwlock);
+    return nullptr;
+  }
+  const dd::BasicColumnStat *basic_column_stat = found->second;
+  // Release the lock
+  mysql_rwlock_unlock(&m_rwlock);
 
-  // check efficient
-  dd::BasicColumnStat *basic_column_stat = const_cast<dd::BasicColumnStat *>(found->second);
-  if (!basic_column_stat->is_efficient())  return nullptr;
-
-  return found->second;
+  if (basic_column_stat == nullptr || !basic_column_stat->is_efficient()) {
+    return nullptr;
+  }
+  return basic_column_stat;
 }
 
 const histograms::Histogram *TABLE_SHARE::find_histogram(

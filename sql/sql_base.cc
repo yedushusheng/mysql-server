@@ -721,6 +721,7 @@ static bool read_basic_column_stats(THD *thd, TABLE_SHARE *share,
             TABLE_SHARE in case the original Basic_column_statistic is thrown out of the
             dictionary cache.
           */
+          mysql_rwlock_wrlock(&share->m_rwlock);
           dd::BasicColumnStat *basic_column_stat_copy = new (&share->mem_root) dd::BasicColumnStat();
           basic_column_stat_copy->clear();
           basic_column_stat_copy->init(basic_column_stat->schema_name(), basic_column_stat->table_name(),
@@ -730,6 +731,7 @@ static bool read_basic_column_stats(THD *thd, TABLE_SHARE *share,
                                        basic_column_stat->avg_len(), basic_column_stat->distinct_cnt_synopsis(),
                                        basic_column_stat->distinct_cnt_synopsis_size());
           share->m_basic_column_stats->emplace(keyno, basic_column_stat_copy);
+          mysql_rwlock_unlock(&share->m_rwlock);
           break;
         }
       }

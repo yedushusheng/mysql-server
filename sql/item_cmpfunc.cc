@@ -255,19 +255,15 @@ static bool get_histogram_selectivity(THD *thd, const Field *field, Item **args,
 
    @return true if exists min-max info, false otherwise
 */
-static bool get_basic_column_stats_min_max_info(THD *thd, uint keyno, Field *field,
-                                                const TABLE_SHARE *table_share,
-                                                char *column_min_value, char *column_max_value) {
+static bool get_basic_column_stats_min_max_info(THD *thd, uint keyno,
+                                                Field *field,
+                                                TABLE_SHARE *table_share,
+                                                char *column_min_value,
+                                                char *column_max_value) {
   dd::String_type schema_name = dd::String_type(table_share->table_name.str);
   dd::String_type table_name = dd::String_type(table_share->table_name.str);
   dd::String_type column_name = dd::String_type(field->field_name);
-  // judge if System Schema.
-  if (!my_strcasecmp(system_charset_info, MYSQL_SCHEMA_NAME.str, table_share->table_name.str) ||
-      !my_strcasecmp(system_charset_info, SYS_SCHEMA_NAME.str, table_share->table_name.str) ||
-      !my_strcasecmp(system_charset_info, PERFORMANCE_SCHEMA_DB_NAME.str, table_share->table_name.str) ||
-      !my_strcasecmp(system_charset_info, INFORMATION_SCHEMA_NAME.str, table_share->table_name.str)) {
-    return false;
-  }
+
   bool empty = false;
   // TODO:use cache firstly, if cache miss, get from Data Dictionary
   dd::BasicColumnStat *basic_column_stat = const_cast<dd::BasicColumnStat *>(table_share->find_basic_column_stats(keyno));
@@ -306,14 +302,19 @@ static bool get_basic_column_stats_min_max_info(THD *thd, uint keyno, Field *fie
 
    @return true if we calculate selectivity by condition, false can not calculate selectivty
 */
-static bool get_basic_column_stats_selectivity(THD *thd, Field *field, const TABLE_SHARE *table_share, double *selectivity) {
+static bool get_basic_column_stats_selectivity(THD *thd, Field *field,
+                                               TABLE_SHARE *table_share,
+                                               double *selectivity) {
   uint depth = 0;
   *selectivity = 1.0;
   char *column_min_value = nullptr, *column_max_value = nullptr;
   if (tdsql_enable_update_basic_column_stats &&
-      get_basic_column_stats_min_max_info(thd, field->field_index(), field, table_share, column_min_value, column_max_value)) {
-    if (get_condition_range_selectivity(thd->lex->current_query_block()->where_cond(), field,
-                                        column_min_value, column_max_value, selectivity, depth))
+      get_basic_column_stats_min_max_info(thd, field->field_index(), field,
+                                          table_share, column_min_value,
+                                          column_max_value)) {
+    if (get_condition_range_selectivity(
+            thd->lex->current_query_block()->where_cond(), field,
+            column_min_value, column_max_value, selectivity, depth))
       return false;
   }
 

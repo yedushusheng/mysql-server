@@ -452,27 +452,37 @@ bool update_index_stats(THD *thd, TABLE_LIST *table) {
   return false;
 }
 
-static void get_table_index_filed_info(TABLE *table, std::vector<std::string> &index_fields_name) {
+/**
+  Get table's every Single-Column Index's field name
+
+  @param[in] table               TABLE info
+  @param[out] index_fields_name  Key Number and Key Field name info
+
+*/
+static void get_table_single_column_index_field_info(TABLE *table, std::map<uint, std::string> &index_fields_name) {
   // get table's index field name
-  KEY *key = table->key_info;
-  KEY *key_end = key + table->s->keys;
-  for (; key < key_end; key++) {
-    KEY_PART_INFO *key_part = key->key_part;
-    KEY_PART_INFO *key_part_end = key_part + key->user_defined_key_parts;
+  for (uint keyno = 0; keyno < table->s->keys; keyno++) {
+    KEY *key_info = &table->key_info[keyno];
+    // only handler Single-Column index currently
+    if (key_info->user_defined_key_parts > 1)  continue;
+
+    KEY_PART_INFO *key_part = key_info->key_part;
+    KEY_PART_INFO *key_part_end = key_part + key_info->user_defined_key_parts;
     for (; key_part < key_part_end; key_part++) {
       Field *field = key_part->field;
-      index_fields_name.push_back(
-          std::string(field->field_name, strlen(field->field_name)));
+      if (is_numeric_type(field->type())) {
+        index_fields_name[keyno] = std::string(field->field_name, strlen(field->field_name));
+      }
     }
   }
 }
 
 // get basic column statistics info by SQL
 void get_basic_column_statistics_info(THD *thd, TABLE *table,
-                                      std::vector<std::string> &index_fields_name,
-                                      std::vector<std::string> &min_info,
-                                      std::vector<std::string> &max_info,
-                                      std::vector<std::string> &/* unused */) {
+                                      std::map<uint, std::string> &index_fields_name,
+                                      std::map<std::string, std::string> &min_info,
+                                      std::map<std::string, std::string> &max_info,
+                                      std::map<std::string, std::string> &/* unused */) {
   assert(table);
   TABLE_SHARE *table_share = table->s;
   assert(table_share);
@@ -480,12 +490,13 @@ void get_basic_column_statistics_info(THD *thd, TABLE *table,
   // 1. set query sql
   std::string statistics_sql;
   statistics_sql.append(STRING_WITH_LEN("select "));
-  for (uint i = 0; i < index_fields_name.size(); i++) {
+  auto it = index_fields_name.begin();
+  while (it != index_fields_name.end()) {
     /** For manual update of statistical information, since it is very
      * time-consuming to load the statistical information of all columns,
      * so here only the statistical information of the index column is updated.
      */
-    std::string field_name = index_fields_name[i];
+    std::string field_name = it->second;
 
     /** min(col)
      * For different data types, the min-max return result type is also
@@ -516,7 +527,10 @@ void get_basic_column_statistics_info(THD *thd, TABLE *table,
     //statistics_sql.append(field_name);
     //statistics_sql.append(")");
 
-    if (i < index_fields_name.size() - 1) statistics_sql.append(", ");
+    ++it;
+    if (it != index_fields_name.end()) {
+      statistics_sql.append(", ");
+    }
   }
   statistics_sql.append(STRING_WITH_LEN(" from "));
   statistics_sql.append(table_share->db.str, strlen(table_share->db.str));
@@ -558,25 +572,28 @@ void get_basic_column_statistics_info(THD *thd, TABLE *table,
     // min-max result of column always equal one
     if (min_max_count_rsets.size() == 1) {
       const Ed_row &row = *(min_max_count_rsets[0]);
-      //uint64_t count_value = 0;
-      std::string min_max_value;
-      // every field has two result Item_field (min,max), there is no count info currently
-      for (uint i = 0; i < row.size(); i++) {
-        // select min,max from db.tb
-        min_max_value.clear();
-        const Ed_column &column = row[i];
-        min_max_value = std::string(column.str, column.length);
-        min_max_value.erase(min_max_value.find_last_not_of('\0') + 1);
-        if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == MIN_ITEM) {
-          // trim duplicate '\0' at the end of string
-          min_info.push_back(min_max_value);
-        } else if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == MAX_ITEM) {
-          max_info.push_back(min_max_value);
+      for (const auto& iter : index_fields_name) {
+        std::string field_name = iter.second;
+        //uint64_t count_value = 0;
+        std::string min_max_value;
+        // every field has two result Item_field (min,max), there is no count info currently
+        for (uint i = 0; i < row.size(); i++) {
+          // select min,max from db.tb
+          min_max_value.clear();
+          const Ed_column &column = row[i];
+          min_max_value = std::string(column.str, column.length);
+          min_max_value.erase(min_max_value.find_last_not_of('\0') + 1);
+          if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == MIN_ITEM) {
+            // trim duplicate '\0' at the end of string
+            min_info[field_name] = min_max_value;
+          } else if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == MAX_ITEM) {
+            max_info[field_name] = min_max_value;
+          }
+          //if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == COUNT_ITEM) {
+          //  count_value = *reinterpret_cast<uint64_t *>(row[i].str);
+          //  count_info[field_name] = count_value;
+          //}
         }
-        //if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == COUNT_ITEM) {
-        //  count_value = *reinterpret_cast<uint64_t *>(row[i].str);
-        //  count_info.push_back(count_value);
-        //}
       }
     }
   }
@@ -586,12 +603,33 @@ void get_basic_column_statistics_info(THD *thd, TABLE *table,
   thd->lock = saved_lock;
 }
 
+// for analyze table, update system schema's basic column
+// statistics is not support, filter these system schemas
+static bool IsSystemSchema(TABLE *table) {
+  if (table && table->s) {
+    const char *db_name = table->s->db.str;
+    if (!my_strcasecmp(system_charset_info, MYSQL_SCHEMA_NAME.str, db_name) ||
+        !my_strcasecmp(system_charset_info, SYS_SCHEMA_NAME.str, db_name) ||
+        !my_strcasecmp(system_charset_info, PERFORMANCE_SCHEMA_DB_NAME.str,
+                       db_name) ||
+        !my_strcasecmp(system_charset_info, INFORMATION_SCHEMA_NAME.str,
+                       db_name)) {
+      return true;
+    }
+  }
+
+  return true;
+}
+
 bool update_basic_column_stats(THD *thd, TABLE_LIST *table) {
   TABLE *analyze_table = table->table;
   if (analyze_table->file->info(HA_STATUS_VARIABLE | HA_STATUS_TIME |
                                 HA_STATUS_VARIABLE_EXTRA | HA_STATUS_AUTO |
                                 HA_STATUS_FORCE_UPDATE_CACHE_ASYNC) != 0)
     return true;
+
+  // judge if System Schema.
+  if (IsSystemSchema(analyze_table)) return true;
 
   // Create a object to be stored
   std::unique_ptr<Basic_column_statistic> obj(
@@ -606,25 +644,50 @@ bool update_basic_column_stats(THD *thd, TABLE_LIST *table) {
    * count can not used in the SQL query here temporarily and will be optimized
    * later.
    */
-  std::vector<std::string> min_info;
-  std::vector<std::string> max_info;
-  std::vector<std::string> count_info;
-  std::vector<std::string> index_fields_name;
+  std::map<std::string, std::string> min_info;
+  std::map<std::string, std::string> max_info;
+  std::map<std::string, std::string> count_info;
+  std::map<uint, std::string> index_fields_name;
   // get table's index info
-  get_table_index_filed_info(analyze_table, index_fields_name);
+  get_table_single_column_index_field_info(analyze_table, index_fields_name);
+  // if table without key, ignore it
+  if (index_fields_name.empty())  return false;
   // get table index's min-max info
   get_basic_column_statistics_info(thd, analyze_table, index_fields_name, min_info, max_info, count_info);
 
-  struct BasicColumnStat basic_column_stat;
-  for (uint i = 0; i < index_fields_name.size(); i++) {
-    std::string field_name = index_fields_name[i];
-    // get every index filed's statistics info(min/max)
-    min_value_ptr =
-        String(min_info[i].c_str(), min_info[i].length(), &my_charset_bin);
-    max_value_ptr =
-        String(max_info[i].c_str(), max_info[i].length(), &my_charset_bin);
+  // set lock info
+  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  MDL_request_list mdl_requests;
+  for (const auto& iter : index_fields_name) {
+    std::string field_name = iter.second;
+    MDL_key mdl_key;
+    dd::Basic_column_statistic::create_mdl_key(dd::String_type(table->db, strlen(table->db)),
+                                               dd::String_type(table->alias, strlen(table->alias)),
+                                               dd::String_type(field_name.c_str(), strlen(field_name.c_str())),
+                                               &mdl_key);
 
-    basic_column_stat.reset();
+    MDL_request *request = new (thd->mem_root) MDL_request;
+    MDL_REQUEST_INIT_BY_KEY(request, &mdl_key, MDL_SHARED_READ, MDL_STATEMENT);
+    mdl_requests.push_front(request);
+  }
+  if (!mdl_requests.is_empty() &&
+      thd->mdl_context.acquire_locks(&mdl_requests,
+                                     thd->variables.lock_wait_timeout))
+    return true;
+
+  dd::BasicColumnStat basic_column_stat;
+  for (const auto& it : index_fields_name) {
+    uint keyno = it.first;
+    std::string field_name = it.second;
+    // get every index filed's statistics info(min/max)
+    const char *min_val = min_info[field_name].c_str()? min_info[field_name].c_str() : "";
+    min_value_ptr =
+        String(min_val, strlen(min_val), &my_charset_bin);
+    const char *max_val = max_info[field_name].c_str()? max_info[field_name].c_str() : "";
+    max_value_ptr =
+        String(max_val, strlen(max_val), &my_charset_bin);
+
+    basic_column_stat.clear();
     basic_column_stat.init(
         dd::String_type(table->db, strlen(table->db)),
         dd::String_type(table->alias, strlen(table->alias)),
@@ -644,6 +707,13 @@ bool update_basic_column_stats(THD *thd, TABLE_LIST *table) {
       return true;
     }
 
+    // cache current field's basic column stats
+    mysql_rwlock_wrlock(&analyze_table->s->m_rwlock);
+    dd::BasicColumnStat *basic_column_stat_copy = new (&analyze_table->s->mem_root) dd::BasicColumnStat();
+    basic_column_stat_copy->clear();
+    basic_column_stat_copy->init(&basic_column_stat);
+    analyze_table->s->m_basic_column_stats->emplace(keyno, basic_column_stat_copy);
+    mysql_rwlock_unlock(&analyze_table->s->m_rwlock);
   }  // Keys
 
   return false;
@@ -889,6 +959,7 @@ ulonglong Table_statistics::read_stat_from_SE(
   }
   if (error == 0) {
     dd::BasicColumnStat basic_column_stat;
+    basic_column_stat.clear();
     basic_column_stat.init(
         dd::String_type(schema_name_ptr.ptr(), schema_name_ptr.length()),
         dd::String_type(table_name_ptr.ptr(), table_name_ptr.length()),
@@ -1128,6 +1199,7 @@ ulonglong Table_statistics::read_stat_by_open_table(
     }
     {
       dd::BasicColumnStat basic_column_stat;
+      basic_column_stat.clear();
       basic_column_stat.init(
           dd::String_type(schema_name_ptr.ptr(), schema_name_ptr.length()),
           dd::String_type(table_name_ptr.ptr(), table_name_ptr.length()),

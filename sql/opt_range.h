@@ -1156,7 +1156,7 @@ void range_optimizer_free();
    @return the difference result
 
 */
-double calculateDifference(enum_field_types type, const String &max_val, const String &min_val);
+double calculateDifference(enum_field_types type, const char *max_val, const char *min_val);
 /**
    Get field's selectivity by condition range value and column's min-max info.
 

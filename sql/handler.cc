@@ -6257,14 +6257,6 @@ bool handler::estimate_selectivity_by_basic_column_stats(uint keyno, double *sel
   KEY *key_info = &table->key_info[keyno];
   KEY_PART_INFO *key_part_info = key_info->key_part;
   THD *thd = current_thd;
-
-  // judge if System Schema.
-  if (!my_strcasecmp(system_charset_info, MYSQL_SCHEMA_NAME.str, table->s->db.str) ||
-      !my_strcasecmp(system_charset_info, SYS_SCHEMA_NAME.str, table->s->db.str) ||
-      !my_strcasecmp(system_charset_info, PERFORMANCE_SCHEMA_DB_NAME.str, table->s->db.str) ||
-      !my_strcasecmp(system_charset_info, INFORMATION_SCHEMA_NAME.str, table->s->db.str)) {
-    return true;
-  }
   
   for (uint part = 0; part < actual_key_parts(key_info); part++, key_part_info++) {
     double tmp_selectivity = 1.0;
