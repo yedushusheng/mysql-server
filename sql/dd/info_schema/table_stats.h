@@ -67,21 +67,23 @@ bool update_table_stats(THD *thd, TABLE_LIST *table);
 bool update_index_stats(THD *thd, TABLE_LIST *table);
 
 /**
+
   Get mysql.basic_column_statistics info by send Query SQL to local SQLEngine.
 
   @param thd   Thread.
+  @param index_fields_name Key no and key field name
   @param table TABLE_LIST pointing to table info.
-  @param min_info all columns' min value info.
-  @param max_info all columns' max value info
-  @param count_info all columns' count value info (unused)
+  @param min_info index column min value info.
+  @param max_info index column max value info
+  @param count_info index column count value info (unused)
 
   @returns void
 */
 void get_basic_column_statistics_info(THD *thd, TABLE *table,
-                                      std::vector<std::string> &index_fields_name,
-                                      std::vector<std::string> &min_info,
-                                      std::vector<std::string> &max_info,
-                                      std::vector<std::string> &/* unused */);
+                                      std::map<uint, std::string> &index_fields_name,
+                                      std::map<std::string, std::string> &min_info,
+                                      std::map<std::string, std::string> &max_info,
+                                      std::map<std::string, std::string> &/* unused */);
 /**
   Get dynamic column statistics of a table and store them into
   mysql.basic_column_statistics.

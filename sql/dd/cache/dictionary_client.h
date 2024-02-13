@@ -1210,7 +1210,25 @@ class Dictionary_client {
   */
 
   void commit_modified_objects();
+  /**
+    Get the basic column statistics info
+ 
+    @param[in] thd                THD info
+    @param[in] schema_name        Schema name of the table
+    @param[in] table_name         Table name of which stats should be load. 
+    @param[in] column_name        Column name of which stats should be load.
+    @param[out] basic_column_stat The basic_column_stats info
+    @param[out] empty             Judge if the result is empty
 
+    @return true 
+    @return false 
+  */
+  bool get_basic_column_statistics(
+      THD *thd, const String_type &schema_name, const String_type &table_name,
+      const String_type &column_name,
+      dd::BasicColumnStat &basic_column_stat,
+      bool *empty);
+  
   /**
     Remove table statistics entries from mysql.table_stats and
     mysql.index_stats.

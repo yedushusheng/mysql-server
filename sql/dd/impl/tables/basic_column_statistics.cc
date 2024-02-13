@@ -43,10 +43,11 @@ Basic_column_statistics::Basic_column_statistics() {
                          "distinct_cnt BIGINT(20) UNSIGNED DEFAULT NULL");
   m_target_def.add_field(FIELD_NULL_CNT, "FIELD_NULL_CNT",
                          "null_cnt BIGINT(20) UNSIGNED DEFAULT NULL");
+  // set index max length 3072
   m_target_def.add_field(FIELD_MAX_VALUE, "FIELD_MAX_VALUE",
-                         "max_value VARCHAR(64) DEFAULT NULL");
+                         "max_value VARCHAR(3072) DEFAULT NULL");
   m_target_def.add_field(FIELD_MIN_VALUE, "FIELD_MIN_VALUE",
-                         "min_value VARCHAR(64) DEFAULT NULL");
+                         "min_value VARCHAR(3072) DEFAULT NULL");
   m_target_def.add_field(FIELD_AVG_LEN, "FIELD_AVG_LEN",
                          "avg_len BIGINT(20) UNSIGNED DEFAULT NULL");
   m_target_def.add_field(FIELD_DISTINCT_CNT_SYNOPSIS,

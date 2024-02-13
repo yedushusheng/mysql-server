@@ -1145,4 +1145,30 @@ void range_optimizer_init();
 /// Global destruction of the null_element. Call on server stop.
 void range_optimizer_free();
 
+
+/**
+   Calculate the difference between max-min.
+
+   @param[in]     type     field type
+   @param[in]     max_val  max value
+   @param[in]     min_val  min value
+
+   @return the difference result
+
+*/
+double calculateDifference(enum_field_types type, const String &max_val, const String &min_val);
+/**
+   Get field's selectivity by condition range value and column's min-max info.
+
+   @param[in]     cond              WHERE condition
+   @param[in]     field             WHERE condition field
+   @param[in]     column_min_value  column's max value store in mysql.basic_column_statistics
+   @param[in]     column_max_value  column's min value store in mysql.basic_column_statistics
+   @param[in,out] selectivity       new selectivity value
+   @param[in,out] depth             save the total depth for condition
+
+*/
+bool get_condition_range_selectivity(Item *cond, Field *field,
+                                     const char *column_min_value, const char *column_max_value,
+                                     double *selectivity, uint depth);
 #endif

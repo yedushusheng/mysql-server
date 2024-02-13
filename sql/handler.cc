@@ -96,6 +96,7 @@
 #include "sql/opt_costconstantcache.h"  // reload_optimizer_cost_constants
 #include "sql/opt_costmodel.h"
 #include "sql/opt_hints.h"
+#include "sql/opt_range.h"
 #include "sql/protocol.h"
 #include "sql/psi_memory_key.h"
 #include "sql/query_options.h"
@@ -130,6 +131,9 @@
 #include "template_utils.h"
 #include "uniques.h"  // Unique_on_insert
 #include "varlen_sort.h"
+
+using myrocks::ha_rocksdb;
+using myrocks::Rdb_table_handler;
 
 /**
   @def MYSQL_TABLE_IO_WAIT
@@ -6236,6 +6240,84 @@ static bool key_uses_partial_cols(TABLE *table, uint keyno) {
   return false;
 }
 
+bool handler::has_basic_column_stats(const uint keyno) const {
+  auto key_info = &table->key_info[keyno];
+  if (key_info->user_defined_key_parts > 1) return false;
+
+  if (table->s->find_basic_column_stats(keyno) == nullptr) {
+    return false;
+  }
+
+  return true;
+}
+
+bool handler::estimate_selectivity_by_basic_column_stats(uint keyno, double *selectivity) {
+  *selectivity = 1.0;
+  uint key_part_offset = 0;  // the field position in key
+  KEY *key_info = &table->key_info[keyno];
+  KEY_PART_INFO *key_part_info = key_info->key_part;
+  THD *thd = current_thd;
+
+  // judge if System Schema.
+  if (!my_strcasecmp(system_charset_info, MYSQL_SCHEMA_NAME.str, table->s->db.str) ||
+      !my_strcasecmp(system_charset_info, SYS_SCHEMA_NAME.str, table->s->db.str) ||
+      !my_strcasecmp(system_charset_info, PERFORMANCE_SCHEMA_DB_NAME.str, table->s->db.str) ||
+      !my_strcasecmp(system_charset_info, INFORMATION_SCHEMA_NAME.str, table->s->db.str)) {
+    return true;
+  }
+  
+  for (uint part = 0; part < actual_key_parts(key_info); part++, key_part_info++) {
+    double tmp_selectivity = 1.0;
+    Field *field = key_part_info->field;
+    if (!field)  return true;
+
+    const dd::BasicColumnStat *basic_column_stat = table->s->find_basic_column_stats(field->field_index());
+    if (!basic_column_stat) {
+      // if get DD error or record is empty, set default selectivity
+      if (part == 0) return true;
+
+      // set default selectivity
+      *selectivity *=
+          (part < actual_key_parts(key_info) - 1) ? COND_FILTER_EQUALITY : COND_FILTER_INEQUALITY;
+
+      // Next part.
+      key_part_offset += key_part_info->store_length;   
+      continue;
+    }
+
+    if (!basic_column_stat->is_efficient()) {
+      continue;
+    }
+
+    // handle column's min-max info from mysql.basic_column_statistics
+    const char *min_val = basic_column_stat->min_value_.c_str()?  basic_column_stat->min_value_.c_str() : "";
+    const char *max_val = basic_column_stat->max_value_.c_str()? basic_column_stat->max_value_.c_str() : "";
+
+    // calculate selectivity
+    uint depth = 0;
+    if (!get_condition_range_selectivity(thd->lex->current_query_block()->where_cond(), field,
+                                         min_val, max_val, &tmp_selectivity, depth)) {
+      tmp_selectivity = 1.0;
+      return true;
+    }
+    *selectivity *= std::max(0.0, std::min(1.0, tmp_selectivity));
+
+    // Next part.
+    key_part_offset += key_part_info->store_length;
+
+    // In the case of joint indexes, since it is slow to get min-max by SQL when updating manually, 
+    // it will slow down the speed of updating the whole statistics, 
+    // so here, for the time being, for the case of multiple fields, the default selection rate is used for calculation
+    if (part > 1) {
+      *selectivity *=
+        (part < key_info->user_defined_key_parts - 1) ? COND_FILTER_EQUALITY : COND_FILTER_INEQUALITY;
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /****************************************************************************
  * Default MRR implementation (MRR to non-MRR converter)
  ***************************************************************************/
@@ -6295,6 +6377,7 @@ ha_rows handler::multi_range_read_info_const(
   ha_rows rows, total_rows = 0;
   uint n_ranges = 0;
   THD *thd = current_thd;
+  double selectivity = 1.0;
 
   /* Default MRR implementation doesn't need buffer */
   *bufsz = 0;
@@ -6302,6 +6385,18 @@ ha_rows handler::multi_range_read_info_const(
   DBUG_EXECUTE_IF("bug13822652_2", thd->killed = THD::KILL_QUERY;);
 
   seq_it = seq->init(seq_init_param, n_ranges, *flags);
+  // add use_histogram flag to avoid repeatedly calling has_histogram() within the loop
+  auto use_histogram = false;
+  if (thd->variables.range_estimation_by_histogram && has_histogram(keyno)) {
+    use_histogram = true;
+  }
+
+  // This flag determines if we have already collected basic column stats info
+  auto use_basic_column_stats = false;
+  if (tdsql_enable_update_basic_column_stats && has_basic_column_stats(keyno) &&
+      !estimate_selectivity_by_basic_column_stats(keyno, &selectivity)) {
+    use_basic_column_stats = true;
+  }  
   while (!seq->next(seq_it, &range)) {
     if (unlikely(thd->killed != 0)) return HA_POS_ERROR;
 
@@ -6364,6 +6459,16 @@ ha_rows handler::multi_range_read_info_const(
         */
         rows = 1;
       }
+    } else if (use_basic_column_stats &&
+                   !estimate_selectivity_by_basic_column_stats(keyno, &selectivity)) {
+          // The total rows should be estimate by handler instead of cache
+          // if estimate selectivity by basic column statistics info failed
+          // it will degrade to the original default calculation
+          if (table->file) {
+            rows = table->file->ha_estimate_rows();
+          }
+          rows = std::max(1.0, std::round(rows * selectivity));
+        } 
     } else {
       DBUG_EXECUTE_IF("crash_records_in_range", DBUG_SUICIDE(););
       DBUG_ASSERT(min_endp || max_endp);

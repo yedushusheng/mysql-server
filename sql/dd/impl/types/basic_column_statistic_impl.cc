@@ -249,6 +249,24 @@ String_type Basic_column_statistic::create_name(
   return output;
 }
 
+
+void Basic_column_statistic::create_mdl_key(const String_type &schema_name,
+                                            const String_type &table_name,
+                                            const String_type &column_name,
+                                            MDL_key *mdl_key) {
+  /*
+    Column names are always case insensitive, so convert it to lowercase.
+    Lookups in MDL is always done using this method, so this should
+    ensure that we always have consistent locks.
+  */
+  assert(column_name.length() <= NAME_LEN);
+  char lowercase_name[NAME_LEN + 1];  // Max column length name + \0
+  memcpy(lowercase_name, column_name.c_str(), column_name.length() + 1);
+  my_casedn_str(system_charset_info, lowercase_name);
+
+  mdl_key->mdl_key_init(MDL_key::BASIC_COLUMN_STATISTICS, schema_name.c_str(),
+                        table_name.c_str(), lowercase_name);
+}
 ///////////////////////////////////////////////////////////////////////////
 
 bool Basic_column_statistic::update_name_key(Global_name_key *key,

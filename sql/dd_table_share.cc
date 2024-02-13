@@ -286,6 +286,9 @@ static bool prepare_share(THD *thd, TABLE_SHARE *share,
       new malloc_unordered_map<uint, const histograms::Histogram *>(
           PSI_INSTRUMENT_ME);
 
+  share->m_basic_column_stats =
+      new malloc_unordered_map<uint, const dd::BasicColumnStat *>(
+          PSI_INSTRUMENT_ME);
   // Setup other fields =====================================================
   /* Allocate handler */
   if (!(handler_file = get_new_handler(share, (share->m_part_info != nullptr),

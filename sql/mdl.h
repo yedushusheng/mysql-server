@@ -403,6 +403,7 @@ struct MDL_key {
     RESOURCE_GROUPS,
     FOREIGN_KEY,
     CHECK_CONSTRAINT,
+    BASIC_COLUMN_STATISTICS,
     /* This should be the last ! */
     NAMESPACE_END
   };

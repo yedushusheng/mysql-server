@@ -111,6 +111,10 @@ class Table;
 class Tablespace;
 }  // namespace dd
 
+namespace myrocks {
+struct Rdb_table_handler;
+class ha_rocksdb;
+}
 /** Id for identifying Table SDIs */
 constexpr const uint32 SDI_TYPE_TABLE = 1;
 
@@ -147,6 +151,8 @@ class Table_access;
 class Unique_on_insert;
 
 extern ulong savepoint_alloc_size;
+
+extern bool tdsql_enable_update_basic_column_stats;
 
 /// Maps from slot to plugin. May return NULL if plugin has been unloaded.
 st_plugin_int *hton2plugin(uint slot);
@@ -4777,6 +4783,31 @@ class handler {
 
   double estimate_in_memory_buffer(ulonglong table_index_size) const;
 
+  /**
+    Confirm whether all columns in the index basic column stats information
+
+    @param keyno    index number
+
+    @return true    all columns in the index has basic column stats info
+    @return false   some columns in the index has no basic column stats info
+  */
+  inline bool has_basic_column_stats(const uint keyno) const;
+  /**
+    Estimate selectivity by basic_column_stats's min-max.
+    If a histogram is not available, we use basic_column_stats to calculate
+    selectivity
+    Note:
+    All unsupported cases will be degraded to the original default calculation
+
+    @param keyno[in]            Key for the range
+    @param[out] selectivity     the calculated selectivity
+
+    @retval  false         Success
+    @retval  true          Error code
+  */
+  bool estimate_selectivity_by_basic_column_stats(uint keyno,
+                                                  double *selectivity);
+
  public:
   virtual ha_rows multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
                                               void *seq_init_param,
@@ -5595,6 +5626,9 @@ class handler {
 
   int ha_index_next_pushed(uchar *buf);
 
+  virtual int ha_estimate_rows() {
+    return 0;
+  }
  protected:
   virtual int index_read_pushed(uchar *, const uchar *, key_part_map) {
     return HA_ERR_WRONG_COMMAND;

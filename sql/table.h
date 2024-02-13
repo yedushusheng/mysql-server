@@ -703,6 +703,14 @@ struct TABLE_SHARE {
   malloc_unordered_map<uint, const histograms::Histogram *> *m_histograms{
       nullptr};
 
+
+  /*
+    A map of [uint, Basic_column_stats] values, where the key is the field index. The
+    map is populated with any basic column statistics when it is loaded/created.
+  */
+  malloc_unordered_map<uint, const dd::BasicColumnStat *> *m_basic_column_stats{
+      nullptr};
+  
   /**
     Find the histogram for the given field index.
 
@@ -713,6 +721,16 @@ struct TABLE_SHARE {
   */
   const histograms::Histogram *find_histogram(uint field_index) const;
 
+  /**
+    Find the basic column stats for the given field index.
+
+    @param field_index the index of the field we want to find a basic column stat for
+
+    @retval nullptr if no basic column statistics is found
+    @retval a pointer to a basic column statistics if one is found
+  */
+  const dd::BasicColumnStat *find_basic_column_stats(uint field_index) const;
+ 
   /** Category of this table. */
   TABLE_CATEGORY table_category{TABLE_UNKNOWN_CATEGORY};
 

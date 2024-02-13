@@ -5,6 +5,7 @@
 #include "sql/dd/types/entity_object_table.h"  // Entity_object_table
 
 typedef long my_time_t;
+struct MDL_key;
 
 namespace dd {
 
@@ -20,20 +21,36 @@ class Basic_column_statistics;
 }
 
 ///////////////////////////////////////////////////////////////////////////
-
+/**
+  save basic column statistics info used for TDStore and SQLEngine  
+*/
 struct BasicColumnStat {
-  String_type schema_name_;
-  String_type table_name_;
-  String_type column_name_;
+  String_type schema_name_ = "";
+  String_type table_name_ = "";
+  String_type column_name_ = "";
   /** last analyzed time */
-  ulonglong last_analyzed_;
-  ulonglong distinct_cnt_;
-  ulonglong null_cnt_;
-  String_type max_value_;
-  String_type min_value_;
-  ulonglong avg_len_;
-  String_type distinct_cnt_synopsis_;
-  ulonglong distinct_cnt_synopsis_size_;
+  ulonglong last_analyzed_ = 0;
+  ulonglong distinct_cnt_ = 0;
+  ulonglong null_cnt_ = 0;
+  String_type max_value_ = "";
+  String_type min_value_ = "";
+  ulonglong avg_len_ = 0;
+  String_type distinct_cnt_synopsis_ = "";
+  ulonglong distinct_cnt_synopsis_size_ = 0;
+
+  void init(const BasicColumnStat *stat) {
+    schema_name_ = stat->schema_name_;
+    table_name_ = stat->table_name_;
+    column_name_ = stat->column_name_;
+    last_analyzed_ = stat->last_analyzed_;
+    distinct_cnt_ = stat->distinct_cnt_;
+    null_cnt_ = stat->null_cnt_;
+    max_value_ = stat->max_value_;
+    min_value_ = stat->min_value_;
+    avg_len_ = stat->avg_len_;
+    distinct_cnt_synopsis_ = stat->distinct_cnt_synopsis_;
+    distinct_cnt_synopsis_size_ = stat->distinct_cnt_synopsis_size_;
+  }
 
   void init(String_type schema_name, String_type table_name,
             String_type column_name, ulonglong last_analyzed,
@@ -54,7 +71,7 @@ struct BasicColumnStat {
     distinct_cnt_synopsis_size_ = distinct_cnt_synopsis_size;
   }
 
-  void reset() {
+  void clear() {
     schema_name_.clear();
     table_name_.clear();
     column_name_.clear();
@@ -66,6 +83,14 @@ struct BasicColumnStat {
     avg_len_ = 0;
     distinct_cnt_synopsis_.clear();
     distinct_cnt_synopsis_size_ = 0;
+  }
+
+  bool is_efficient() const {
+    if (schema_name_.empty() || table_name_.empty() ||
+        column_name_.empty()) {
+      return false;
+    }
+    return true;
   }
 
   String_type ToString() const {
@@ -256,6 +281,15 @@ class Basic_column_statistic : virtual public Entity_object {
                                                column_name());
   }
 
+  static void create_mdl_key(const String_type &schema_name,
+                             const String_type &table_name,
+                             const String_type &column_name, MDL_key *key);
+
+  void create_mdl_key(MDL_key *key) const {
+    Basic_column_statistic::create_mdl_key(schema_name(), table_name(),
+                                           column_name(), key);
+  }
+  
   /**
     Print Debug info
   */

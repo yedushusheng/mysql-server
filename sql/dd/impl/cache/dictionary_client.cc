@@ -1703,6 +1703,69 @@ static bool get_basic_column_statistics_entries(
   return false;
 }
 
+
+/*
+  Get the dynamic statistics(count-min-max) stored in mysql.basic_column_statistics
+*/
+bool Dictionary_client::get_basic_column_statistics(
+    THD *thd, const String_type &schema_name, const String_type &table_name,
+    const String_type &column_name,
+    dd::BasicColumnStat &basic_column_stat,
+    bool *empty) {
+  /*
+    Use READ UNCOMMITTED isolation, so this method works correctly when
+    called from the middle of atomic ALTER TABLE statement.
+  */
+  dd::Transaction_ro trx(thd, ISO_READ_UNCOMMITTED);
+
+  // Open the DD tables holding table info.
+  trx.otx.register_tables<dd::Basic_column_statistic>();
+  if (trx.otx.open_tables()) {
+    assert(thd->is_error() || thd->killed);
+    return true;
+  }
+
+  Raw_table *table = trx.otx.get_table<dd::Basic_column_statistic>();
+  assert(table);
+
+  // generate name by schema_name,table_name and column_name
+  const dd::String_type name = dd::Basic_column_statistic::create_name(
+      schema_name, table_name, column_name);
+
+  // Fetch the entry.
+  std::unique_ptr<dd::Object_key> object_key(
+      dd::tables::Basic_column_statistics::create_object_key(name));
+
+  // Start the scan.
+  std::unique_ptr<Raw_record_set> rs;
+  if (table->open_record_set(object_key.get(), rs)) {
+    return true;
+  }
+
+  // Read each record entry.
+  Raw_record *r = rs->current_record();
+  // if result is empty, set this flag
+  *empty = (r == nullptr);
+  while (r) {
+    // just one record or not
+    // it will only update min-max info currently, count info will not store
+    basic_column_stat.last_analyzed_ = r->read_int(dd::tables::Basic_column_statistics::FIELD_LAST_ANALYZED);
+    basic_column_stat.distinct_cnt_ = r->read_int(dd::tables::Basic_column_statistics::FIELD_DISTINCT_CNT);
+    basic_column_stat.null_cnt_ = r->read_int(dd::tables::Basic_column_statistics::FIELD_NULL_CNT);
+    basic_column_stat.min_value_ = r->read_str(dd::tables::Basic_column_statistics::FIELD_MIN_VALUE);
+    basic_column_stat.max_value_ = r->read_str(dd::tables::Basic_column_statistics::FIELD_MAX_VALUE);
+    basic_column_stat.avg_len_ = r->read_int(dd::tables::Basic_column_statistics::FIELD_AVG_LEN);
+    basic_column_stat.distinct_cnt_synopsis_ = r->read_str(dd::tables::Basic_column_statistics::FIELD_DISTINCT_CNT_SYNOPSIS);
+    basic_column_stat.distinct_cnt_synopsis_size_ = r->read_int(dd::tables::Basic_column_statistics::FIELD_DISTINCT_CNT_SYNOPSIS_SIZE);
+    if (rs->next(r)) {
+      assert(thd->is_error() || thd->killed);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /*
   Remove the dynamic statistics stored in mysql.table_stats and
   mysql.index_stats.

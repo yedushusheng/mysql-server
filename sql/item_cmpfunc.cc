@@ -55,6 +55,7 @@
 #include "sql/aggregate_check.h"  // Distinct_check
 #include "sql/check_stack.h"
 #include "sql/current_thd.h"  // current_thd
+#include "sql/dd/cache/dictionary_client.h"
 #include "sql/derror.h"       // ER_THD
 #include "sql/error_handler.h"
 #include "sql/field.h"
@@ -69,6 +70,7 @@
 #include "sql/key.h"
 #include "sql/mysqld.h"  // log_10
 #include "sql/nested_join.h"
+#include "sql/opt_range.h"
 #include "sql/opt_trace.h"  // Opt_trace_object
 #include "sql/opt_trace_context.h"
 #include "sql/parse_tree_helpers.h"    // PT_item_list
@@ -236,6 +238,83 @@ static bool get_histogram_selectivity(THD *thd, const Field *field, Item **args,
         write_histogram_to_trace(thd, item_func, *selectivity);
       return false;
     }
+  }
+
+  return true;
+}
+
+/**
+   Get the basic column stats min max info object
+   
+   @param[in] thd                THD handler
+   @param[in] keyno              Index ID
+   @param[in] field              Field info
+   @param[in] table_share        TABLE_SHARE
+   @param[out] column_min_value  Column's min value 
+   @param[out] column_max_value  Column's max value
+
+   @return true if exists min-max info, false otherwise
+*/
+static bool get_basic_column_stats_min_max_info(THD *thd, uint keyno, Field *field,
+                                                const TABLE_SHARE *table_share,
+                                                char *column_min_value, char *column_max_value) {
+  dd::String_type schema_name = dd::String_type(table_share->table_name.str);
+  dd::String_type table_name = dd::String_type(table_share->table_name.str);
+  dd::String_type column_name = dd::String_type(field->field_name);
+  // judge if System Schema.
+  if (!my_strcasecmp(system_charset_info, MYSQL_SCHEMA_NAME.str, table_share->table_name.str) ||
+      !my_strcasecmp(system_charset_info, SYS_SCHEMA_NAME.str, table_share->table_name.str) ||
+      !my_strcasecmp(system_charset_info, PERFORMANCE_SCHEMA_DB_NAME.str, table_share->table_name.str) ||
+      !my_strcasecmp(system_charset_info, INFORMATION_SCHEMA_NAME.str, table_share->table_name.str)) {
+    return false;
+  }
+  bool empty = false;
+  // TODO:use cache firstly, if cache miss, get from Data Dictionary
+  dd::BasicColumnStat *basic_column_stat = const_cast<dd::BasicColumnStat *>(table_share->find_basic_column_stats(keyno));
+  if (!basic_column_stat) {
+    bool ret = thd->dd_client()->get_basic_column_statistics(thd, schema_name, table_name, column_name,
+                                                             (*basic_column_stat), &empty);
+    if (ret || empty) {
+      return false;
+    }
+  }
+
+  if (!basic_column_stat)  return false;
+
+  // must check basic_column_stat's schema, table and column name
+  if (basic_column_stat->is_efficient()) {
+    const char *const_min_value = basic_column_stat->min_value_.c_str();
+    if (const_min_value)  column_min_value = const_cast<char *>(const_min_value);
+    const char *const_max_value = basic_column_stat->max_value_.c_str();
+    if (const_max_value)  column_max_value = const_cast<char *>(const_max_value);
+    return true;
+  }
+
+  assert(column_min_value != nullptr);
+  assert(column_max_value != nullptr);
+
+  return false;
+}
+
+/**
+   Get the basic column stats selectivity object
+    
+   @param[in] thd           Thread info
+   @param[in] field         Field info
+   @param[in] table_share   TABLE_SHARE
+   @param[out] selectivity  selectivity result
+
+   @return true if we calculate selectivity by condition, false can not calculate selectivty
+*/
+static bool get_basic_column_stats_selectivity(THD *thd, Field *field, const TABLE_SHARE *table_share, double *selectivity) {
+  uint depth = 0;
+  *selectivity = 1.0;
+  char *column_min_value = nullptr, *column_max_value = nullptr;
+  if (tdsql_enable_update_basic_column_stats &&
+      get_basic_column_stats_min_max_info(thd, field->field_index(), field, table_share, column_min_value, column_max_value)) {
+    if (get_condition_range_selectivity(thd->lex->current_query_block()->where_cond(), field,
+                                        column_min_value, column_max_value, selectivity, depth))
+      return false;
   }
 
   return true;
@@ -2494,6 +2573,9 @@ float Item_func_ne::get_filtering_effect(THD *thd, table_map filter_for_table,
                                  fld->field->table->s, &selectivity))
     return static_cast<float>(selectivity);
 
+  if (!get_basic_column_stats_selectivity(thd, fld->field, fld->field->table->s, &selectivity))
+    return static_cast<float>(selectivity);
+
   return 1.0f - fld->get_cond_filter_default_probability(rows_in_table,
                                                          COND_FILTER_EQUALITY);
 }
@@ -2512,6 +2594,9 @@ float Item_func_equal::get_filtering_effect(THD *, table_map filter_for_table,
       contributes_to_filter(read_tables, filter_for_table, fields_to_ignore);
   if (!fld) return COND_FILTER_ALLPASS;
 
+  if (!get_basic_column_stats_selectivity(thd, fld->field, fld->field->table->s, &selectivity))
+    return static_cast<float>(selectivity);  
+  
   return fld->get_cond_filter_default_probability(rows_in_table,
                                                   COND_FILTER_EQUALITY);
 }
@@ -2531,6 +2616,9 @@ float Item_func_ge::get_filtering_effect(THD *thd, table_map filter_for_table,
           fld->field->table->s, &selectivity))
     return static_cast<float>(selectivity);
 
+  if (!get_basic_column_stats_selectivity(thd, fld->field, fld->field->table->s, &selectivity))
+    return static_cast<float>(selectivity);  
+  
   return fld->get_cond_filter_default_probability(rows_in_table,
                                                   COND_FILTER_INEQUALITY);
 }
@@ -2547,6 +2635,9 @@ float Item_func_lt::get_filtering_effect(THD *thd, table_map filter_for_table,
   if (!get_histogram_selectivity(thd, fld->field, args, arg_count,
                                  histograms::enum_operator::LESS_THAN, this,
                                  fld->field->table->s, &selectivity))
+    return static_cast<float>(selectivity);
+
+  if (!get_basic_column_stats_selectivity(thd, fld->field, fld->field->table->s, &selectivity))
     return static_cast<float>(selectivity);
 
   return fld->get_cond_filter_default_probability(rows_in_table,
@@ -2567,6 +2658,9 @@ float Item_func_le::get_filtering_effect(THD *thd, table_map filter_for_table,
                                  this, fld->field->table->s, &selectivity))
     return static_cast<float>(selectivity);
 
+  if (!get_basic_column_stats_selectivity(thd, fld->field, fld->field->table->s, &selectivity))
+    return static_cast<float>(selectivity);
+  
   return fld->get_cond_filter_default_probability(rows_in_table,
                                                   COND_FILTER_INEQUALITY);
 }
@@ -3003,6 +3097,9 @@ float Item_func_between::get_filtering_effect(THD *thd,
                                  fld->field->table->s, &selectivity))
     return static_cast<float>(selectivity);
 
+  if (!get_basic_column_stats_selectivity(thd, fld->field, fld->field->table->s, &selectivity))
+    return static_cast<float>(selectivity);
+  
   const float filter = fld->get_cond_filter_default_probability(
       rows_in_table, COND_FILTER_BETWEEN);
 
@@ -4755,6 +4852,10 @@ float Item_func_in::get_filtering_effect(THD *thd, table_map filter_for_table,
                                      op, this, item_field->field->table->s,
                                      &selectivity))
         return static_cast<float>(selectivity);
+
+      if (!get_basic_column_stats_selectivity(thd, item_field->field, item_field->field->table->s, &selectivity))
+        return static_cast<float>(selectivity);  
+              
     }
 
     Item_ident *fieldref = static_cast<Item_ident *>(args[0]);
@@ -5909,6 +6010,9 @@ float Item_func_isnull::get_filtering_effect(THD *thd,
                                  fld->field->table->s, &selectivity))
     return static_cast<float>(selectivity);
 
+  if (!get_basic_column_stats_selectivity(thd, fld->field, fld->field->table->s, &selectivity))
+    return static_cast<float>(selectivity);  
+   
   return fld->get_cond_filter_default_probability(rows_in_table,
                                                   COND_FILTER_EQUALITY);
 }
@@ -6078,6 +6182,9 @@ float Item_func_isnotnull::get_filtering_effect(
                                  histograms::enum_operator::IS_NOT_NULL, this,
                                  fld->field->table->s, &selectivity))
     return static_cast<float>(selectivity);
+
+  if (!get_basic_column_stats_selectivity(thd, fld->field, fld->field->table->s, &selectivity))
+    return static_cast<float>(selectivity);  
 
   return 1.0f - fld->get_cond_filter_default_probability(rows_in_table,
                                                          COND_FILTER_EQUALITY);
@@ -6842,6 +6949,11 @@ float Item_equal::get_filtering_effect(THD *thd, table_map filter_for_table,
           const histograms::Histogram *histogram =
               cur_field->field->table->s->find_histogram(
                   cur_field->field->field_index());
+
+          const dd::BasicColumnStat *basic_column_stat =
+              cur_field->field->table->s->find_basic_column_stats(
+                  cur_field->field->field_index());                  
+          double selectivity;                  
           if (histogram != nullptr) {
             std::array<Item *, 2> items{{cur_field, const_item}};
             double selectivity;
@@ -6855,6 +6967,10 @@ float Item_equal::get_filtering_effect(THD *thd, table_map filter_for_table,
               }
               cur_filter = static_cast<float>(selectivity);
             }
+          } else if (basic_column_stat != nullptr) {
+            if (!get_basic_column_stats_selectivity(thd, cur_field->field, cur_field->field->table->s, &selectivity)) {
+              cur_filter = static_cast<float>(selectivity);
+            }            
           }
         }
 
@@ -7208,6 +7324,9 @@ float Item_func_eq::get_filtering_effect(THD *thd, table_map filter_for_table,
                                  fld->field->table->s, &selectivity))
     return static_cast<float>(selectivity);
 
+  if (!get_basic_column_stats_selectivity(thd, fld->field, fld->field->table->s, &selectivity))
+    return static_cast<float>(selectivity);  
+    
   return fld->get_cond_filter_default_probability(rows_in_table,
                                                   COND_FILTER_EQUALITY);
 }

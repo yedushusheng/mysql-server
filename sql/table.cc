@@ -70,6 +70,7 @@
 #include "sql/dd/dd.h"                       // dd::get_dictionary
 #include "sql/dd/dictionary.h"               // dd::Dictionary
 #include "sql/dd/types/abstract_table.h"
+#include "sql/dd/types/basic_column_statistic.h"
 #include "sql/dd/types/table.h"  // dd::Table
 #include "sql/dd/types/view.h"   // dd::View
 #include "sql/debug_sync.h"      // DEBUG_SYNC
@@ -548,6 +549,11 @@ void TABLE_SHARE::destroy() {
 
   delete m_histograms;
   m_histograms = nullptr;
+
+
+  delete m_basic_column_stats;
+  m_basic_column_stats = nullptr;
+
 
   plugin_unlock(nullptr, db_plugin);
   db_plugin = nullptr;
@@ -3943,6 +3949,21 @@ end:
   }
 
   return result;
+}
+
+
+const dd::BasicColumnStat *TABLE_SHARE::find_basic_column_stats(
+    uint field_index) const {
+  if (m_basic_column_stats == nullptr) return nullptr;
+
+  const auto found = m_basic_column_stats->find(field_index);
+  if (found == m_basic_column_stats->end()) return nullptr;
+
+  // check efficient
+  dd::BasicColumnStat *basic_column_stat = const_cast<dd::BasicColumnStat *>(found->second);
+  if (!basic_column_stat->is_efficient())  return nullptr;
+
+  return found->second;
 }
 
 const histograms::Histogram *TABLE_SHARE::find_histogram(

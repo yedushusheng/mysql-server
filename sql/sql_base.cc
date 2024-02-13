@@ -76,6 +76,8 @@
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/binlog.h"  // mysql_bin_log
 #include "sql/check_stack.h"
+#include "sql/dd/impl/cache/storage_adapter.h"
+#include "sql/dd/impl/tables/basic_column_statistics.h"
 #include "sql/dd/cache/dictionary_client.h"
 #include "sql/dd/dd_schema.h"
 #include "sql/dd/dd_table.h"       // dd::table_exists
@@ -608,6 +610,135 @@ static bool read_histograms(THD *thd, TABLE_SHARE *share,
   return false;
 }
 
+
+static void get_table_share_index_field_info(TABLE_SHARE *share, std::vector<dd::String_type> &index_fields_name) {
+  for (uint keyno = 0; keyno < share->keys; keyno++) {
+    KEY *key_info = &share->key_info[keyno];
+    // only handler Single-Column Index currently
+    if (key_info->user_defined_key_parts > 1)  continue;
+
+    KEY_PART_INFO *key_part = key_info->key_part;
+    KEY_PART_INFO *key_part_end = key_part + key_info->user_defined_key_parts;
+    for (; key_part < key_part_end; key_part++) {
+      Field *field = key_part->field;
+      if (is_numeric_type(field->type())) {
+        dd::String_type column_name = dd::String_type(field->field_name);
+        index_fields_name.push_back(column_name);
+      }
+    }
+  }
+}
+
+/**
+  Read any existing basic column statistics from the data dictionary and
+  store a copy of them in the TABLE_SHARE.
+
+  @param thd        Thread handler
+  @param share      The table share where to store the histograms
+  @param schema     Schema definition
+  @param table_def  Table definition
+
+  @retval true on error
+  @retval false on success
+*/
+static bool read_basic_column_stats(THD *thd, TABLE_SHARE *share,
+                            const dd::Schema *schema,
+                            const dd::Abstract_table *table_def) {
+  dd::String_type schema_name = dd::String_type(schema->name().c_str());
+
+  // filter system schema
+  if (!my_strcasecmp(system_charset_info, MYSQL_SCHEMA_NAME.str, schema->name().c_str()) ||
+      !my_strcasecmp(system_charset_info, SYS_SCHEMA_NAME.str, schema->name().c_str()) ||
+      !my_strcasecmp(system_charset_info, PERFORMANCE_SCHEMA_DB_NAME.str, schema->name().c_str()) ||
+      !my_strcasecmp(system_charset_info, INFORMATION_SCHEMA_NAME.str, schema->name().c_str())) {
+    return false;
+  }
+
+  dd::String_type table_name = dd::String_type(table_def->name().c_str());
+  std::vector<dd::String_type> index_fields_name;
+  get_table_share_index_field_info(share, index_fields_name);
+  if (index_fields_name.size() == 0)  return false;
+
+  std::vector<dd::String_type> column_name_array;
+  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  MDL_request_list mdl_requests;  
+  for (const auto column : table_def->columns()) {
+    if (column->is_se_hidden()) continue;
+    auto it = std::find(index_fields_name.begin(), index_fields_name.end(), column->name());
+    if (it != index_fields_name.end()) {
+      MDL_key mdl_key;
+      dd::Basic_column_statistic::create_mdl_key(schema->name(), table_def->name(),
+                                                column->name(), &mdl_key);
+
+      MDL_request *request = new (thd->mem_root) MDL_request;
+      MDL_REQUEST_INIT_BY_KEY(request, &mdl_key, MDL_SHARED_READ, MDL_STATEMENT);
+      mdl_requests.push_front(request);
+
+      column_name_array.push_back(column->name());
+    }
+  }
+
+  if (!mdl_requests.is_empty() &&
+      thd->mdl_context.acquire_locks(&mdl_requests,
+                                     thd->variables.lock_wait_timeout))
+    return true;
+
+  for (uint keyno = 0; keyno < share->keys; keyno++) {
+    KEY *key_info = &share->key_info[keyno];
+    // only handler Single-Column Index currently
+    if (key_info->user_defined_key_parts > 1)  continue;
+
+    KEY_PART_INFO *key_part = key_info->key_part;
+    KEY_PART_INFO *key_part_end = key_part + key_info->user_defined_key_parts;
+    for (; key_part < key_part_end; key_part++) {
+      Field *field = key_part->field;
+      if (!is_numeric_type(field->type())) continue;
+      dd::String_type column_name = dd::String_type(field->field_name);
+      auto it = std::find(column_name_array.begin(), column_name_array.end(), column_name);
+      if (it != column_name_array.end()) {
+        dd::cache::Dictionary_client *client = thd->dd_client();
+        if (!client) return true;
+
+        const dd::String_type name = dd::Basic_column_statistic::create_name(
+            schema_name, table_name, column_name);
+        std::unique_ptr<dd::Basic_column_statistic::Name_key> key(
+            dd::tables::Basic_column_statistics::create_object_key(name));
+        if (!key.get())  continue;
+
+        const dd::Basic_column_statistic *basic_column_stat = nullptr;
+        if (dd::cache::Storage_adapter::get(thd, *key, ISO_READ_UNCOMMITTED, false,
+                                            &basic_column_stat)) {
+          assert(thd->is_error() || thd->killed);
+          return true;
+        }
+
+        if (basic_column_stat != nullptr &&
+            basic_column_stat->schema_name() == schema_name &&
+            basic_column_stat->table_name() == table_name &&
+            basic_column_stat->column_name() == column_name) {
+          /*
+            Make a clone of the Basic_column_statistic so it survives together with the
+            TABLE_SHARE in case the original Basic_column_statistic is thrown out of the
+            dictionary cache.
+          */
+          dd::BasicColumnStat *basic_column_stat_copy = new (&share->mem_root) dd::BasicColumnStat();
+          basic_column_stat_copy->clear();
+          basic_column_stat_copy->init(basic_column_stat->schema_name(), basic_column_stat->table_name(),
+                                       basic_column_stat->column_name(), basic_column_stat->last_analyzed(),
+                                       basic_column_stat->distinct_cnt(), basic_column_stat->null_cnt(),
+                                       basic_column_stat->max_value(), basic_column_stat->min_value(),
+                                       basic_column_stat->avg_len(), basic_column_stat->distinct_cnt_synopsis(),
+                                       basic_column_stat->distinct_cnt_synopsis_size());
+          share->m_basic_column_stats->emplace(keyno, basic_column_stat_copy);
+          break;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 /** Update TABLE_SHARE with options from dd::Schema object */
 static void update_schema_options(const dd::Schema *sch_obj,
                                   TABLE_SHARE *share) {
@@ -811,6 +942,18 @@ TABLE_SHARE *get_table_share(THD *thd, const char *db, const char *table_name,
         (such recursion will not work).
       */
       if (!open_table_err && read_histograms(thd, share, sch, abstract_table))
+        open_table_err = true; /* purecov: deadcode */
+
+
+      /*
+        Read any existing basic column statistics from the data dictionary and
+        store a copy of them in the TABLE_SHARE.
+
+        We need to do this outside the protection of LOCK_open, since the data
+        dictionary might have to open tables in order to read basic column stats data
+        (such recursion will not work).
+      */    
+      if (!open_table_err && read_basic_column_stats(thd, share, sch, abstract_table))
         open_table_err = true; /* purecov: deadcode */
     }
   }

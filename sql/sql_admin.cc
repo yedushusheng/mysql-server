@@ -99,7 +99,7 @@
 #include "thr_lock.h"
 #include "violite.h"
 
-extern bool tdsql_update_basic_column_stats;
+extern bool tdsql_enable_update_basic_column_stats;
 
 bool Column_name_comparator::operator()(const String *lhs,
                                         const String *rhs) const {
@@ -533,7 +533,7 @@ static Check_result check_for_upgrade(THD *thd, dd::String_type &sname,
 static bool update_stats_info(THD *thd, TABLE_LIST *table) {
   bool ret = dd::info_schema::update_table_stats(thd, table) ||
              dd::info_schema::update_index_stats(thd, table);
-  if (tdsql_update_basic_column_stats) {
+  if (tdsql_enable_update_basic_column_stats) {
     ret = ret || dd::info_schema::update_basic_column_stats(thd, table);
   }
 
@@ -544,7 +544,7 @@ static bool reload_stats_info(THD *thd, TABLE_LIST *table) {
   bool ret =
       table->table->file->reload_table_stats(thd, table->db, table->alias) ||
       dd::info_schema::reload_index_stats(thd, table);
-  if (tdsql_update_basic_column_stats) {
+  if (tdsql_enable_update_basic_column_stats) {
     ret = ret || dd::info_schema::reload_basic_column_stats(thd, table);
   }
 

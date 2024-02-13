@@ -1142,4 +1142,7 @@ typedef my_off_t ha_rows;
 
 #define HA_VARCHAR_PACKLENGTH(field_length) ((field_length) < 256 ? 1 : 2)
 
+/* For number of condition recursive */
+#define MAX_RECURSIVE_CONDITIONS 10
+
 #endif /* _my_base_h */

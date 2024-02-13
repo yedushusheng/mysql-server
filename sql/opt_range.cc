@@ -5353,6 +5353,257 @@ static void ror_intersect_cpy(ROR_INTERSECT_INFO *dst,
   dst->total_cost = src->total_cost;
 }
 
+
+// calculate the difference between two numeric
+static double calculateNumericDifference(const char *max_val, const char *min_val) {
+  if (max_val == nullptr || min_val == nullptr ||
+      !my_strcasecmp(system_charset_info, max_val, min_val)) {
+    return 1.0;
+  }
+  
+  double difference = std::stod(max_val) - std::stod(min_val);
+  return difference;
+}
+
+// calculate the weighted sum of ASCII values for each character in the input string
+double calculate_weighted_sum(const std::string &str) {
+  double sum = 0.0;
+  double weight = 1.0;
+
+  // Calculate the ASCII value for each character and accumulate the sum based on weighted values
+  for (size_t i = 0; i < str.length(); ++i) {
+    sum += static_cast<double>(str[i]) * weight;
+    // TODO:This only applies to decimal conversion.
+    // There are problems with string conversion in other bases, which may cause the calculated weight to be inconsistent with expectations. 
+    // Later, we need to consider the string type conversion values ​​in different bases.
+    weight /= 10.0; // Decreasing weight for each character
+  }
+
+  return sum;
+}
+
+/** Calculate the difference between two strings based on ASCII values
+ * Need to consider calculate strings in different binary types 
+ * such as octal, decimal, hexadecimal, etc.
+ * Note:
+ * not uesed currently
+*/
+double calculateStrDifference(const char *max_val, const char *min_val) {
+  if (max_val == nullptr || min_val == nullptr ||
+      !my_strcasecmp(system_charset_info, max_val, min_val)) {
+    return 1.0;
+  }
+
+  std::string max_val_str = std::string(max_val);
+  std::string min_val_str = std::string(min_val);
+  size_t max_length = std::max(max_val_str.length(), min_val_str.length());
+
+  // Ensure strings are of equal length by padding the shorter string with characters from the longer one
+  std::string padded_max_str = max_val_str;
+  std::string padded_min_str = min_val_str;
+  while (padded_max_str.length() < max_length) {
+    padded_max_str += padded_min_str[padded_max_str.length()];
+  }
+  while (padded_min_str.length() < max_length) {
+    padded_min_str += padded_max_str[padded_min_str.length()];
+  }
+
+  // Calculate the weighted sum for both strings
+  double sum1 = calculate_weighted_sum(padded_max_str);
+  double sum2 = calculate_weighted_sum(padded_min_str);
+
+  // Calculate the difference between the two sums, following the rule where smaller ASCII values are considered larger
+  double difference = sum2 - sum1; // Reversed order to adhere to the rule
+  return difference;
+}
+
+double calculateDifference(enum_field_types type, const char *max_val, const char *min_val) {
+  double result = 1.0;
+  if (is_numeric_type(type)) {
+    result = calculateNumericDifference(max_val, min_val);
+  }
+  // TODO:Comparison of string types is not supported currently.
+  // You need to consider different decimal system. Here use default value.
+
+  return result;
+}
+
+/**
+  Get field's selectivity by condition range value and column's min-max info.
+
+   For the index specified by the keyinfo parameter and an index that
+   contains the field as its component (field_part), the function
+   checks whether
+
+   - the condition cond is a conjunction,
+   - all of its conjuncts refer to columns of the same table, and
+   - each conjunct is on one of the following forms:
+     - f_i = const_i or const_i = f_i or f_i IS NULL,
+       where f_i is part of the index
+     - field {<|<=|>=|>|=} const
+     - const {<|<=|>=|>|=} field
+     - field BETWEEN const_1 AND const_2
+
+   The selectivity calculation is conducted as follows:
+   - selectivity *= factor + 1.0 * (condition_max_val - condition_min_val) / (column_max_val - column_min_val)
+   The meaning of the variables is as follows:
+     - factor: the factor for >= or <=, 
+       factor = 1.0 / (column_max_val - column_min_val)
+     - condition_max_val: the field's max value get from where condition
+     - condition_min_val: the field's min value get from where condition
+     - column_max_val: the field's max value saved in mysql.basic_column_statistics
+       It will be updated in the following two cases:
+       1. The client manually executes 'ANALYZE table'
+       2. A background thread periodically checks the update rate(dml_modify_counter) of the table, 
+       it will triggers an automatic update when the threshold is reached(10%).
+     - column_min_val: the field's min value saved in mysql.basic_column_statistics
+
+   @param[in]     cond              WHERE condition
+   @param[in]     field             WHERE condition field
+   @param[in]     column_min_value  column's max value store in mysql.basic_column_statistics
+   @param[in]     column_max_value  column's min value store in mysql.basic_column_statistics
+   @param[in,out] selectivity       new selectivity value
+
+  @retval
+    false    Not support, set selectivity as default.
+  @retval
+    true     We will use new selectivity.
+
+  @todo(casonjiang)
+*/
+bool get_condition_range_selectivity(Item *cond, Field *field,
+                              const char *column_min_value, const char *column_max_value, 
+                              double *selectivity, uint depth) {
+  *selectivity = 1.0;
+  // check column min-max info from mysql.basic_column_statistics
+  // If we haven't already initialized the statistics by updating them manually or automatically in a background thread, 
+  // set the selectivity rate to 1.0
+  if (column_min_value == nullptr && column_max_value == nullptr)
+    return false;
+  if (!cond || !field)  return false;
+  
+  if (depth > MAX_RECURSIVE_CONDITIONS) {
+    return false;  
+  }
+
+  double tmp_selectivity = 1.0;
+  if (cond->type() == Item::COND_ITEM) {
+    // TODO:Not support 'OR'.
+    // if the condition is OR, add current selectivity to the previous as the new selectivity.
+    if (((Item_cond *)cond)->functype() == Item_func::COND_OR_FUNC)
+      return false;
+
+    /* AND */
+    List_iterator_fast<Item> li(*((Item_cond *)cond)->argument_list());
+    Item *item;
+    while ((item = li++)) {
+      if (!get_condition_range_selectivity(item, field, column_min_value,
+                                           column_max_value, selectivity, depth + 1))
+        return false;
+    }
+    return true;    
+  }
+  
+  // Not operator,can not handle, set selectivity as default
+  if (cond->type() != Item::FUNC_ITEM)
+    return false;
+
+  // operator type flag
+  auto func_type = ((Item_func *)cond)->functype();
+  bool eq_type = false;          // =, <=> or IS NULL
+  bool less_eq = false;          // <=
+  switch (func_type) {
+    case Item_func::ISNULL_FUNC:
+      return false;
+    case Item_func::EQ_FUNC:
+    case Item_func::EQUAL_FUNC:
+    case Item_func::MULT_EQUAL_FUNC:
+      eq_type = true;
+      break;
+    case Item_func::LE_FUNC:
+      less_eq = true;
+      break;
+    case Item_func::LT_FUNC:
+    case Item_func::GT_FUNC:
+    case Item_func::GE_FUNC:
+      break;
+    case Item_func::BETWEEN:
+      // NOT BETWEEN is equivalent to OR and is therefore not a conjunction
+      if (((Item_func_between *)cond)->negated) return false;
+      break;
+    default:
+      return false;  // Not support function, set selectivity as default
+  }
+
+  Item *args[3];
+  memset(args, 0, 3 * sizeof(Item *));
+  bool inv = false;
+  /* Test if this is a comparison of a field and constant, and save values info to args */
+  if (!is_simple_predicate(down_cast<Item_func *>(cond), args, &inv))
+    return false;
+
+  if (!args[0])  return false;
+
+  if (func_type != Item_func::EQUAL_FUNC && func_type != Item_func::ISNULL_FUNC &&
+      (args[1]->is_null() || (func_type == Item_func::BETWEEN && args[2]->is_null())))
+    return false;
+
+  if (!field->eq(((Item_field *)args[0])->field)) {
+    return false;
+  }
+
+  if (inv && !eq_type) less_eq = !less_eq;
+
+  StringBuffer<STRING_BUFFER_USUAL_SIZE> tmp;
+  String *condition_min_value = nullptr, *condition_max_value = nullptr;
+  // calculate the difference between the maximum and minimum values of the fields stored in mysql.basic_column_statistics
+  double column_minus_result_val = calculateDifference(field->type(), column_max_value, column_min_value);
+  if (column_minus_result_val == 0.0)  return false;
+  // factor for handle >= or <=
+  double factor = 0.0;
+
+  // replace the corresponding min-max according to the operator of the query condition.
+  String tmp_min_max_val;
+  if (eq_type) { // =
+    if (column_minus_result_val == 1.0)  factor = 1.0;
+    tmp_selectivity = 1.0 / (column_minus_result_val + factor);
+    *selectivity *= std::max(0.0, std::min(1.0, tmp_selectivity));
+    return true;
+  } else if (func_type == Item_func::BETWEEN) { // between
+    if (args[1]) condition_min_value = args[1]->val_str(&tmp);
+    if (args[2] && args[2]->result_type() != INVALID_RESULT) {
+      condition_max_value = args[2]->val_str(&tmp);
+    } else {
+      tmp_min_max_val = String(column_max_value, strlen(column_max_value), system_charset_info);
+      condition_max_value =&tmp_min_max_val;
+    }
+  } else if (func_type == Item_func::LT_FUNC || func_type == Item_func::GT_FUNC) { // < or >
+    if (args[1]) condition_min_value = args[1]->val_str(&tmp);
+    tmp_min_max_val = String(column_max_value, strlen(column_max_value), system_charset_info);
+    condition_max_value  = &tmp_min_max_val;
+  } else if (func_type == Item_func::GE_FUNC) {  // >=
+    if (args[1]) condition_min_value = args[1]->val_str(&tmp);
+    tmp_min_max_val= String(column_max_value, strlen(column_max_value), system_charset_info);
+    condition_max_value  = &tmp_min_max_val;
+    factor = 1.0 / column_minus_result_val;
+  } else if (less_eq) {  // <=
+    tmp_min_max_val= String(column_min_value, strlen(column_min_value), system_charset_info);
+    condition_min_value = &tmp_min_max_val;
+    if (args[1]) condition_max_value = args[1]->val_str(&tmp);
+    factor = 1.0 / column_minus_result_val; 
+  } else {
+    return false;
+  }
+  if (condition_min_value == nullptr || condition_max_value == nullptr)  return false;
+
+  double condition_minus_result_val = calculateDifference(field->type(), condition_max_value->ptr(), condition_min_value->ptr());
+  tmp_selectivity = factor + 1.0 * condition_minus_result_val / column_minus_result_val;
+  *selectivity *= std::max(0.0, std::min(1.0, tmp_selectivity));
+  LogDebug("calculate selectivity, factor:%f, selectivity:%f", factor, *selectivity);
+
+  return true;
+}
+
 /*
   Get selectivity of adding a ROR scan to the ROR-intersection.
 
