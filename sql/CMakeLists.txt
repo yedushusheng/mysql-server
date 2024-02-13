@@ -144,6 +144,7 @@ SET(DD_SOURCES
 
   dd/impl/system_views/administrable_role_authorizations.cc
   dd/impl/system_views/applicable_roles.cc
+  dd/impl/system_views/basic_column_statistics.cc
   dd/impl/system_views/character_sets.cc
   dd/impl/system_views/check_constraints.cc
   dd/impl/system_views/collations.cc
@@ -185,7 +186,7 @@ SET(DD_SOURCES
   dd/impl/system_views/view_table_usage.cc
   dd/impl/system_views/views.cc
   dd/impl/system_views/user_attributes.cc
-
+  dd/impl/tables/basic_column_statistics.cc
   dd/impl/tables/character_sets.cc
   dd/impl/tables/check_constraints.cc
   dd/impl/tables/collations.cc
@@ -219,6 +220,7 @@ SET(DD_SOURCES
   dd/impl/types/index_stat_impl.cc
   dd/impl/types/table_stat_impl.cc
   dd/impl/types/abstract_table_impl.cc
+  dd/impl/types/basic_column_statistic_impl.cc
   dd/impl/types/charset_impl.cc
   dd/impl/types/check_constraint_impl.cc
   dd/impl/types/collation_impl.cc

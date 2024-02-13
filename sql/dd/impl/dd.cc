@@ -26,6 +26,7 @@
 #include "sql/dd/impl/cache/shared_dictionary_cache.h"  // dd::cache::Shared_...
 #include "sql/dd/impl/dictionary_impl.h"                // dd::Dictionary_impl
 #include "sql/dd/impl/system_registry.h"                // dd::System_tables
+#include "sql/dd/impl/types/basic_column_statistic_impl.h"
 #include "sql/dd/impl/types/charset_impl.h"
 #include "sql/dd/impl/types/collation_impl.h"
 #include "sql/dd/impl/types/column_impl.h"
@@ -78,7 +79,7 @@ template <typename X>
 X *create_object() {
   return dynamic_cast<X *>(new (std::nothrow) typename X::Impl());
 }
-
+template Basic_column_statistic *create_object<Basic_column_statistic>();
 template Charset_impl *create_object<Charset_impl>();
 template Collation *create_object<Collation>();
 template Collation_impl *create_object<Collation_impl>();

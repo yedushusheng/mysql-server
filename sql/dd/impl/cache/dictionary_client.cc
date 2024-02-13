@@ -47,6 +47,7 @@
 #include "sql/dd/impl/raw/raw_record_set.h"        // Raw_record_set
 #include "sql/dd/impl/raw/raw_table.h"             // Raw_table
 #include "sql/dd/impl/sdi.h"                       // dd::sdi::drop_after_update
+#include "sql/dd/impl/tables/basic_column_statistics.h" // dd::Basic_column_statistics
 #include "sql/dd/impl/tables/character_sets.h"     // create_name_key()
 #include "sql/dd/impl/tables/check_constraints.h"  // check_constraint_exists
 #include "sql/dd/impl/tables/collations.h"         // create_name_key()
@@ -1653,6 +1654,55 @@ static bool get_index_statistics_entries(
   return false;
 }
 
+// Get names of schema, table and column names from basic column statistics
+// entries.
+static bool get_basic_column_statistics_entries(
+    THD *thd, const String_type &schema_name, const String_type &table_name,
+    std::vector<String_type> &all_column_names) {
+  /*
+    Use READ UNCOMMITTED isolation, so this method works correctly when
+    called from the middle of atomic ALTER TABLE statement.
+  */
+  dd::Transaction_ro trx(thd, ISO_READ_UNCOMMITTED);
+
+  // Open the DD tables holding dynamic table statistics.
+  trx.otx.register_tables<dd::Basic_column_statistic>();
+  if (trx.otx.open_tables()) {
+    assert(thd->is_error() || thd->killed);
+    return true;
+  }
+
+  // Create the range key based on schema and table name.
+  std::unique_ptr<Object_key> object_key(
+      dd::tables::Basic_column_statistics::create_range_key_by_table_name(
+          schema_name, table_name));
+
+  Raw_table *table = trx.otx.get_table<dd::Basic_column_statistic>();
+  assert(table);
+
+  // Start the scan.
+  std::unique_ptr<Raw_record_set> rs;
+  if (table->open_record_set(object_key.get(), rs)) {
+    assert(thd->is_error() || thd->killed);
+    return true;
+  }
+
+  // Read each column entry.
+  Raw_record *r = rs->current_record();
+  while (r) {
+    // Read names.
+    all_column_names.push_back(
+        r->read_str(tables::Basic_column_statistics::FIELD_COLUMN_NAME));
+
+    if (rs->next(r)) {
+      assert(thd->is_error() || thd->killed);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /*
   Remove the dynamic statistics stored in mysql.table_stats and
   mysql.index_stats.
@@ -1678,6 +1728,14 @@ bool Dictionary_client::remove_table_dynamic_statistics(
     return true;
   }
 
+  //
+  // Get list of basic_column statistics entries.
+  //
+
+  std::vector<String_type> all_column_names;
+  if (get_basic_column_statistics_entries(m_thd, schema_name, table_name, all_column_names)) {
+    assert(m_thd->is_error() || m_thd->killed);
+   
   //
   // Drop index statistics entries for the table.
   //
@@ -1714,6 +1772,46 @@ bool Dictionary_client::remove_table_dynamic_statistics(
       idx_stat = nullptr;
 
       it_idxs++;
+      it_cols++;
+    }
+  }
+
+  //
+  // Drop basic column statistics entries for the table.
+  //
+
+  // Iterate and drop each basic column statistic entry, if exists.
+  if (!all_column_names.empty()) {
+    const Basic_column_statistic *basic_column_statistic = nullptr;
+    std::vector<String_type>::iterator it_cols = all_column_names.begin();
+    while (it_cols != all_column_names.end()) {
+      // generate name by schema_name,table_name and column_name
+      String_type name = dd::Basic_column_statistic::create_name(schema_name, table_name, *it_cols);
+  
+      // Fetch the entry.
+      std::unique_ptr<Basic_column_statistic::Name_key> key(
+          tables::Basic_column_statistics::create_object_key(name));
+      
+      /*
+        Use READ UNCOMMITTED isolation, so this method works correctly when
+        called from the middle of atomic ALTER TABLE statement.
+      */
+      if (Storage_adapter::get(m_thd, *key, ISO_READ_UNCOMMITTED, false,
+                               &basic_column_statistic)) {
+        assert(m_thd->is_error() || m_thd->killed);
+        return true;
+      }
+
+      // Drop the entry.
+      if (basic_column_statistic &&
+          Storage_adapter::drop(m_thd, const_cast<Basic_column_statistic *>(basic_column_statistic))) {
+        assert(m_thd->is_error() || m_thd->killed);
+        return true;
+      }
+
+      delete basic_column_statistic;
+      basic_column_statistic = nullptr;
+
       it_cols++;
     }
   }
@@ -2564,6 +2662,13 @@ bool Dictionary_client::store(T *object) {
 }
 
 // Store a new dictionary object.
+template <>
+bool Dictionary_client::store(Basic_column_statistic *object) {
+  // Store dictionary objects with UTC time
+  Timestamp_timezone_guard ts(m_thd);
+  return Storage_adapter::store<Basic_column_statistic>(m_thd, object);
+}
+
 template <>
 bool Dictionary_client::store(Table_stat *object) {
   // Store dictionary objects with UTC time

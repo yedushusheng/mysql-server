@@ -27,7 +27,9 @@
 #include "sql/dd/dd.h"          // dd::create_object
 #include "sql/dd/impl/utils.h"  // dd::my_time_t_to_ull_datetime()
 #include "sql/dd/properties.h"
+#include "sql/dd/types/basic_column_statistic.h" // dd::Basic_column_statistic
 #include "sql/dd/types/index_stat.h"             // dd::Index_stat
+#include "sql/dd/impl/tables/basic_column_statistics.h"  // dd::Basic_column_statistics
 #include "sql/dd/types/table_stat.h"             // dd::Table_stat
 #include "sql/debug_sync.h"                      // DEBUG_SYNC
 #include "sql/error_handler.h"                   // Info_schema_error_handler
@@ -45,6 +47,22 @@
 #include "sql/tztime.h"       // Time_zone
 
 namespace {
+
+/**
+ * Indicates the number of aggregation function for column statistics. 
+ * Currently, including min and max, not including count info, so it is set to 2
+ * The SQL send to Local like 'select min(col1), max(col1), ... min(colN), max(colN) from db.tb'
+ */
+#define AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS 2
+
+/**
+ * Item_func type of Query basic column statistics info from db  
+*/
+enum statistics_aggregate_func_type {
+  MIN_ITEM = 0,
+  MAX_ITEM = 1
+  //COUNT_ITEM = 3, /* not used currently */
+};
 
 /**
   Update the data in the mysql.index_stats table if,
@@ -164,6 +182,7 @@ bool store_statistics_record(THD *thd, T *object) {
 
 template bool store_statistics_record(THD *thd, dd::Table_stat *);
 template bool store_statistics_record(THD *thd, dd::Index_stat *);
+template bool store_statistics_record(THD *thd, dd::Basic_column_statistic *);
 
 inline void setup_table_stats_record(THD *thd, dd::Table_stat *obj,
                                      dd::String_type schema_name,
@@ -212,6 +231,34 @@ inline void setup_index_stats_record(THD *thd, dd::Index_stat *obj,
   // Calculate time to be stored as cached time.
   obj->set_cached_time(
       dd::my_time_t_to_ull_datetime(thd->query_start_in_secs()));
+}
+
+inline void setup_basic_column_stats_record(
+    dd::Basic_column_statistic *obj, dd::BasicColumnStat &basic_column_stat) {
+  // set schema,table and column name before generate name
+  obj->set_schema_name(basic_column_stat.schema_name_);
+  obj->set_table_name(basic_column_stat.table_name_);
+  obj->set_column_name(basic_column_stat.column_name_);
+  // Assembly fields name with schema_name, table_name and column_name
+  obj->set_name(obj->create_name());
+
+  // Calculate time to be stored as cached time.
+  obj->set_last_analyzed(basic_column_stat.last_analyzed_);
+  obj->set_distinct_cnt(basic_column_stat.distinct_cnt_);
+  obj->set_null_cnt(basic_column_stat.null_cnt_);
+  obj->set_max_value(basic_column_stat.max_value_);
+  obj->set_min_value(basic_column_stat.min_value_);
+  obj->set_avg_len(basic_column_stat.avg_len_);
+  obj->set_distinct_cnt_synopsis(basic_column_stat.distinct_cnt_synopsis_);
+  obj->set_distinct_cnt_synopsis_size(
+      basic_column_stat.distinct_cnt_synopsis_size_);
+  // Reserved fields, integer type is initialized to 0, character type is initialized to empty
+  obj->set_spare1(0);
+  obj->set_spare2(0);
+  obj->set_spare3(0);
+  obj->set_spare4("");
+  obj->set_spare5("");
+  obj->set_spare6("");
 }
 
 /**
@@ -271,6 +318,33 @@ static bool persist_i_s_index_stats(THD *thd, const String &schema_name_ptr,
       dd::String_type(index_name_ptr.ptr(), index_name_ptr.length()),
       dd::String_type(column_name_ptr.ptr(), column_name_ptr.length()),
       records);
+
+  return store_statistics_record(thd, obj.get());
+}
+
+/**
+  Get dynamic basic column statistics of a table and store them into
+  mysql.basic_column_statistics.
+
+  @param thd
+  @param basic_column_stat
+  @return true
+  @return false
+*/
+static bool persist_i_s_basic_column_stats(THD *thd,
+                                           dd::BasicColumnStat &basic_column_stat) {
+  // Create a object to be stored.
+  std::unique_ptr<dd::Basic_column_statistic> obj(
+      dd::create_object<dd::Basic_column_statistic>());
+
+  // check schema,table,column name
+  if (basic_column_stat.schema_name_.c_str() == nullptr ||
+      basic_column_stat.table_name_.c_str() == nullptr ||
+      basic_column_stat.column_name_.c_str() == nullptr) {
+    return false;
+  }
+
+  setup_basic_column_stats_record(obj.get(), basic_column_stat);
 
   return store_statistics_record(thd, obj.get());
 }
@@ -375,6 +449,208 @@ bool update_index_stats(THD *thd, TABLE_LIST *table) {
 
   }  // Keys
 
+  return false;
+}
+
+static void get_table_index_filed_info(TABLE *table, std::vector<std::string> &index_fields_name) {
+  // get table's index field name
+  KEY *key = table->key_info;
+  KEY *key_end = key + table->s->keys;
+  for (; key < key_end; key++) {
+    KEY_PART_INFO *key_part = key->key_part;
+    KEY_PART_INFO *key_part_end = key_part + key->user_defined_key_parts;
+    for (; key_part < key_part_end; key_part++) {
+      Field *field = key_part->field;
+      index_fields_name.push_back(
+          std::string(field->field_name, strlen(field->field_name)));
+    }
+  }
+}
+
+// get basic column statistics info by SQL
+void get_basic_column_statistics_info(THD *thd, TABLE *table,
+                                      std::vector<std::string> &index_fields_name,
+                                      std::vector<std::string> &min_info,
+                                      std::vector<std::string> &max_info,
+                                      std::vector<std::string> &/* unused */) {
+  assert(table);
+  TABLE_SHARE *table_share = table->s;
+  assert(table_share);
+
+  // 1. set query sql
+  std::string statistics_sql;
+  statistics_sql.append(STRING_WITH_LEN("select "));
+  for (uint i = 0; i < index_fields_name.size(); i++) {
+    /** For manual update of statistical information, since it is very
+     * time-consuming to load the statistical information of all columns,
+     * so here only the statistical information of the index column is updated.
+     */
+    std::string field_name = index_fields_name[i];
+
+    /** min(col)
+     * For different data types, the min-max return result type is also
+     * different. In order to avoid processing the complex data type conversion
+     * of the result, here we force the conversion to CHAR type output in the
+     * query SQL.
+     * we must convert filed to string using utf8mb4, and then calculate min-max
+     * as the key is Blob type, if we use convert(filed,CHAR), it may cause garbled characters
+     */
+    statistics_sql.append("min(");
+    statistics_sql.append("CONVERT(");
+    statistics_sql.append(field_name);
+    statistics_sql.append(" USING utf8mb4");
+    statistics_sql.append(")");
+    statistics_sql.append("), ");
+    // max(col)
+    statistics_sql.append("max(");
+    statistics_sql.append("CONVERT(");
+    statistics_sql.append(field_name);
+    statistics_sql.append(" USING utf8mb4");
+    statistics_sql.append(")");
+    statistics_sql.append(")");
+    /** count(col)
+     * Actual test results show, count aggregation function is too slow,
+     * so count info not get currently, it should be optimized future.
+    */
+    //statistics_sql.append(",count(");
+    //statistics_sql.append(field_name);
+    //statistics_sql.append(")");
+
+    if (i < index_fields_name.size() - 1) statistics_sql.append(", ");
+  }
+  statistics_sql.append(STRING_WITH_LEN(" from "));
+  statistics_sql.append(table_share->db.str, strlen(table_share->db.str));
+  statistics_sql.append(".");
+  statistics_sql.append(table_share->table_name.str,
+                        strlen(table_share->table_name.str));
+
+  // 2. local execute query and fetch result set
+  thd->set_query_id(next_query_id());
+
+  Ed_connection con(thd);
+  LEX_STRING str;
+  lex_string_strmake(thd->mem_root, &str, statistics_sql.c_str(),
+                     statistics_sql.length());
+
+  /** save previous THD's lock info, and then set lock info null to avoid crash
+   * we should reset these values when Query finished
+   */
+  auto saved_thd_system = thd->system_thread;
+  if (thd->system_thread == NON_SYSTEM_THREAD) {
+    thd->system_thread = SYSTEM_THREAD_BACKGROUND;
+  }
+  MYSQL_LOCK *saved_lock = nullptr;
+  if (thd->lock) saved_lock = get_lock_some_tables(thd, &table, 1);
+  thd->reset_for_next_command();
+
+  if (thd->lock) {
+    mysql_unlock_tables(thd, thd->lock);
+    thd->lock = nullptr;
+  }
+  if (con.execute_direct(str)) {
+    thd->system_thread = saved_thd_system;
+    assert(thd->lock == nullptr);
+    thd->lock = saved_lock;
+    // can not get column statistics info
+    return;
+  } else {
+    const List<Ed_row> &min_max_count_rsets = *(con.get_result_sets());
+    // min-max result of column always equal one
+    if (min_max_count_rsets.size() == 1) {
+      const Ed_row &row = *(min_max_count_rsets[0]);
+      //uint64_t count_value = 0;
+      std::string min_max_value;
+      // every field has two result Item_field (min,max), there is no count info currently
+      for (uint i = 0; i < row.size(); i++) {
+        // select min,max from db.tb
+        min_max_value.clear();
+        const Ed_column &column = row[i];
+        min_max_value = std::string(column.str, column.length);
+        min_max_value.erase(min_max_value.find_last_not_of('\0') + 1);
+        if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == MIN_ITEM) {
+          // trim duplicate '\0' at the end of string
+          min_info.push_back(min_max_value);
+        } else if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == MAX_ITEM) {
+          max_info.push_back(min_max_value);
+        }
+        //if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == COUNT_ITEM) {
+        //  count_value = *reinterpret_cast<uint64_t *>(row[i].str);
+        //  count_info.push_back(count_value);
+        //}
+      }
+    }
+  }
+  thd->system_thread = saved_thd_system;
+  // as we have set thd->lock to nullptr, here avoid adding extra locks
+  assert(thd->lock == nullptr);
+  thd->lock = saved_lock;
+}
+
+bool update_basic_column_stats(THD *thd, TABLE_LIST *table) {
+  TABLE *analyze_table = table->table;
+  if (analyze_table->file->info(HA_STATUS_VARIABLE | HA_STATUS_TIME |
+                                HA_STATUS_VARIABLE_EXTRA | HA_STATUS_AUTO |
+                                HA_STATUS_FORCE_UPDATE_CACHE_ASYNC) != 0)
+    return true;
+
+  // Create a object to be stored
+  std::unique_ptr<Basic_column_statistic> obj(
+      create_object<Basic_column_statistic>());
+
+  ulonglong distinct_cnt = 0, null_cnt = 0, avg_len = 0,
+            distinct_cnt_synopsis_size = 0;
+  String max_value_ptr, min_value_ptr, distinct_cnt_synopsis_ptr;
+  /** get count, min-max info from table by send sql to TDStore:
+   * select min(col1),...max(col1),...count(col1) ... from table;
+   * Note: Since the count aggregation function is too slow, so
+   * count can not used in the SQL query here temporarily and will be optimized
+   * later.
+   */
+  std::vector<std::string> min_info;
+  std::vector<std::string> max_info;
+  std::vector<std::string> count_info;
+  std::vector<std::string> index_fields_name;
+  // get table's index info
+  get_table_index_filed_info(analyze_table, index_fields_name);
+  // get table index's min-max info
+  get_basic_column_statistics_info(thd, analyze_table, index_fields_name, min_info, max_info, count_info);
+
+  struct BasicColumnStat basic_column_stat;
+  for (uint i = 0; i < index_fields_name.size(); i++) {
+    std::string field_name = index_fields_name[i];
+    // get every index filed's statistics info(min/max)
+    min_value_ptr =
+        String(min_info[i].c_str(), min_info[i].length(), &my_charset_bin);
+    max_value_ptr =
+        String(max_info[i].c_str(), max_info[i].length(), &my_charset_bin);
+
+    basic_column_stat.reset();
+    basic_column_stat.init(
+        dd::String_type(table->db, strlen(table->db)),
+        dd::String_type(table->alias, strlen(table->alias)),
+        dd::String_type(field_name.c_str(), strlen(field_name.c_str())),
+        dd::my_time_t_to_ull_datetime(thd->query_start_in_secs()), distinct_cnt,
+        null_cnt, dd::String_type(max_value_ptr.ptr(), max_value_ptr.length()),
+        dd::String_type(min_value_ptr.ptr(), min_value_ptr.length()), avg_len,
+        dd::String_type(distinct_cnt_synopsis_ptr.ptr(),
+                        distinct_cnt_synopsis_ptr.length()),
+        distinct_cnt_synopsis_size);
+
+    setup_basic_column_stats_record(obj.get(), basic_column_stat);
+
+    // Store the object
+    if (thd->dd_client()->store(obj.get()) &&
+        report_error_except_ignore_dup(thd, "basic_column_statistics")) {
+      return true;
+    }
+
+  }  // Keys
+
+  return false;
+}
+
+bool reload_basic_column_stats([[maybe_unused]] THD *thd,
+                               [[maybe_unused]] TABLE_LIST *table) {
   return false;
 }
 
@@ -611,7 +887,20 @@ ulonglong Table_statistics::read_stat_from_SE(
     // Release the lock we got
     thd->mdl_context.release_lock(mdl_request.ticket);
   }
-
+  if (error == 0) {
+    dd::BasicColumnStat basic_column_stat;
+    basic_column_stat.init(
+        dd::String_type(schema_name_ptr.ptr(), schema_name_ptr.length()),
+        dd::String_type(table_name_ptr.ptr(), table_name_ptr.length()),
+        dd::String_type(column_name_ptr.ptr(), column_name_ptr.length()),
+        dd::my_time_t_to_ull_datetime(thd->query_start_in_secs()), 0, 0, "", "",
+        0, "", 0);
+    if (can_persist_I_S_dynamic_statistics(thd, schema_name_ptr.ptr(),
+                                           nullptr) &&
+        persist_i_s_basic_column_stats(thd, basic_column_stat)) {
+      error = -1;
+    }
+  }
   // Cache and return the statistics
   if (error == 0) {
     if (stype != enum_table_stats_type::INDEX_COLUMN_CARDINALITY) {
@@ -837,6 +1126,20 @@ ulonglong Table_statistics::read_stat_by_open_table(
 
       goto end;
     }
+    {
+      dd::BasicColumnStat basic_column_stat;
+      basic_column_stat.init(
+          dd::String_type(schema_name_ptr.ptr(), schema_name_ptr.length()),
+          dd::String_type(table_name_ptr.ptr(), table_name_ptr.length()),
+          dd::String_type(column_name_ptr.ptr(), column_name_ptr.length()),
+          dd::my_time_t_to_ull_datetime(thd->query_start_in_secs()), 0, 0, "",
+          "", 0, "", 0);
+      if (can_persist_I_S_dynamic_statistics(thd, schema_name_ptr.ptr(),
+                                             partition_name) &&
+          persist_i_s_basic_column_stats(thd, basic_column_stat)) {
+        error = -1;
+      }
+    }    
 
     // If we are reading cardinality, just read and do not cache it.
     if (stype == enum_table_stats_type::INDEX_COLUMN_CARDINALITY) {

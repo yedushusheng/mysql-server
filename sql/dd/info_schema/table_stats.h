@@ -37,6 +37,9 @@ struct TABLE_LIST;
 /** Note:获取动态的表统计信息并且存储到mysql.table_stats中
 */
 namespace dd {
+namespace cache {
+class Dictionary_client;
+}
 namespace info_schema {
 
 /**
@@ -62,6 +65,39 @@ bool update_table_stats(THD *thd, TABLE_LIST *table);
            true on failure.
 */
 bool update_index_stats(THD *thd, TABLE_LIST *table);
+
+/**
+  Get mysql.basic_column_statistics info by send Query SQL to local SQLEngine.
+
+  @param thd   Thread.
+  @param table TABLE_LIST pointing to table info.
+  @param min_info all columns' min value info.
+  @param max_info all columns' max value info
+  @param count_info all columns' count value info (unused)
+
+  @returns void
+*/
+void get_basic_column_statistics_info(THD *thd, TABLE *table,
+                                      std::vector<std::string> &index_fields_name,
+                                      std::vector<std::string> &min_info,
+                                      std::vector<std::string> &max_info,
+                                      std::vector<std::string> &/* unused */);
+/**
+  Get dynamic column statistics of a table and store them into
+  mysql.basic_column_statistics.
+
+  @param thd   Thread.
+  @param table TABLE_LIST pointing to table info.
+  @param reload load stats from mysql.basic_column_statistics
+
+  @returns false on success.
+           true on failure.
+*/
+bool update_basic_column_stats(THD *thd, TABLE_LIST *table);
+/*
+ * load stats from mysql.basic_column_statistics
+ */
+bool reload_basic_column_stats(THD *thd, TABLE_LIST *table);
 
 /**
   If the db is 'information_schema' then convert 'db' to

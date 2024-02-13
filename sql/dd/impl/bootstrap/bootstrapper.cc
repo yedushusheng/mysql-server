@@ -47,6 +47,7 @@
 #include "sql/dd/impl/dictionary_impl.h"                // dd::Dictionary_impl
 #include "sql/dd/impl/raw/object_keys.h"
 #include "sql/dd/impl/sdi.h"                    // dd::sdi::store
+#include "sql/dd/impl/tables/basic_column_statistics.h" // dd::tables::Basic_column_statistics
 #include "sql/dd/impl/tables/character_sets.h"  // dd::tables::Character_sets
 #include "sql/dd/impl/tables/collations.h"      // dd::tables::Collations
 #include "sql/dd/impl/tables/dd_properties.h"   // dd::tables::DD_properties

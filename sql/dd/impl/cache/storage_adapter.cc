@@ -38,6 +38,7 @@
 #include "sql/dd/impl/raw/raw_record.h"            // Raw_record
 #include "sql/dd/impl/raw/raw_table.h"             // Raw_table
 #include "sql/dd/impl/sdi.h"                       // sdi::store() sdi::drop()
+#include "sql/dd/impl/tables/basic_column_statistics.h"   // dd::tables::Basic_column_statistics
 #include "sql/dd/impl/tables/character_sets.h"     // dd::tables::Character_sets
 #include "sql/dd/impl/tables/collations.h"         // dd::tables::Collations
 #include "sql/dd/impl/tables/column_statistics.h"  // dd::tables::Column_stat...
@@ -693,6 +694,21 @@ template bool Storage_adapter::store(THD *, Tablespace *);
   to project table/index statistics. As these objects are
   not in DD cache, it cannot make it to core storage.
 */
+template <>
+void Storage_adapter::core_get(const Basic_column_statistic::Name_key &,
+                               const Basic_column_statistic **) {}
+
+template <>
+void Storage_adapter::core_drop(THD *, const Basic_column_statistic *) {}
+
+template <>
+void Storage_adapter::core_store(THD *, Basic_column_statistic *) {}
+
+template bool Storage_adapter::get<Basic_column_statistic::Name_key, Basic_column_statistic>(
+    THD *, const Basic_column_statistic::Name_key &, enum_tx_isolation, bool,
+    const Basic_column_statistic **);
+template bool Storage_adapter::store(THD *, Basic_column_statistic *);
+template bool Storage_adapter::drop(THD *, const Basic_column_statistic *);
 
 template <>
 void Storage_adapter::core_get(const Table_stat::Name_key &,

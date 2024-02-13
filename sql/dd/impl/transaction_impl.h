@@ -30,6 +30,7 @@
 #include "mysql/udf_registration_types.h"
 #include "sql/dd/dd_kill_immunizer.h"  // dd::DD_kill_immunizer
 #include "sql/dd/impl/types/abstract_table_impl.h"
+#include "sql/dd/impl/types/basic_column_statistic_impl.h"
 #include "sql/dd/impl/types/charset_impl.h"
 #include "sql/dd/impl/types/check_constraint_impl.h"
 #include "sql/dd/impl/types/collation_impl.h"

@@ -716,6 +716,19 @@ static MYSQL_LOCK *get_lock_data(THD *thd, TABLE **table_ptr, size_t count,
 }
 
 /**
+  Get lock structures from table structs and initialize locks.
+  the flag is set GET_LOCK_STORE_LOCKS, used to restore lock info
+
+  @param thd                Thread handler
+  @param table              Pointer to tables that should be locks
+  @param count              Number of tables
+
+*/
+MYSQL_LOCK *get_lock_some_tables(THD *thd, TABLE **table, size_t count) {
+  return get_lock_data(thd, table, count, GET_LOCK_STORE_LOCKS);
+}
+
+/**
   Obtain an exclusive metadata lock on a schema name.
 
   @param thd         Thread handle.

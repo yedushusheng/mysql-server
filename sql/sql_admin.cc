@@ -99,6 +99,8 @@
 #include "thr_lock.h"
 #include "violite.h"
 
+extern bool tdsql_update_basic_column_stats;
+
 bool Column_name_comparator::operator()(const String *lhs,
                                         const String *rhs) const {
   DBUG_ASSERT(lhs->charset()->number == rhs->charset()->number);
@@ -526,6 +528,27 @@ static Check_result check_for_upgrade(THD *thd, dd::String_type &sname,
              ("dd::Table %s marked as checked for upgrade", c->name().c_str()));
 
   return {false, result_code};
+}
+
+static bool update_stats_info(THD *thd, TABLE_LIST *table) {
+  bool ret = dd::info_schema::update_table_stats(thd, table) ||
+             dd::info_schema::update_index_stats(thd, table);
+  if (tdsql_update_basic_column_stats) {
+    ret = ret || dd::info_schema::update_basic_column_stats(thd, table);
+  }
+
+  return ret;
+}
+
+static bool reload_stats_info(THD *thd, TABLE_LIST *table) {
+  bool ret =
+      table->table->file->reload_table_stats(thd, table->db, table->alias) ||
+      dd::info_schema::reload_index_stats(thd, table);
+  if (tdsql_update_basic_column_stats) {
+    ret = ret || dd::info_schema::reload_basic_column_stats(thd, table);
+  }
+
+  return ret;
 }
 
 /*
@@ -979,8 +1002,7 @@ static bool mysql_admin_table(
 
     if (!read_only && ignore_grl_on_analyze) {
       // Acquire the lock
-      if (dd::info_schema::update_table_stats(thd, table) ||
-          dd::info_schema::update_index_stats(thd, table)) {
+      if (update_stats_info(thd, table)) {
         // Play safe, rollback possible changes to the data-dictionary.
         trans_rollback_stmt(thd);
         trans_rollback_implicit(thd);

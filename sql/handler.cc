@@ -78,6 +78,8 @@
 #include "sql/current_thd.h"
 #include "sql/dd/cache/dictionary_client.h"  // dd::cache::Dictionary_client
 #include "sql/dd/dd.h"                       // dd::get_dictionary
+#include "sql/dd/types/basic_column_statistic.h" // dd::Basic_column_statistics
+#include "sql/dd/impl/tables/basic_column_statistics.h" //dd::Basic_column_statistics
 #include "sql/dd/dictionary.h"               // dd:acquire_shared_table_mdl
 #include "sql/dd/types/table.h"              // dd::Table
 #include "sql/dd_table_share.h"              // open_table_def
@@ -5190,6 +5192,11 @@ int handler::index_next_same(uchar *buf, const uchar *key, uint keylen) {
   return error;
 }
 
+// Updates the global basic_column_statistics stats with this handler's accumulated basic column stat reads.
+void handler::update_global_basic_column_stats() {
+  // TODO(casonjiang):update global basic column statistics
+}
+
 /****************************************************************************
 ** Some general functions that isn't in the handler class
 ****************************************************************************/
@@ -8874,4 +8881,48 @@ bool ha_check_reserved_db_name(const char *name) {
 */
 bool is_index_access_error(int error) {
   return (error != HA_ERR_END_OF_FILE && error != HA_ERR_KEY_NOT_FOUND);
+}
+
+bool handler::reload_basic_column_stats(THD *thd, const char *db,
+                                        const char *table_name,
+                                        const char *column_name) {
+  const dd::String_type name = dd::Basic_column_statistic::create_name(
+      dd::String_type(db), dd::String_type(table_name),
+      dd::String_type(column_name));
+
+  std::unique_ptr<dd::Basic_column_statistic::Name_key> key(
+      dd::tables::Basic_column_statistics::create_object_key(name));
+
+  const dd::Basic_column_statistic *basic_column_stat = nullptr;
+  if (dd::cache::Storage_adapter::get(thd, *key, ISO_READ_UNCOMMITTED, false,
+                                      &basic_column_stat)) {
+    assert(thd->is_error() || thd->killed);
+    return true;
+  }
+  if (!basic_column_stat) {
+    LogError(
+        "can't load stat record from mysql.basic_column_statistics by key %s",
+        key->str().c_str());
+    return false;
+  }
+
+  if (!basic_column_stat->column_name().empty()) {
+    LogInfo(
+        "load stat record from mysql.basic_column_statistics by key %s, "
+        "record:%s, zero information,need drop",
+        key->str().c_str(), basic_column_stat->ToString().c_str());
+    delete basic_column_stat;
+    return false;
+  }
+
+  LogInfo(
+      "load stat record from mysql.basic_column_statistics by key %s, "
+      "record:%s",
+      key->str().c_str(), basic_column_stat->ToString().c_str());
+
+  update_basic_column_stats(basic_column_stat);
+
+  delete basic_column_stat;
+
+  return false;
 }

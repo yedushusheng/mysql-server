@@ -28,6 +28,7 @@
 #include "local_multi_map.h"  // Local_multi_map
 #include "my_dbug.h"
 #include "sql/dd/types/abstract_table.h"            // Abstract_table
+#include "sql/dd/types/basic_column_statistic.h"    // Basic_column_statistics
 #include "sql/dd/types/charset.h"                   // Charset
 #include "sql/dd/types/collation.h"                 // Collation
 #include "sql/dd/types/column_statistics.h"         // Column_statistics

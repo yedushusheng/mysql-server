@@ -24,6 +24,7 @@
 
 #include "sql/dd/impl/system_views/administrable_role_authorizations.h"
 #include "sql/dd/impl/system_views/applicable_roles.h"   // Applicable_roles
+#include "sql/dd/impl/system_views/basic_column_statistics.h" // Basic_column_statistics
 #include "sql/dd/impl/system_views/character_sets.h"     // Character_sets
 #include "sql/dd/impl/system_views/check_constraints.h"  // Check_constraints
 #include "sql/dd/impl/system_views/collation_charset_applicability.h"  // Collati...
@@ -67,6 +68,7 @@
 #include "sql/dd/impl/system_views/table_constraints_extensions.h"  // Table_constraints_extensions
 #include "sql/dd/impl/system_views/tables_extensions.h"  // Tables_extensions
 #include "sql/dd/impl/system_views/tablespaces_extensions.h"  // Tablespaces_extensions
+#include "sql/dd/impl/tables/basic_column_statistics.h"       // Basic_column_statistics
 #include "sql/dd/impl/tables/catalogs.h"                      // Catalog
 #include "sql/dd/impl/tables/character_sets.h"                // Character_sets
 #include "sql/dd/impl/tables/check_constraints.h"     // Check_constraints
@@ -168,6 +170,8 @@ void System_tables::add_remaining_dd_tables() {
   dd::System_tables::Types second = dd::System_tables::Types::SECOND;
   dd::System_tables::Types system = dd::System_tables::Types::SYSTEM;
 
+  // basic column statistics info
+  register_table<dd::tables::Basic_column_statistics>(second);
   register_table<Catalogs>(core);
   register_table<Character_sets>(core);
   register_table<Check_constraints>(core);
@@ -265,6 +269,7 @@ void System_views::init() {
   register_view<dd::system_views::Applicable_roles>(non_dd_based_is);
   register_view<dd::system_views::Administrable_role_authorizations>(
       non_dd_based_is);
+  register_view<dd::system_views::Basic_column_statistics>(is);
   register_view<dd::system_views::Character_sets>(is);
   register_view<dd::system_views::Check_constraints>(is);
   register_view<dd::system_views::Collations>(is);

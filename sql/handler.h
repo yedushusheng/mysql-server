@@ -61,6 +61,7 @@
 #include "nullable.h"          // Nullable
 #include "sql/dd/object_id.h"  // dd::Object_id
 #include "sql/dd/string_type.h"
+#include "sql/dd/types/basic_column_statistic.h"  //dd::Basic_column_statistic
 #include "sql/dd/types/object_table.h"  // dd::Object_table
 #include "sql/discrete_interval.h"      // Discrete_interval
 #include "sql/key.h"
@@ -5416,6 +5417,9 @@ class handler {
 
   virtual bool is_crashed() const { return false; }
 
+  void update_global_basic_column_stats();
+  virtual void update_basic_column_stats([[maybe_unused]]const dd::Basic_column_statistic *statistic) {
+  }  
   /**
     Check if the table can be automatically repaired.
 
@@ -6572,6 +6576,7 @@ class handler {
   void ha_mv_key_capacity(uint *num_keys, size_t *keys_length) const {
     return mv_key_capacity(num_keys, keys_length);
   }
+  virtual bool reload_basic_column_stats(THD *thd, const char *db, const char *table_name, const char *column_name);
 
  private:
   /**
