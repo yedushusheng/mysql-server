@@ -553,10 +553,10 @@ void TABLE_SHARE::destroy() {
   delete m_histograms;
   m_histograms = nullptr;
 
-
-  delete m_basic_column_stats;
-  m_basic_column_stats = nullptr;
-
+  if (m_basic_column_stats) {
+    delete m_basic_column_stats;
+    m_basic_column_stats = nullptr;
+  }
 
   plugin_unlock(nullptr, db_plugin);
   db_plugin = nullptr;
@@ -3954,26 +3954,27 @@ end:
   return result;
 }
 
-const dd::BasicColumnStat *TABLE_SHARE::find_basic_column_stats(
+
+std::shared_ptr<dd::BasicColumnStat> TABLE_SHARE::find_basic_column_stats(
     uint field_index) {
-  if (m_basic_column_stats == nullptr) return nullptr;
+  if (!m_basic_column_stats) return nullptr;
 
   // Acquire read lock
   mysql_rwlock_rdlock(&m_rwlock);
-  const auto found = m_basic_column_stats->find(field_index);
-  if (found == m_basic_column_stats->end()) {
+  auto it = m_basic_column_stats->find(field_index);
+  if (it == m_basic_column_stats->end()) {
     // Release the lock if no match is found
     mysql_rwlock_unlock(&m_rwlock);
     return nullptr;
   }
-  const dd::BasicColumnStat *basic_column_stat = found->second;
+  std::shared_ptr<dd::BasicColumnStat> basic_column_stat_ptr = it->second;
   // Release the lock
   mysql_rwlock_unlock(&m_rwlock);
 
-  if (basic_column_stat == nullptr || !basic_column_stat->is_efficient()) {
+  if (!basic_column_stat_ptr || !basic_column_stat_ptr->is_efficient()) {
     return nullptr;
   }
-  return basic_column_stat;
+  return basic_column_stat_ptr;
 }
 
 const histograms::Histogram *TABLE_SHARE::find_histogram(

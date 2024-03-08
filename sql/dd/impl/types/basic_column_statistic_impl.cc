@@ -269,6 +269,24 @@ void Basic_column_statistic::create_mdl_key(const String_type &schema_name,
 }
 ///////////////////////////////////////////////////////////////////////////
 
+/**
+  Lock a MDL key of basic column statistic for writing
+  data into Distionary Data. The lock type is exclusive.
+
+  @param thd     thread handle
+  @param mdl_key MDL key for lock
+
+  @return true on error, false on success
+*/
+bool Basic_column_statistic::lock_for_write(THD *thd, const MDL_key &mdl_key) {
+  MDL_request mdl_request;
+  MDL_REQUEST_INIT_BY_KEY(&mdl_request, &mdl_key, MDL_EXCLUSIVE,
+                          MDL_TRANSACTION);
+
+  return thd->mdl_context.acquire_lock(&mdl_request,
+                                       thd->variables.lock_wait_timeout);
+}
+
 bool Basic_column_statistic::update_name_key(Global_name_key *key,
                                              const String_type &name) {
   return Basic_column_statistics::update_object_key(key, name);

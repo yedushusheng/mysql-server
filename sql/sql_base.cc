@@ -659,81 +659,65 @@ static bool read_basic_column_stats(THD *thd, TABLE_SHARE *share,
   get_table_share_index_field_info(share, index_fields_name);
   if (index_fields_name.size() == 0)  return false;
 
-  std::vector<dd::String_type> column_name_array;
-  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
-  MDL_request_list mdl_requests;  
-  for (const auto column : table_def->columns()) {
-    if (column->is_se_hidden()) continue;
-    auto it = std::find(index_fields_name.begin(), index_fields_name.end(), column->name());
-    if (it != index_fields_name.end()) {
-      MDL_key mdl_key;
-      dd::Basic_column_statistic::create_mdl_key(schema->name(), table_def->name(),
-                                                column->name(), &mdl_key);
-
-      MDL_request *request = new (thd->mem_root) MDL_request;
-      MDL_REQUEST_INIT_BY_KEY(request, &mdl_key, MDL_SHARED_READ, MDL_STATEMENT);
-      mdl_requests.push_front(request);
-
-      column_name_array.push_back(column->name());
-    }
-  }
-
-  if (!mdl_requests.is_empty() &&
-      thd->mdl_context.acquire_locks(&mdl_requests,
-                                     thd->variables.lock_wait_timeout))
-    return true;
-
   for (uint keyno = 0; keyno < share->keys; keyno++) {
     KEY *key_info = &share->key_info[keyno];
     // only handler Single-Column Index currently
     if (key_info->user_defined_key_parts > 1)  continue;
-
     KEY_PART_INFO *key_part = key_info->key_part;
     KEY_PART_INFO *key_part_end = key_part + key_info->user_defined_key_parts;
     for (; key_part < key_part_end; key_part++) {
       Field *field = key_part->field;
       if (!is_numeric_type(field->type())) continue;
       dd::String_type column_name = dd::String_type(field->field_name);
-      auto it = std::find(column_name_array.begin(), column_name_array.end(), column_name);
-      if (it != column_name_array.end()) {
-        dd::cache::Dictionary_client *client = thd->dd_client();
-        if (!client) return true;
 
-        const dd::String_type name = dd::Basic_column_statistic::create_name(
-            schema_name, table_name, column_name);
-        std::unique_ptr<dd::Basic_column_statistic::Name_key> key(
-            dd::tables::Basic_column_statistics::create_object_key(name));
-        if (!key.get())  continue;
+      dd::cache::Dictionary_client *client = thd->dd_client();
+      if (!client) return true;
 
-        const dd::Basic_column_statistic *basic_column_stat = nullptr;
-        if (dd::cache::Storage_adapter::get(thd, *key, ISO_READ_UNCOMMITTED, false,
-                                            &basic_column_stat)) {
-          assert(thd->is_error() || thd->killed);
-          return true;
+      const dd::String_type name = dd::Basic_column_statistic::create_name(
+          schema_name, table_name, column_name);
+      std::unique_ptr<dd::Basic_column_statistic::Name_key> key(
+          dd::tables::Basic_column_statistics::create_object_key(name));
+      if (!key.get())  continue;
+
+      const dd::Basic_column_statistic *basic_column_stat = nullptr;
+      if (dd::cache::Storage_adapter::get(thd, *key, ISO_READ_UNCOMMITTED, false,
+                                          &basic_column_stat)) {
+        assert(thd->is_error() || thd->killed);
+        return true;
+      }
+
+      if (basic_column_stat != nullptr &&
+          basic_column_stat->schema_name() == schema_name &&
+          basic_column_stat->table_name() == table_name &&
+          basic_column_stat->column_name() == column_name) {
+        /*
+          Make a clone of the Basic_column_statistic so it survives together
+          with the TABLE_SHARE in case the original Basic_column_statistic is
+          thrown out of the dictionary cache.
+        */
+        mysql_rwlock_wrlock(&share->m_rwlock);
+        dd::BasicColumnStat *basic_column_stat_copy =
+            new dd::BasicColumnStat();
+        basic_column_stat_copy->clear();
+        basic_column_stat_copy->init(
+            basic_column_stat->schema_name(), basic_column_stat->table_name(),
+            basic_column_stat->column_name(),
+            basic_column_stat->last_analyzed(),
+            basic_column_stat->distinct_cnt(), basic_column_stat->null_cnt(),
+            basic_column_stat->max_value(), basic_column_stat->min_value(),
+            basic_column_stat->avg_len(),
+            basic_column_stat->distinct_cnt_synopsis(),
+            basic_column_stat->distinct_cnt_synopsis_size());
+        std::shared_ptr<dd::BasicColumnStat> basic_column_stat_ptr(
+            basic_column_stat_copy);
+        if (!share->m_basic_column_stats) {
+          share->m_basic_column_stats =
+              new malloc_unordered_map<uint, std::shared_ptr<dd::BasicColumnStat>>(
+                  PSI_INSTRUMENT_ME);
         }
-
-        if (basic_column_stat != nullptr &&
-            basic_column_stat->schema_name() == schema_name &&
-            basic_column_stat->table_name() == table_name &&
-            basic_column_stat->column_name() == column_name) {
-          /*
-            Make a clone of the Basic_column_statistic so it survives together with the
-            TABLE_SHARE in case the original Basic_column_statistic is thrown out of the
-            dictionary cache.
-          */
-          mysql_rwlock_wrlock(&share->m_rwlock);
-          dd::BasicColumnStat *basic_column_stat_copy = new (&share->mem_root) dd::BasicColumnStat();
-          basic_column_stat_copy->clear();
-          basic_column_stat_copy->init(basic_column_stat->schema_name(), basic_column_stat->table_name(),
-                                       basic_column_stat->column_name(), basic_column_stat->last_analyzed(),
-                                       basic_column_stat->distinct_cnt(), basic_column_stat->null_cnt(),
-                                       basic_column_stat->max_value(), basic_column_stat->min_value(),
-                                       basic_column_stat->avg_len(), basic_column_stat->distinct_cnt_synopsis(),
-                                       basic_column_stat->distinct_cnt_synopsis_size());
-          share->m_basic_column_stats->emplace(keyno, basic_column_stat_copy);
-          mysql_rwlock_unlock(&share->m_rwlock);
-          break;
-        }
+        share->m_basic_column_stats->emplace(keyno, basic_column_stat_ptr);
+        mysql_rwlock_unlock(&share->m_rwlock);
+        break;
       }
     }
   }

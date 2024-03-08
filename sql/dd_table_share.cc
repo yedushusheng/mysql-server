@@ -287,7 +287,7 @@ static bool prepare_share(THD *thd, TABLE_SHARE *share,
           PSI_INSTRUMENT_ME);
 
   share->m_basic_column_stats =
-      new malloc_unordered_map<uint, const dd::BasicColumnStat *>(
+      new malloc_unordered_map<uint, std::shared_ptr<dd::BasicColumnStat>>(
           PSI_INSTRUMENT_ME);
   // Setup other fields =====================================================
   /* Allocate handler */

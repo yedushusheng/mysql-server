@@ -37,7 +37,23 @@ struct BasicColumnStat {
   ulonglong avg_len_ = 0;
   String_type distinct_cnt_synopsis_ = "";
   ulonglong distinct_cnt_synopsis_size_ = 0;
+  
+  BasicColumnStat() = default;
 
+  BasicColumnStat(BasicColumnStat *stat) {
+    schema_name_ = stat->schema_name_;
+    table_name_ = stat->table_name_;
+    column_name_ = stat->column_name_;
+    last_analyzed_ = stat->last_analyzed_;
+    distinct_cnt_ = stat->distinct_cnt_;
+    null_cnt_ = stat->null_cnt_;
+    max_value_ = stat->max_value_;
+    min_value_ = stat->min_value_;
+    avg_len_ = stat->avg_len_;
+    distinct_cnt_synopsis_ = stat->distinct_cnt_synopsis_;
+    distinct_cnt_synopsis_size_ = stat->distinct_cnt_synopsis_size_;
+  }
+  
   void init(const BasicColumnStat *stat) {
     schema_name_ = stat->schema_name_;
     table_name_ = stat->table_name_;
@@ -289,6 +305,8 @@ class Basic_column_statistic : virtual public Entity_object {
     Basic_column_statistic::create_mdl_key(schema_name(), table_name(),
                                            column_name(), key);
   }
+  
+  static bool lock_for_write(THD *thd, const MDL_key &mdl_key);
   
   /**
     Print Debug info

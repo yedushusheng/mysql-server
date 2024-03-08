@@ -683,19 +683,22 @@ bool update_basic_column_stats(THD *thd, TABLE_LIST *table) {
     return true;
 
   dd::BasicColumnStat basic_column_stat;
-  for (const auto& it : index_fields_name) {
+
+  for (const auto &it : index_fields_name) {
     uint keyno = it.first;
     std::string field_name = it.second;
+    
     // get every index filed's statistics info(min/max)
-    const char *min_val = min_info[field_name].c_str()? min_info[field_name].c_str() : "";
-    min_value_ptr =
-        String(min_val, strlen(min_val), &my_charset_bin);
-    const char *max_val = max_info[field_name].c_str()? max_info[field_name].c_str() : "";
-    max_value_ptr =
-        String(max_val, strlen(max_val), &my_charset_bin);
+    const char *min_val =
+        min_info[field_name].c_str() ? min_info[field_name].c_str() : "";
+    min_value_ptr = String(min_val, strlen(min_val), &my_charset_bin);
+    const char *max_val =
+        max_info[field_name].c_str() ? max_info[field_name].c_str() : "";
+    max_value_ptr = String(max_val, strlen(max_val), &my_charset_bin);
 
-    basic_column_stat.clear();
-    basic_column_stat.init(
+    dd::BasicColumnStat *basic_column_stat_copy = new dd::BasicColumnStat();
+    basic_column_stat_copy->clear();
+    basic_column_stat_copy->init(
         dd::String_type(table->db, strlen(table->db)),
         dd::String_type(table->alias, strlen(table->alias)),
         dd::String_type(field_name.c_str(), strlen(field_name.c_str())),
@@ -706,21 +709,26 @@ bool update_basic_column_stats(THD *thd, TABLE_LIST *table) {
                         distinct_cnt_synopsis_ptr.length()),
         distinct_cnt_synopsis_size);
 
-    setup_basic_column_stats_record(obj.get(), basic_column_stat);
+    setup_basic_column_stats_record(obj.get(), *basic_column_stat_copy);
 
+    std::shared_ptr<dd::BasicColumnStat> basic_column_stat_ptr(
+        basic_column_stat_copy);
+    // cache current field's basic column stats
+    mysql_rwlock_wrlock(&analyze_table->s->m_rwlock);
+    if (!analyze_table->s->m_basic_column_stats) {
+      analyze_table->s->m_basic_column_stats =
+          new malloc_unordered_map<uint, std::shared_ptr<dd::BasicColumnStat>>(
+              PSI_INSTRUMENT_ME);
+    }
+    analyze_table->s->m_basic_column_stats->emplace(keyno,
+                                                    basic_column_stat_ptr);
+    mysql_rwlock_unlock(&analyze_table->s->m_rwlock);
+    
     // Store the object
     if (thd->dd_client()->store(obj.get()) &&
         report_error_except_ignore_dup(thd, "basic_column_statistics")) {
       return true;
     }
-
-    // cache current field's basic column stats
-    mysql_rwlock_wrlock(&analyze_table->s->m_rwlock);
-    dd::BasicColumnStat *basic_column_stat_copy = new (&analyze_table->s->mem_root) dd::BasicColumnStat();
-    basic_column_stat_copy->clear();
-    basic_column_stat_copy->init(&basic_column_stat);
-    analyze_table->s->m_basic_column_stats->emplace(keyno, basic_column_stat_copy);
-    mysql_rwlock_unlock(&analyze_table->s->m_rwlock);
   }  // Keys
 
   return false;

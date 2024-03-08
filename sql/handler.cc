@@ -6244,65 +6244,64 @@ bool handler::has_basic_column_stats(const uint keyno) const {
   auto key_info = &table->key_info[keyno];
   if (key_info->user_defined_key_parts > 1) return false;
 
-  if (table->s->find_basic_column_stats(keyno) == nullptr) {
-    return false;
-  }
-
-  return true;
+  return table->s->find_basic_column_stats(keyno) != nullptr;
 }
 
-bool handler::estimate_selectivity_by_basic_column_stats(uint keyno, double *selectivity) {
+bool handler::estimate_selectivity_by_basic_column_stats(uint keyno,
+                                                         double *selectivity) {
   *selectivity = 1.0;
   uint key_part_offset = 0;  // the field position in key
   KEY *key_info = &table->key_info[keyno];
   KEY_PART_INFO *key_part_info = key_info->key_part;
   THD *thd = current_thd;
-  
-  for (uint part = 0; part < actual_key_parts(key_info); part++, key_part_info++) {
+  for (uint part = 0; part < actual_key_parts(key_info);
+       part++, key_part_info++) {
     double tmp_selectivity = 1.0;
     Field *field = key_part_info->field;
-    if (!field)  return true;
-
-    const dd::BasicColumnStat *basic_column_stat = table->s->find_basic_column_stats(field->field_index());
-    if (!basic_column_stat) {
+    if (!field) return true;
+    std::shared_ptr<dd::BasicColumnStat> basic_column_stat_ptr =
+        table->s->find_basic_column_stats(field->field_index());
+    if (!basic_column_stat_ptr) {
       // if get DD error or record is empty, set default selectivity
       if (part == 0) return true;
-
       // set default selectivity
-      *selectivity *=
-          (part < actual_key_parts(key_info) - 1) ? COND_FILTER_EQUALITY : COND_FILTER_INEQUALITY;
-
+      *selectivity *= (part < actual_key_parts(key_info) - 1)
+                          ? COND_FILTER_EQUALITY
+                          : COND_FILTER_INEQUALITY;
       // Next part.
-      key_part_offset += key_part_info->store_length;   
+      key_part_offset += key_part_info->store_length;
       continue;
     }
-
-    if (!basic_column_stat->is_efficient()) {
+    if (!basic_column_stat_ptr->is_efficient()) {
       continue;
     }
-
     // handle column's min-max info from mysql.basic_column_statistics
-    const char *min_val = basic_column_stat->min_value_.c_str()?  basic_column_stat->min_value_.c_str() : "";
-    const char *max_val = basic_column_stat->max_value_.c_str()? basic_column_stat->max_value_.c_str() : "";
-
+    const char *min_val = basic_column_stat_ptr->min_value_.c_str()
+                              ? basic_column_stat_ptr->min_value_.c_str()
+                              : "";
+    const char *max_val = basic_column_stat_ptr->max_value_.c_str()
+                              ? basic_column_stat_ptr->max_value_.c_str()
+                              : "";
     // calculate selectivity
     uint depth = 0;
-    if (!get_condition_range_selectivity(thd->lex->current_query_block()->where_cond(), field,
-                                         min_val, max_val, &tmp_selectivity, depth)) {
+    if (!get_condition_range_selectivity(
+            thd->lex->current_query_block()->where_cond(), field, min_val,
+            max_val, &tmp_selectivity, depth)) {
       tmp_selectivity = 1.0;
       return true;
     }
     *selectivity *= std::max(0.0, std::min(1.0, tmp_selectivity));
-
+ 
     // Next part.
     key_part_offset += key_part_info->store_length;
-
-    // In the case of joint indexes, since it is slow to get min-max by SQL when updating manually, 
-    // it will slow down the speed of updating the whole statistics, 
-    // so here, for the time being, for the case of multiple fields, the default selection rate is used for calculation
+    // In the case of joint indexes, since it is slow to get min-max by SQL when
+    // updating manually, it will slow down the speed of updating the whole
+    // statistics, so here, for the time being, for the case of multiple fields,
+    // the default selection rate is used for calculation
     if (part > 1) {
-      *selectivity *=
-        (part < key_info->user_defined_key_parts - 1) ? COND_FILTER_EQUALITY : COND_FILTER_INEQUALITY;
+      *selectivity *= (part < key_info->user_defined_key_parts - 1)
+                          ? COND_FILTER_EQUALITY
+                          : COND_FILTER_INEQUALITY;
       return true;
     }
   }

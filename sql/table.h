@@ -708,7 +708,7 @@ struct TABLE_SHARE {
     A map of [uint, Basic_column_stats] values, where the key is the field index. The
     map is populated with any basic column statistics when it is loaded/created.
   */
-  malloc_unordered_map<uint, const dd::BasicColumnStat *> *m_basic_column_stats{
+  malloc_unordered_map<uint, std::shared_ptr<dd::BasicColumnStat>> *m_basic_column_stats{
       nullptr};
   
   /**
@@ -729,7 +729,7 @@ struct TABLE_SHARE {
     @retval nullptr if no basic column statistics is found
     @retval a pointer to a basic column statistics if one is found
   */
-  const dd::BasicColumnStat *find_basic_column_stats(uint field_index);
+  std::shared_ptr<dd::BasicColumnStat> find_basic_column_stats(uint field_index);
   
   /** Category of this table. */
   TABLE_CATEGORY table_category{TABLE_UNKNOWN_CATEGORY};

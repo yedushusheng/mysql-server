@@ -263,32 +263,32 @@ static bool get_basic_column_stats_min_max_info(THD *thd, uint keyno,
   dd::String_type schema_name = dd::String_type(table_share->table_name.str);
   dd::String_type table_name = dd::String_type(table_share->table_name.str);
   dd::String_type column_name = dd::String_type(field->field_name);
-
   bool empty = false;
-  // TODO:use cache firstly, if cache miss, get from Data Dictionary
-  dd::BasicColumnStat *basic_column_stat = const_cast<dd::BasicColumnStat *>(table_share->find_basic_column_stats(keyno));
+  // use cache firstly, if cache miss, get from Data Dictionary
+  std::shared_ptr<dd::BasicColumnStat> basic_column_stat =
+      table_share->find_basic_column_stats(keyno);
   if (!basic_column_stat) {
-    bool ret = thd->dd_client()->get_basic_column_statistics(thd, schema_name, table_name, column_name,
-                                                             (*basic_column_stat), &empty);
+    dd::BasicColumnStat tmp_basic_column_stat;
+    bool ret = thd->dd_client()->get_basic_column_statistics(
+        thd, schema_name, table_name, column_name, tmp_basic_column_stat,
+        &empty);
     if (ret || empty) {
       return false;
     }
+    basic_column_stat =
+        std::make_shared<dd::BasicColumnStat>(tmp_basic_column_stat);
   }
-
-  if (!basic_column_stat)  return false;
-
+  if (!basic_column_stat) return false;
   // must check basic_column_stat's schema, table and column name
   if (basic_column_stat->is_efficient()) {
     const char *const_min_value = basic_column_stat->min_value_.c_str();
-    if (const_min_value)  column_min_value = const_cast<char *>(const_min_value);
+    if (const_min_value) column_min_value = const_cast<char *>(const_min_value);
     const char *const_max_value = basic_column_stat->max_value_.c_str();
-    if (const_max_value)  column_max_value = const_cast<char *>(const_max_value);
+    if (const_max_value) column_max_value = const_cast<char *>(const_max_value);
     return true;
   }
-
   assert(column_min_value != nullptr);
   assert(column_max_value != nullptr);
-
   return false;
 }
 
@@ -6951,7 +6951,7 @@ float Item_equal::get_filtering_effect(THD *thd, table_map filter_for_table,
               cur_field->field->table->s->find_histogram(
                   cur_field->field->field_index());
 
-          const dd::BasicColumnStat *basic_column_stat =
+          std::shared_ptr<dd::BasicColumnStat> basic_column_stat =
               cur_field->field->table->s->find_basic_column_stats(
                   cur_field->field->field_index());                  
           double selectivity;                  
