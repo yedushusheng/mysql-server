@@ -136,6 +136,14 @@ class Table_stat : virtual public Entity_object {
 
   virtual ulonglong cached_time() const = 0;
   virtual void set_cached_time(ulonglong cached_time) = 0;
+
+  /////////////////////////////////////////////////////////////////////////
+  // dml_modify_counter.
+  /////////////////////////////////////////////////////////////////////////
+
+  virtual ulonglong dml_modify_counter() const = 0;
+  virtual void set_dml_modify_counter(ulonglong dml_modify_counter) = 0;
+
 };
 
 ///////////////////////////////////////////////////////////////////////////

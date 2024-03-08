@@ -61,6 +61,7 @@ class Table_stats : virtual public Entity_object_table_impl {
     FIELD_UPDATE_TIME,
     FIELD_CHECK_TIME,
     FIELD_CACHED_TIME,
+    FIELD_DML_MODIFY_COUNTER,
     NUMBER_OF_FIELDS  // Always keep this entry at the end of the enum
   };
 

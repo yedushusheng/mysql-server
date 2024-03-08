@@ -71,6 +71,7 @@ bool Table_stat_impl::restore_attributes(const Raw_record &r) {
   m_update_time = r.read_int(Table_stats::FIELD_UPDATE_TIME);
   m_check_time = r.read_int(Table_stats::FIELD_CHECK_TIME);
   m_cached_time = r.read_int(Table_stats::FIELD_CACHED_TIME);
+  m_dml_modify_counter = r.read_int(Table_stats::FIELD_DML_MODIFY_COUNTER);
 
   return false;
 }
@@ -93,7 +94,8 @@ bool Table_stat_impl::store_attributes(Raw_record *r) {
                   m_update_time == 0) ||
          r->store(Table_stats::FIELD_CHECK_TIME, m_check_time,
                   m_check_time == 0) ||
-         r->store(Table_stats::FIELD_CACHED_TIME, m_cached_time);
+         r->store(Table_stats::FIELD_CACHED_TIME, m_cached_time) ||
+         r->store(Table_stats::FIELD_DML_MODIFY_COUNTER, m_dml_modify_counter);
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -113,7 +115,8 @@ void Table_stat_impl::debug_print(String_type &outb) const {
      << "m_checksum: " << m_checksum << "; "
      << "m_update_time: " << m_update_time << "; "
      << "m_check_time: " << m_check_time << "; "
-     << "m_cached_time: " << m_cached_time;
+     << "m_cached_time: " << m_cached_time << "; "
+     << "m_dml_modify_counter: " << m_dml_modify_counter;
 
   ss << " }";
   outb = ss.str();
@@ -165,6 +168,21 @@ void Table_stat_impl::register_tables(Open_dictionary_tables_ctx *otx) {
   */
   otx->mark_ignore_global_read_lock();
   otx->add_table<Table_stats>();
+}
+
+
+std::string Table_stat_impl::ToString() const {
+  ardb::Buffer buffer;
+  buffer.Printf(
+      "m_schema_name:%s, m_table_name:%s, m_table_rows:%llu, "
+      "m_avg_row_length:%llu, m_data_length:%llu, m_max_data_length:%llu, "
+      "m_index_length:%llu"
+      ", m_auto_increment:%llu, m_update_time:%llu, m_cached_time:%llu, "
+      "m_dml_modify_counter:%llu",
+      m_schema_name.c_str(), m_table_name.c_str(), m_table_rows,
+      m_avg_row_length, m_data_length, m_max_data_length, m_index_length,
+      m_auto_increment, m_update_time, m_cached_time, m_dml_modify_counter);
+  return buffer.AsString();
 }
 
 ///////////////////////////////////////////////////////////////////////////

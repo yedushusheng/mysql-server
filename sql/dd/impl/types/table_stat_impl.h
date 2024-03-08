@@ -63,7 +63,8 @@ class Table_stat_impl : public Entity_object_impl, public Table_stat {
         m_checksum(0),
         m_update_time(0),
         m_check_time(0),
-        m_cached_time(0) {}
+        m_cached_time(0),
+        m_dml_modify_counter(0) {}
 
  public:
   void debug_print(String_type &outb) const override;
@@ -204,6 +205,19 @@ class Table_stat_impl : public Entity_object_impl, public Table_stat {
     m_cached_time = cached_time;
   }
 
+
+  /////////////////////////////////////////////////////////////////////////
+  // dml_modify_counter.
+  /////////////////////////////////////////////////////////////////////////
+
+  ulonglong dml_modify_counter() const override { return m_dml_modify_counter; }
+
+  void set_dml_modify_counter(ulonglong dml_modify_counter) override {
+    m_dml_modify_counter = dml_modify_counter;
+  }
+
+  virtual std::string ToString() const override;
+
  public:
   Object_key *create_primary_key() const override;
   bool has_new_primary_key() const override;
@@ -240,6 +254,7 @@ class Table_stat_impl : public Entity_object_impl, public Table_stat {
   ulonglong m_update_time;
   ulonglong m_check_time;
   ulonglong m_cached_time;
+  ulonglong m_dml_modify_counter;
 };
 
 ///////////////////////////////////////////////////////////////////////////

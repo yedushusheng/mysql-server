@@ -1243,6 +1243,22 @@ class Dictionary_client {
                                        const String_type &table_name)
       MY_ATTRIBUTE((warn_unused_result));
 
+
+  /**
+    Get dml_modify_counter info from mysql.table_stats.
+    dml_modify_counter in mysql.table_stats is used to determine the update
+    ratio, if reaching the set threshold, then automatically update the
+    statistical information
+
+    @param thd              THD handle.
+    @param table_dml_info   Map for db.tb and dml_modify_counter.
+
+    @return true  - on failure
+    @return false - on success
+  */
+  static bool get_all_table_dml_modify_counter(
+      THD *thd, std::map<String_type, ulonglong> &table_dml_info);
+
   /**
     Debug dump of a partition of the client and its registry to stderr.
 

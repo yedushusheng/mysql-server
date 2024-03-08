@@ -61,6 +61,9 @@ Table_stats::Table_stats() {
   m_target_def.add_field(FIELD_CACHED_TIME, "FIELD_CACHED_TIME",
                          "cached_time TIMESTAMP NOT NULL");
 
+  m_target_def.add_field(FIELD_DML_MODIFY_COUNTER, "FIELD_DML_MODIFY_COUNTER",
+                         "dml_modify_counter BIGINT UNSIGNED");
+
   m_target_def.add_index(INDEX_PK_SCHEMA_ID_TABLE_NAME,
                          "INDEX_PK_SCHEMA_ID_TABLE_NAME",
                          "PRIMARY KEY (schema_name, table_name)");

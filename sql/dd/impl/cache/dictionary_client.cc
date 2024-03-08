@@ -1654,6 +1654,61 @@ static bool get_index_statistics_entries(
   return false;
 }
 
+/*
+  Get all table's dml_modify_counter info
+  The dml_modify_counter is used to determine whether or not to execute an
+  automatic update of statistics. DML modify ratio can be calculate as
+  following: dml_modify_ratio = dml_modify_counter / total_count
+  - dml_modify_counter: The number of times a field has been updated
+  - total_count: the total counter of a field
+*/
+bool Dictionary_client::get_all_table_dml_modify_counter(
+    THD *thd, std::map<String_type, ulonglong> &table_dml_info) {
+  /*
+    Use READ UNCOMMITTED isolation, so this method works correctly when
+    called from the middle of atomic ALTER TABLE statement.
+  */
+  dd::Transaction_ro trx(thd, ISO_READ_UNCOMMITTED);
+
+  // Open the DD tables holding table_stat info.
+  trx.otx.register_tables<dd::Table_stat>();
+  if (trx.otx.open_tables()) {
+    return true;
+  }
+
+  Raw_table *table = trx.otx.get_table<dd::Table_stat>();
+  assert(table);
+
+  // Start the scan.
+  std::unique_ptr<Raw_record_set> rs;
+  if (table->open_record_set(nullptr, rs)) {
+    return true;
+  }
+
+  ardb::Buffer sql_buff;
+  // Read each record entry.
+  Raw_record *r = rs->current_record();
+  while (r) {
+    String_type schema_name =
+        r->read_str(dd::tables::Table_stats::FIELD_SCHEMA_NAME);
+    String_type table_name =
+        r->read_str(dd::tables::Table_stats::FIELD_TABLE_NAME);
+    // judge if System Schema.
+    if (!is_system_table(schema_name.c_str(), table_name.c_str())) {
+      String_type db_table = schema_name + "." + table_name;
+      ulonglong dml_modify_counter =
+          r->read_int(dd::tables::Table_stats::FIELD_DML_MODIFY_COUNTER);
+      // save each db.tb's dml_modify_counter value
+      table_dml_info.insert(make_pair(db_table, dml_modify_counter));
+    }
+    if (rs->next(r)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // Get names of schema, table and column names from basic column statistics
 // entries.
 static bool get_basic_column_statistics_entries(
