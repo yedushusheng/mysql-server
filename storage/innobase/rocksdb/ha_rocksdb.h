@@ -65,6 +65,7 @@
 
 using namespace tdsql;
 
+extern bool tdsql_enable_update_basic_column_stats;
 extern PSI_memory_key key_memory_myrocks_estimated_info;
 
 extern double tdstore_auto_stat_when_update_rate ;
@@ -1939,6 +1940,30 @@ public:
   int estimate_rec_per_key_from_histogram(const uint field_idx,
                                           const uint total_prev_ndv, uint &ndv,
                                           uint &rec_per_key);
+
+  // Calculate Record Per Key value
+  // Since the basic column stats only records column's min-max info,
+  // without distinct count info, so rec_per_key is calculated based on the
+  // assumption of uniformity. NDV value is estimate by (max_value - min_value)
+  // currently As an example if we have an index with single-column A:
+  // rec_per_key[0] = (1 / (max(colA) - min(colA))) * total_rows
+  // TODO:
+  //  Although the method max-min to estimating NDV is not very accurate, it is
+  //  still better than the current default method
+
+  // @param[in] index_fields_name  The table's key no and field name
+  // @param[in] field_idx          The index field id.
+  // @param[in] total_prev_ndv     The product of the NDVs of the individual
+  // columns of the composite index
+  // @param[out] ndv               The NDV of this index
+  // @param[out] rec_per_key       The record per key value
+  // @return ret                   Got success when basic column statistics for
+  // given index is collected
+  int estimate_rec_per_key_from_basic_column_stats(Field *field,
+                                                   const uint field_idx,
+                                                   const uint total_prev_ndv,
+                                                   uint &ndv,
+                                                   uint &rec_per_key);
 
   bool CheckSnapshotAndIndexCreateTS(
       tdsql::Transaction *tx, const uint index, const TABLE *const table_arg,

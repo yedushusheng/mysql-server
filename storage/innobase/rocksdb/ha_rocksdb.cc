@@ -54,6 +54,7 @@
 #include "sql/mysqld.h"
 #include "sql/opt_range.h"
 #include "sql/sql_audit.h"
+#include "sql/sql_class.h"
 #include "sql/sql_executor.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_partition.h"
@@ -5229,6 +5230,80 @@ int ha_rocksdb::estimate_rec_per_key_from_histogram(const uint field_idx,
   return ret;
 }
 
+int ha_rocksdb::estimate_rec_per_key_from_basic_column_stats(
+    Field *field, const uint field_idx, const uint total_prev_ndv, uint &ndv,
+    uint &rec_per_key) {
+  int ret = HA_EXIT_FAILURE;
+  THD *const thd = table->in_use;
+  bool empty = false;
+
+  // get basic_column_stats from TABLE_SHARE cache,if cache miss, get from Data
+  // Dictionary most time we will get basic column statistics from cache
+  // successfully
+  dd::String_type dd_min_value, dd_max_value;
+  std::shared_ptr<dd::BasicColumnStat> cache_basic_column_stat =
+      table->s->find_basic_column_stats(field_idx);
+  if (!cache_basic_column_stat) {
+    // schema,table and column info
+    dd::String_type schema_name =
+        dd::String_type(m_table_handler->m_real_db_name.c_str());
+    dd::String_type table_name =
+        dd::String_type(m_table_handler->m_real_table_name.c_str());
+    dd::String_type column_name = dd::String_type(field->field_name);
+    // column name is empty, can not create key
+    if (column_name.empty()) return ret;
+
+    dd::BasicColumnStat tmp_basic_column_stat;
+    ret = thd->dd_client()->get_basic_column_statistics(
+        thd, schema_name, table_name, column_name, tmp_basic_column_stat,
+        &empty);
+    if (ret || empty) {
+      return ret;
+    }
+    dd_min_value = tmp_basic_column_stat.min_value_;
+    dd_max_value = tmp_basic_column_stat.max_value_;
+  } else {
+    dd_min_value = cache_basic_column_stat->min_value_;
+    dd_max_value = cache_basic_column_stat->max_value_;
+  }
+
+  if (field && is_numeric_type(field->type())) {
+    // There is no NDV information in the current base column statistics,
+    // now we use the value (max - min) to estimate NDV.
+    // TODO:
+    // the HyperLogLog algorithm will be used for the estimation
+    const char *min_val = dd_min_value.c_str() ? dd_min_value.c_str() : "";
+    const char *max_val = dd_max_value.c_str() ? dd_max_value.c_str() : "";
+
+    ndv = (uint)(calculateDifference(field->type(), max_val, min_val));
+    if (total_prev_ndv == 1) {
+      rec_per_key = 1;
+    } else {
+      auto ndv_product = ndv * total_prev_ndv;
+      if (ndv_product == 0) {
+        rec_per_key = 1;
+      } else {
+        // TODO:The not_null_values_frequency can not calculate now, set to 1.0
+        // currently. we will get distinct count info in the future, recalculate
+        // variable not_null_values_frequency.
+        double not_null_values_frequency = 1.0;
+        rec_per_key =
+            ceil(m_table_handler->m_mtcache_count * not_null_values_frequency) /
+            (ndv_product);
+      }
+    }
+
+    // Final check values below 1.0 is meaningless, set to 1 to behave like
+    // innodb
+    if (rec_per_key == 0) {
+      rec_per_key = 1;
+    }
+    ret = HA_EXIT_SUCCESS;
+  }
+
+  return ret;
+}
+
 int ha_rocksdb::update_write_row(const uchar *const old_data,
                                  const uchar *const new_data,
                                  const bool skip_unique_check) {
@@ -5848,6 +5923,7 @@ int ha_rocksdb::info(uint flag) {
     if (stats.records != 0)
       stats.mean_rec_length = stats.data_file_length / stats.records;
   }
+
   if (flag & (HA_STATUS_VARIABLE | HA_STATUS_CONST)) {
     ref_length = m_pk_descr->max_storage_fmt_length();
     stats.mrr_length_per_rec = ref_length + sizeof(void *);
@@ -5858,6 +5934,15 @@ int ha_rocksdb::info(uint flag) {
       }
       KEY *const k = &table->key_info[i];
       uint total_prev_ndv = 1;
+      bool basic_column_stats_ignore_index = false;
+      // Only support Single-Column Index,
+      // For indexe with multi columns, BASIC_COLUMN_STATISTICS statistics are
+      // not used to calculate rec_per_key, it will use the default calculation
+      // method, because current query for multi columns index to get min-max
+      // statistics info is very slow.
+      // TODO:handle indexe with multi columns
+      if (k->user_defined_key_parts > 1)
+        basic_column_stats_ignore_index = true;
       for (uint j = 0; j < k->actual_key_parts; j++) {
         auto field_idx = k->key_part[j].field->field_index();
         uint x;
@@ -5868,6 +5953,19 @@ int ha_rocksdb::info(uint flag) {
           LogInfo(
               "Fetch rec_per_key from histogram success, table %s.%s, key: "
               "<idx: %d, name: %s>, rec_per_key %u, histogram "
+              "field_idx %u, ndv %u, total_prev_ndv %u",
+              table->s->db.str, table->s->table_name.str, i,
+              get_key_name(i, table, m_tbl_def), x, field_idx, ndv,
+              total_prev_ndv);
+        } else if (tdsql_enable_update_basic_column_stats &&
+                   !basic_column_stats_ignore_index &&
+                   estimate_rec_per_key_from_basic_column_stats(
+                       k->key_part[j].field, field_idx, total_prev_ndv, ndv,
+                       x) == HA_EXIT_SUCCESS) {
+          LogInfo(
+              "Fetch rec_per_key from basic column statistics success, table "
+              "%s.%s, key: "
+              "<idx: %d, name: %s>, rec_per_key %u, basic column stats "
               "field_idx %u, ndv %u, total_prev_ndv %u",
               table->s->db.str, table->s->table_name.str, i,
               get_key_name(i, table, m_tbl_def), x, field_idx, ndv,
