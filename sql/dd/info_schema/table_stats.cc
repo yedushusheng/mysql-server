@@ -539,8 +539,6 @@ void get_basic_column_statistics_info(THD *thd, TABLE *table,
                         strlen(table_share->table_name.str));
 
   // 2. local execute query and fetch result set
-  thd->set_query_id(next_query_id());
-
   Ed_connection con(thd);
   LEX_STRING str;
   lex_string_strmake(thd->mem_root, &str, statistics_sql.c_str(),
@@ -555,7 +553,6 @@ void get_basic_column_statistics_info(THD *thd, TABLE *table,
   }
   MYSQL_LOCK *saved_lock = nullptr;
   if (thd->lock) saved_lock = get_lock_some_tables(thd, &table, 1);
-  thd->reset_for_next_command();
 
   if (thd->lock) {
     mysql_unlock_tables(thd, thd->lock);
