@@ -120,6 +120,7 @@
 #include "template_utils.h"
 #include "typelib.h"
 #include "unhex.h"
+#include "sql/dd/impl/types/statistics_collector_job_impl.h"
 
 using std::max;
 using std::min;
@@ -5429,4 +5430,43 @@ String *Item_func_internal_get_dd_column_extra::val_str(String *str) {
   str->copy(oss.str().c_str(), oss.str().length(), system_charset_info);
 
   return str;
+}
+
+bool Item_func_convert_statistics_collector_info::resolve_type(THD*) {
+  if (agg_arg_charsets_for_string_result(collation, args, 1)) return true;
+  assert(collation.collation != NULL);
+  set_nullable(false);
+  set_data_type_string(256U, collation.collation);
+  return false;
+}
+String* Item_func_convert_statistics_collector_info::val_str(String*) {
+  int info_in_int;
+  if (args[0]->result_type() != INT_RESULT ||
+      args[0]->val_int() < 0 ||
+      args[0]->val_int() > INT32_MAX) {
+    info_in_int = INT32_MAX;
+  } else {
+    info_in_int = args[0]->val_int();
+  }
+  convert_func(info_in_int, &converted_info);
+  return &converted_info;
+}
+void Item_func_convert_statistics_collector_status::convert_func(const int info_in_int, String* info_in_string) {
+  int max_status = (int)(dd::Statistics_collector_job_impl::STATISTICS_COLLECTOR_SUCC |
+                         dd::Statistics_collector_job_impl::STATISTICS_COLLECTOR_EXECUTING);
+  const char* str = nullptr;
+  if (info_in_int <= max_status) {
+    // Show EXECUTING status only if any.
+    if (info_in_int & dd::Statistics_collector_job_impl::STATISTICS_COLLECTOR_EXECUTING) {
+      str = dd::CollectorStatusStr[2];
+    } else if (info_in_int & dd::Statistics_collector_job_impl::STATISTICS_COLLECTOR_SUCC) {
+      str = dd::CollectorStatusStr[1];
+    } else {
+      str = dd::CollectorStatusStr[0];
+    }
+  } else {
+    // Try to express the original meaning.
+    str = std::to_string(info_in_int).c_str();
+  }
+  info_in_string->copy(str, strlen(str), collation.collation);
 }

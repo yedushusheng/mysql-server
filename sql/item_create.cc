@@ -1720,6 +1720,8 @@ static const std::pair<const char *, Create_func *> func_array[] = {
      SQL_FN_LIST_INTERNAL_V(Item_func_internal_get_username, 0, 1)},
     {"INTERNAL_GET_HOSTNAME",
      SQL_FN_LIST_INTERNAL_V(Item_func_internal_get_hostname, 0, 1)},
+    {"CONVERT_STATISTICS_COLLECTOR_STATUS",
+     SQL_FN_INTERNAL(Item_func_convert_statistics_collector_status, 1)},    
     {"INTERNAL_GET_ENABLED_ROLE_JSON",
      SQL_FN_INTERNAL(Item_func_internal_get_enabled_role_json, 0)},
     {"INTERNAL_GET_MANDATORY_ROLES_JSON",

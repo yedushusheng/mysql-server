@@ -68,6 +68,7 @@
 #include "sql/dd/impl/system_views/table_constraints_extensions.h"  // Table_constraints_extensions
 #include "sql/dd/impl/system_views/tables_extensions.h"  // Tables_extensions
 #include "sql/dd/impl/system_views/tablespaces_extensions.h"  // Tablespaces_extensions
+#include "sql/dd/impl/system_views/statistics_collector_jobs.h"  // Statistics_collector_jobs
 #include "sql/dd/impl/tables/basic_column_statistics.h"       // Basic_column_statistics
 #include "sql/dd/impl/tables/catalogs.h"                      // Catalog
 #include "sql/dd/impl/tables/character_sets.h"                // Character_sets
@@ -99,6 +100,7 @@
 #include "sql/dd/impl/tables/triggers.h"                // Triggers
 #include "sql/dd/impl/tables/view_routine_usage.h"      // View_routine_usage
 #include "sql/dd/impl/tables/view_table_usage.h"        // View_table_usage
+#include "sql/dd/impl/tables/statistics_collector_jobs.h"  // Statistics_collector_jobs
 #include "sql/table.h"                                  // MYSQL_SYSTEM_SCHEMA
 
 using namespace dd::tables;
@@ -192,6 +194,7 @@ void System_tables::add_remaining_dd_tables() {
   register_table<Routines>(second);
   register_table<Schemata>(core);
   register_table<Spatial_reference_systems>(second);
+  register_table<Statistics_collector_jobs>(second);
   register_table<Table_partition_values>(core);
   register_table<Table_partitions>(core);
   register_table<Table_stats>(second);
@@ -301,6 +304,7 @@ void System_views::init() {
   register_view<dd::system_views::St_units_of_measure>(is);
   register_view<dd::system_views::St_geometry_columns>(is);
   register_view<dd::system_views::Statistics>(is);
+  register_view<dd::system_views::Statistics_collector_jobs>(is);
   register_view<dd::system_views::Table_constraints>(is);
   register_view<dd::system_views::Table_constraints_extensions>(is);
   register_view<dd::system_views::Tables>(is);

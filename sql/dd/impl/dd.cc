@@ -52,6 +52,7 @@
 #include "sql/dd/impl/types/tablespace_file_impl.h"
 #include "sql/dd/impl/types/tablespace_impl.h"
 #include "sql/dd/impl/types/view_impl.h"
+#include "sql/dd/impl/types/statistics_collector_job_impl.h"
 
 namespace dd {
 

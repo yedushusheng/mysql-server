@@ -69,6 +69,7 @@
 #include "sql/dd/impl/transaction_impl.h"           // Transaction_ro
 #include "sql/dd/impl/types/entity_object_impl.h"   // Entity_object_impl
 #include "sql/dd/impl/types/object_table_definition_impl.h"  // fs_name_case()
+#include "sql/dd/impl/tables/statistics_collector_jobs.h"  // dd::Statistics_collector_jobs
 #include "sql/dd/properties.h"                               // Properties
 #include "sql/dd/types/abstract_table.h"                     // Abstract_table
 #include "sql/dd/types/charset.h"                            // Charset
@@ -88,6 +89,7 @@
 #include "sql/dd/types/view.h"                      // View
 #include "sql/dd/types/view_routine.h"              // View_routine
 #include "sql/dd/types/view_table.h"                // View_table
+#include "sql/dd/types/statistics_collector_job.h"  // Statistics_collector_job
 #include "sql/debug_sync.h"                         // DEBUG_SYNC()
 #include "sql/handler.h"
 #include "sql/log.h"
@@ -2785,6 +2787,13 @@ bool Dictionary_client::store(Basic_column_statistic *object) {
   // Store dictionary objects with UTC time
   Timestamp_timezone_guard ts(m_thd);
   return Storage_adapter::store<Basic_column_statistic>(m_thd, object);
+}
+
+template <>
+bool Dictionary_client::store(Statistics_collector_job *object) {
+  // Store dictionary objects with UTC time
+  Timestamp_timezone_guard ts(m_thd);
+  return Storage_adapter::store<Statistics_collector_job>(m_thd, object);
 }
 
 template <>

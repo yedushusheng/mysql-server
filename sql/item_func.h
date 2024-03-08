@@ -274,7 +274,8 @@ class Item_func : public Item_result_field, public Func_args_handle {
     JSON_OVERLAPS,
     MEMBER_OF_FUNC,
     STRCMP_FUNC,
-    TRUE_FUNC
+    TRUE_FUNC,
+    CONVERT_STATISTICS_COLLECTOR_STATUS_FUNC
   };
   enum optimize_type {
     OPTIMIZE_NONE,

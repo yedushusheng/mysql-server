@@ -207,6 +207,7 @@ SET(DD_SOURCES
   dd/impl/tables/routines.cc
   dd/impl/tables/schemata.cc
   dd/impl/tables/spatial_reference_systems.cc
+  dd/impl/tables/statistics_collector_jobs.cc
   dd/impl/tables/table_partitions.cc
   dd/impl/tables/table_stats.cc
   dd/impl/tables/table_partition_values.cc
@@ -247,6 +248,7 @@ SET(DD_SOURCES
   dd/impl/types/routine_impl.cc
   dd/impl/types/schema_impl.cc
   dd/impl/types/spatial_reference_system_impl.cc
+  dd/impl/types/statistics_collector_job_impl.cc
   dd/impl/types/table_impl.cc
   dd/impl/types/tablespace_file_impl.cc
   dd/impl/types/tablespace_impl.cc

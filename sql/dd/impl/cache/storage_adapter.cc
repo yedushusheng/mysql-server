@@ -53,6 +53,7 @@
 #include "sql/dd/impl/tables/tablespaces.h"  // dd::tables::Tablespaces
 #include "sql/dd/impl/transaction_impl.h"    // Transaction_ro
 #include "sql/dd/impl/types/entity_object_impl.h"
+#include "sql/dd/impl/tables/statistics_collector_jobs.h"  // dd::Statistics_collector_jobs
 #include "sql/dd/types/abstract_table.h"            // Abstract_table
 #include "sql/dd/types/charset.h"                   // Charset
 #include "sql/dd/types/collation.h"                 // Collation
@@ -68,6 +69,7 @@
 #include "sql/dd/types/table_stat.h"                // Table_stat
 #include "sql/dd/types/tablespace.h"                // Tablespace
 #include "sql/dd/types/view.h"                      // View
+#include "sql/dd/types/statistics_collector_job.h"  // Statistics_collector_job
 #include "sql/dd/upgrade_57/upgrade.h"              // allow_sdi_creation
 #include "sql/debug_sync.h"                         // DEBUG_SYNC
 #include "sql/error_handler.h"                      // Internal_error_handler
@@ -687,6 +689,29 @@ template bool Storage_adapter::get<Tablespace::Aux_key, Tablespace>(
 template bool Storage_adapter::drop(THD *, const Tablespace *);
 template bool Storage_adapter::store(THD *, Tablespace *);
 
+// Statistics_collector_job table
+template <>
+void Storage_adapter::core_get(const Statistics_collector_job::Name_key &,
+                               const Statistics_collector_job **) {}
+template <>
+void Storage_adapter::core_get(const Statistics_collector_job::Id_key &,
+                               const Statistics_collector_job **) {}
+
+template <>
+void Storage_adapter::core_drop(THD *, const Statistics_collector_job *) {}
+
+template <>
+void Storage_adapter::core_store(THD *, Statistics_collector_job *) {}
+
+template bool Storage_adapter::get<Statistics_collector_job::Name_key, Statistics_collector_job>(
+    THD *, const Statistics_collector_job::Name_key &, enum_tx_isolation, bool,
+    const Statistics_collector_job **);
+template bool Storage_adapter::get<Statistics_collector_job::Id_key, Statistics_collector_job>(
+    THD *, const Statistics_collector_job::Id_key &, enum_tx_isolation, bool,
+    const Statistics_collector_job **);
+template bool Storage_adapter::store(THD *, Statistics_collector_job *);
+
+template bool Storage_adapter::drop(THD *, const Statistics_collector_job *);
 /*
   DD objects dd::Table_stat and dd::Index_stat are not cached,
   because these objects are only updated and never read by DD

@@ -1754,4 +1754,43 @@ class Item_func_internal_get_dd_column_extra final : public Item_str_func {
   String *val_str(String *) override;
 };
 
+class Item_func_convert_statistics_collector_info : public Item_str_func {
+  typedef Item_str_func super;
+
+  String converted_info;
+
+ public:
+  Item_func_convert_statistics_collector_info(Item* item) : super(item) {}
+
+  Item_func_convert_statistics_collector_info(const POS& pos, Item* item) : super(pos, item) {}
+
+  bool itemize(Parse_context *pc, Item **res) override
+  { return super::itemize(pc, res); }
+
+  bool resolve_type(THD*) override;
+
+  String* val_str(String*) override;
+
+ protected:
+  virtual void convert_func(const int info_in_int, String* info_in_string) = 0;
+};
+
+class Item_func_convert_statistics_collector_status : public Item_func_convert_statistics_collector_info {
+ public:
+  Item_func_convert_statistics_collector_status(Item* item) : Item_func_convert_statistics_collector_info(item) {}
+
+  Item_func_convert_statistics_collector_status(const POS& pos, Item* item) : Item_func_convert_statistics_collector_info(pos, item) {}
+
+  const char* func_name() const override { return "convertstatistics_collector_status"; }
+
+  enum Functype functype() const override { return CONVERT_STATISTICS_COLLECTOR_STATUS_FUNC; }
+
+  Item *new_item(Item_clone_context *) const override {
+    return new Item_func_convert_statistics_collector_status(args[0]);
+  }
+
+ protected:
+  void convert_func(const int info_in_int, String* info_in_string) override;
+};
+
 #endif /* ITEM_STRFUNC_INCLUDED */
