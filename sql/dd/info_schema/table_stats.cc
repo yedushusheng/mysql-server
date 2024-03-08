@@ -453,25 +453,23 @@ bool update_index_stats(THD *thd, TABLE_LIST *table) {
 }
 
 /**
-  Get table's every Single-Column Index's field name
+  Get table's every Single-Column Index's field index and field name
 
   @param[in] table               TABLE info
-  @param[out] index_fields_name  Key Number and Key Field name info
+  @param[out] index_fields_name  Key's Field Number and Field name info
 
 */
-static void get_table_single_column_index_field_info(TABLE *table, std::map<uint, std::string> &index_fields_name) {
+void get_table_single_column_index_field_info(TABLE *table, std::map<uint, std::string> &index_fields_name) {
   // get table's index field name
   for (uint keyno = 0; keyno < table->s->keys; keyno++) {
     KEY *key_info = &table->key_info[keyno];
-    // only handler Single-Column index currently
-    if (key_info->user_defined_key_parts > 1)  continue;
-
-    KEY_PART_INFO *key_part = key_info->key_part;
     KEY_PART_INFO *key_part_end = key_part + key_info->user_defined_key_parts;
     for (; key_part < key_part_end; key_part++) {
       Field *field = key_part->field;
+      auto field_idx = field->field_index(); 
       if (is_numeric_type(field->type())) {
-        index_fields_name[keyno] = std::string(field->field_name, strlen(field->field_name));
+        // if the Field type is numeric, then save field index number and name
+        index_fields_name[field_idx] = std::string(field->field_name, strlen(field->field_name));
       }
     }
   }
@@ -496,6 +494,7 @@ bool get_basic_column_statistics_info(THD *thd, TABLE *table,
 
   // 1. set query sql
   std::string statistics_sql;
+  std::vector<std::string> field_name_array;
   statistics_sql.append(STRING_WITH_LEN("select "));
   auto it = index_fields_name.begin();
   while (it != index_fields_name.end()) {
@@ -519,6 +518,7 @@ bool get_basic_column_statistics_info(THD *thd, TABLE *table,
     statistics_sql.append(" USING utf8mb4");
     statistics_sql.append(")");
     statistics_sql.append("), ");
+    field_name_array.push_back(field_name);
     // max(col)
     statistics_sql.append("max(");
     statistics_sql.append("CONVERT(");
@@ -526,6 +526,7 @@ bool get_basic_column_statistics_info(THD *thd, TABLE *table,
     statistics_sql.append(" USING utf8mb4");
     statistics_sql.append(")");
     statistics_sql.append(")");
+    field_name_array.push_back(field_name);
     /** count(col)
      * Actual test results show, count aggregation function is too slow,
      * so count info not get currently, it should be optimized future.
@@ -571,33 +572,32 @@ bool get_basic_column_statistics_info(THD *thd, TABLE *table,
     thd->lock = saved_lock;
     // can not get column statistics info
     return true;
+
   } else {
     const List<Ed_row> &min_max_count_rsets = *(con.get_result_sets());
     // min-max result of column always equal one
     if (min_max_count_rsets.size() == 1) {
       const Ed_row &row = *(min_max_count_rsets[0]);
-      for (const auto& iter : index_fields_name) {
-        std::string field_name = iter.second;
-        //uint64_t count_value = 0;
-        std::string min_max_value;
-        // every field has two result Item_field (min,max), there is no count info currently
-        for (uint i = 0; i < row.size(); i++) {
-          // select min,max from db.tb
-          min_max_value.clear();
-          const Ed_column &column = row[i];
-          min_max_value = std::string(column.str, column.length);
-          min_max_value.erase(min_max_value.find_last_not_of('\0') + 1);
-          if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == MIN_ITEM) {
-            // trim duplicate '\0' at the end of string
-            min_info[field_name] = min_max_value;
-          } else if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == MAX_ITEM) {
-            max_info[field_name] = min_max_value;
-          }
-          //if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == COUNT_ITEM) {
-          //  count_value = *reinterpret_cast<uint64_t *>(row[i].str);
-          //  count_info[field_name] = count_value;
-          //}
+      //uint64_t count_value = 0;
+      std::string min_max_value;
+      // every field has two result Item_field (min,max), there is no count info currently
+      for (uint i = 0; i < row.size(); i++) {
+        std::string field_name = field_name_array[i];
+        // select min,max from db.tb
+        min_max_value.clear();
+        const Ed_column &column = row[i];
+        min_max_value = std::string(column.str, column.length);
+        min_max_value.erase(min_max_value.find_last_not_of('\0') + 1);
+        if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == MIN_ITEM) {
+          // trim duplicate '\0' at the end of string
+          min_info[field_name] = min_max_value;
+        } else if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == MAX_ITEM) {
+          max_info[field_name] = min_max_value;
         }
+        //if (i % AGGREGATE_FUNC_NUMBER_TO_GET_STATISTICS == COUNT_ITEM) {
+        //  count_value = *reinterpret_cast<uint64_t *>(row[i].str);
+        //  count_info[field_name] = count_value;
+        //}
       }
     }
   }
@@ -659,7 +659,11 @@ bool update_basic_column_stats(THD *thd, TABLE_LIST *table) {
   if (index_fields_name.empty())  return false;
   // get table index's min-max info
   if (get_basic_column_statistics_info(thd, analyze_table, index_fields_name, min_info, max_info, count_info)) {
-    return false;
+    // If get statistics failed, we need to rollback and terminate the
+    // operation
+    trans_rollback_stmt(thd);
+    trans_rollback(thd);
+    return true;
   }
 
   // set lock info

@@ -66,6 +66,11 @@ bool update_table_stats(THD *thd, TABLE_LIST *table);
 */
 bool update_index_stats(THD *thd, TABLE_LIST *table);
 
+
+// Get table's key no and field name
+void get_table_single_column_index_field_info(
+    TABLE *table, std::map<uint, std::string> &index_fields_name);
+
 /**
 
   Get mysql.basic_column_statistics info by send Query SQL to local SQLEngine.
