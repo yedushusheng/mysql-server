@@ -478,7 +478,7 @@ static void get_table_single_column_index_field_info(TABLE *table, std::map<uint
 }
 
 // get basic column statistics info by SQL
-void get_basic_column_statistics_info(THD *thd, TABLE *table,
+bool get_basic_column_statistics_info(THD *thd, TABLE *table,
                                       std::map<uint, std::string> &index_fields_name,
                                       std::map<std::string, std::string> &min_info,
                                       std::map<std::string, std::string> &max_info,
@@ -486,6 +486,13 @@ void get_basic_column_statistics_info(THD *thd, TABLE *table,
   assert(table);
   TABLE_SHARE *table_share = table->s;
   assert(table_share);
+
+  /** The temporary table cannot be opened twice in one query.
+   * It must be closed in advance to ensure that the newly constructed SQL can open the temporary table correctly.
+   * Note: When early shutdown occurs, all operations on the temporary table by the original explain process have been completed,
+   * and the original explain process will not be affected.
+   */
+  if (table_share->tmp_table)  mark_tmp_table_for_reuse(table);
 
   // 1. set query sql
   std::string statistics_sql;
@@ -563,7 +570,7 @@ void get_basic_column_statistics_info(THD *thd, TABLE *table,
     assert(thd->lock == nullptr);
     thd->lock = saved_lock;
     // can not get column statistics info
-    return;
+    return true;
   } else {
     const List<Ed_row> &min_max_count_rsets = *(con.get_result_sets());
     // min-max result of column always equal one
@@ -598,6 +605,7 @@ void get_basic_column_statistics_info(THD *thd, TABLE *table,
   // as we have set thd->lock to nullptr, here avoid adding extra locks
   assert(thd->lock == nullptr);
   thd->lock = saved_lock;
+  return false;
 }
 
 // for analyze table, update system schema's basic column
@@ -650,7 +658,9 @@ bool update_basic_column_stats(THD *thd, TABLE_LIST *table) {
   // if table without key, ignore it
   if (index_fields_name.empty())  return false;
   // get table index's min-max info
-  get_basic_column_statistics_info(thd, analyze_table, index_fields_name, min_info, max_info, count_info);
+  if (get_basic_column_statistics_info(thd, analyze_table, index_fields_name, min_info, max_info, count_info)) {
+    return false;
+  }
 
   // set lock info
   dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());

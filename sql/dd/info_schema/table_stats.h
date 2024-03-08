@@ -77,9 +77,9 @@ bool update_index_stats(THD *thd, TABLE_LIST *table);
   @param max_info index column max value info
   @param count_info index column count value info (unused)
 
-  @returns void
+  @returns false on success, true on failure.
 */
-void get_basic_column_statistics_info(THD *thd, TABLE *table,
+bool get_basic_column_statistics_info(THD *thd, TABLE *table,
                                       std::map<uint, std::string> &index_fields_name,
                                       std::map<std::string, std::string> &min_info,
                                       std::map<std::string, std::string> &max_info,
