@@ -403,6 +403,8 @@ struct Rdb_table_handler : public boost::noncopyable{
 
   //Heuristic update, no need for precision, no atomic variables
   uint64_t update_count_ {0}; //
+  // DML modify counter update
+  uint64_t global_dml_modify_counter_ {0};  
   uint64_t m_last_update_time_for_check_{0}; //microsecond, multiple bthread shared this variable, no need for precision, don't need atomic
 
   std::atomic<uint64_t> m_last_update_time_ {0};//microsecond, when call update,will update this variable
@@ -416,10 +418,14 @@ struct Rdb_table_handler : public boost::noncopyable{
 
   inline void AddUpdateCount(uint64_t n) {
     update_count_ += n;
+    global_dml_modify_counter_ += n;
   }
   inline void ResetUpdateCount() {
     update_count_ = 0;
   }
+  inline void ResetGlobalDmlModifyCounter() {
+    global_dml_modify_counter_ = 0;
+  }  
   inline void ResetWhenSubmitTask() {
     m_last_update_time_for_check_ = my_micro_time();
     ResetUpdateCount();

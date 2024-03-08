@@ -7060,3 +7060,15 @@ static Sys_var_bool Sys_replication_sender_observe_commit_only(
     GLOBAL_VAR(opt_replication_sender_observe_commit_only), CMD_LINE(OPT_ARG),
     DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr),
     ON_UPDATE(nullptr));
+
+static Sys_var_bool Sys_tdsql_enable_update_dml_modify_counter(
+    "tdsql_enable_update_dml_modify_counter",
+    "Whether enable update dml_modify_counter of mysql.table_stats",
+    GLOBAL_VAR(tdsql_enable_update_dml_modify_counter),
+    CMD_LINE(OPT_ARG), DEFAULT(false));
+
+static Sys_var_uint Sys_tdsql_update_dml_modify_counter_interval(
+    "tdsql_update_dml_modify_counter_interval",
+    "Dml_modify_counter update interval (in second) of mysql.table_stats",
+    GLOBAL_VAR(tdsql_update_dml_modify_counter_interval), CMD_LINE(OPT_ARG),
+    VALID_RANGE(1, UINT32_MAX), DEFAULT(1), BLOCK_SIZE(1));

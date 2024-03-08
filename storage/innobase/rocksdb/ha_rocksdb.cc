@@ -120,6 +120,7 @@ char* tdsql_histogram_auto_analyze_end_utc_time;
 uint tdsql_save_update_time_interval;
 uint tdsql_handler_record_buffer_size;
 uint tdsql_stats_lease_time;
+uint tdsql_update_dml_modify_counter_interval;
 extern bool tdsql_optimize_pk_point_select;
 extern int32_t tdsql_trans_type;
 extern int32_t tdsql_autoinc_retry_times_on_dupkey_err;
@@ -1151,6 +1152,74 @@ void myrocks_execute_update_sql([[maybe_unused]]THD *thd, const std::string &db_
   tdsql::global_sql_runner.SubmitSqlTask("mysql.table_stats", sql_buf);
 }
 
+
+// use update sql to save dml_modify_counter
+void myrocks_execute_update_dml_modify_counter_sql(
+    const std::string &db_table, ulonglong dml_modify_counter) {
+  // Check for previous DML operations
+  if (dml_modify_counter == 0) return;
+  time_t now = time(NULL);
+  MYSQL_TIME time;
+  my_tz_SYSTEM->gmt_sec_to_TIME(&time, now);
+  ulonglong update_time = TIME_to_ulonglong_datetime(time);
+  size_t pos = db_table.find('.');
+  if (pos == std::string::npos) {
+    LogError("db_table:%s is not legal", db_table.c_str());
+    return;
+  }
+  std::string db = db_table.substr(0, pos);
+  std::string table = db_table.substr(pos + 1);
+  // filter system schema
+  if (is_system_table(db.c_str(), table.c_str())) return;
+  /** In order to avoid repeated execution of dml_modify_counter updates between
+   * tdsql_update_dml_modify_counter_interval here, to set the time interval
+   * multiple SQLEngine, which increases the machine load, add the configuration
+   * allowed to update the data dictionary
+   */
+  char sql_buf[1024];
+  snprintf(sql_buf, sizeof(sql_buf),
+           "update mysql.table_stats set "
+           "dml_modify_counter=dml_modify_counter+ %llu, update_time =  %llu "
+           "where schema_name = '%s' and table_name = '%s' and "
+           "(timestampdiff(second, update_time, now()) > %u "
+           "or update_time is null)",
+           dml_modify_counter, update_time, db.c_str(), table.c_str(),
+           tdsql_update_dml_modify_counter_interval);
+  tdsql::global_sql_runner.SubmitSqlTask("mysql.table_stats", sql_buf);
+}
+
+void myrocks_save_dml_modify_counter_info() {
+  // Step 1:get all opened tables info
+  std::vector<std::string> open_tables = rdb_get_open_table_names();
+  std::string db_table, fullname;
+  for (auto &it : open_tables) {
+    db_table = it;
+    bool table_handler_is_create = false;
+    Rdb_table_handler *table_handler = rdb_open_tables.get_table_handler(
+        db_table.c_str(), table_handler_is_create);
+    std::size_t slash = db_table.rfind("/");
+    if (slash != std::string::npos) {
+      int err = rdb_normalize_tablename(db_table, &fullname);
+      if (err != HA_EXIT_SUCCESS) {
+        continue;
+      }
+    } else {
+      fullname = db_table;
+    }
+    // Step 2:get each table's dml_modify_counter value
+    ulonglong dml_modify_counter = table_handler->global_dml_modify_counter_;
+    // Step 3:update mysql.table_stats' dml_modify_counter
+    myrocks_execute_update_dml_modify_counter_sql(fullname, dml_modify_counter);
+    // Step 4:clean resources
+    if (table_handler != nullptr) {
+      // reset dml_modify_counter
+      table_handler->ResetGlobalDmlModifyCounter();
+      rdb_open_tables.release_table_handler(table_handler);
+      table_handler = nullptr;
+    }
+  }
+}
+
 void myrocks_save_update_time(THD *thd) {
   struct Rdb_table_collector : public Rdb_tables_scanner {
    public:
@@ -1172,8 +1241,15 @@ void myrocks_save_update_time(THD *thd) {
   for (auto &update_time : collector.update_time) {
     myrocks_execute_update_sql(thd, update_time.first, update_time.second);
   }
+
+  if (tdsql_enable_update_dml_modify_counter) {
+    myrocks_save_dml_modify_counter_info();
+  }  
 }
 
+/**
+ * The backend thread for update update_time and dml_modify_counter
+ */
 void SaveUpdateTimeThread::Run() {
   tdsql::Bg_thread_cnt_ctx btcc("myrocks_save_update_time thread",
                                 tdsql::BACK_PR);
