@@ -982,7 +982,7 @@ TABLE *create_tmp_table(THD *thd, Temp_table_param *param,
     bool store_column = true;
     if (not_all_columns) {
       if (item->has_aggregation() && type != Item::SUM_FUNC_ITEM) {
-        if (item->used_tables() & OUTER_REF_TABLE_BIT)
+        if (item->is_outer_reference() && !param->m_create_using_cloned_fields)
           item->update_used_tables();
         if (type == Item::SUBSELECT_ITEM ||
             (item->used_tables() & ~OUTER_REF_TABLE_BIT)) {

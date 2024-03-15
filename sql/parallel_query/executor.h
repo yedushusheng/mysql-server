@@ -46,7 +46,7 @@ class Collector {
   bool CreateMergeSort(JOIN *join, ORDER *merge_order, bool remove_duplicates);
   std::pair<std::string *, std::string *> WorkersTimingData() const;
   AccessPath *Explain(std::vector<std::string> &description);
-  void SetPreevaluateSubqueries(CachedSubselects &cached_subselects) {
+  void SetPreevaluateSubqueries(CachedSubselectList &cached_subselects) {
     m_preevaluate_subqueries = cached_subselects;
   }
   void CreateTimingIteratorForPartialPlan(THD *thd);
@@ -71,7 +71,7 @@ class Collector {
   TABLE *m_table{nullptr};
   // This is a shallow copy of cached subqueries of partial plan for evaluating
   // them.
-  CachedSubselects m_preevaluate_subqueries;  
+  CachedSubselectList m_preevaluate_subqueries;
   Filesort *m_merge_sort{nullptr};
   comm::RowExchange m_receiver_exchange;
   comm::RowExchangeReader *m_row_exchange_reader{nullptr};

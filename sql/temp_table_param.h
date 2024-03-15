@@ -180,6 +180,12 @@ class Temp_table_param {
   /// (Last) window's tmp file step can be skipped
   bool m_window_short_circuit;
 
+  /// Used by parallel query, the plan is generated from complete query plan, so
+  /// skip some optimization related steps. Currently we don't call
+  /// update_used_tables() for fields since the item is not cloned completely,
+  /// e.g. some Item_refs is not resolved yet.
+  bool m_create_using_cloned_fields{false};
+
   /// This tmp table is used for a window's frame buffer
   bool m_window_frame_buffer{false};
 

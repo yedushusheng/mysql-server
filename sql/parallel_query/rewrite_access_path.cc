@@ -5,6 +5,7 @@
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
 #include "sql/join_optimizer/relational_expression.h"
+#include "sql/nested_join.h"
 #include "sql/opt_range.h"
 #include "sql/parallel_query/executor.h"
 #include "sql/parallel_query/planner.h"
@@ -583,6 +584,7 @@ bool recreate_materialized_table(THD *thd, JOIN *join, ORDER *group,
   (*tmp_table_param)->hidden_field_count = CountHiddenFields(*curr_fields);
 
   (*tmp_table_param)->skip_create_table = true;
+  (*tmp_table_param)->m_create_using_cloned_fields = true;
 
   // item's marker in group can be changed in create_tmp_table(). The
   // materialize table rewriter should not change that. This leads to temp
@@ -1089,21 +1091,35 @@ bool PartialAccessPathRewriter::
   setup_semijoin_materialized_table().
 */
 static TABLE *recreate_semijoin_materialized_table(
-    MEM_ROOT *mem_root, PartialPlan *partial_plan,
-    Item_clone_context *clone_context, TABLE *orig_table,
+    JOIN *join_from, Item_clone_context *clone_context, TABLE *orig_table,
     Temp_table_param *temp_table_param, Query_block *query_block) {
   THD *thd = clone_context->thd();
   TABLE *table;
-  mem_root_deque<Item *> sjm_fields(mem_root);
+  mem_root_deque<Item *> sjm_fields(thd->mem_root);
   auto *orig_table_list = orig_table->pos_in_table_list;
-  if (partial_plan->CloneSJMatInnerExprsForTable(orig_table_list->m_id,
-                                                 &sjm_fields, clone_context))
-    return nullptr;
+
+  Semijoin_mat_exec *orig_sj_mat_exec = nullptr;
+  for (auto &sjm : join_from->sjm_exec_list) {
+    if (sjm.table->pos_in_table_list->is_identical(orig_table_list)) {
+      orig_sj_mat_exec = &sjm;
+      break;
+    }
+  }
+  assert(orig_sj_mat_exec);
+
+  auto *nested_join = orig_sj_mat_exec->sj_nest->nested_join;
+  for (auto *item : nested_join->sj_inner_exprs) {
+    Item *new_item;
+    if (!(new_item = item->clone(clone_context)) ||
+        sjm_fields.push_back(new_item))
+      return nullptr;
+  }
 
   count_field_types(query_block, temp_table_param, sjm_fields, false, true);
   temp_table_param->bit_fields_as_long = true;
+  temp_table_param->m_create_using_cloned_fields = true;
 
-  const char *name = strdup_root(mem_root, orig_table->alias);
+  const char *name = strdup_root(thd->mem_root, orig_table->alias);
   if (name == nullptr) return nullptr; /* purecov: inspected */
 
   if (!(table =
@@ -1151,8 +1167,8 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
     // This is the semijoin materialization table
     if (!(temp_table_param = new (mem_root()) Temp_table_param)) return true;
     if (!(table = recreate_semijoin_materialized_table(
-              mem_root(), join_from->partial_plan, m_item_clone_context,
-              dest_param->table, temp_table_param, join->query_block)))
+              join_from, m_item_clone_context, dest_param->table,
+              temp_table_param, join->query_block)))
       return true;
 
     dest_param->table = table;

@@ -2254,13 +2254,6 @@ TABLE_REF *TABLE_REF::clone(TABLE *table,
   return ref;
 }
 
-Item_parallel_safe TABLE_REF::parallel_safe(TABLE *table) const {
-  if (!key_copy) return Item_parallel_safe::Safe;
-  if (!(table->key_info + key)) return Item_parallel_safe::Safe;
-
-  return GetItemsParallelSafe(items, key_parts);
-}
-
 /**
   Setup a ref access for looking up rows via an index (a key).
 

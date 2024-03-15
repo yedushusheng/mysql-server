@@ -58,6 +58,62 @@ static bool ItemRefuseParallel(const Item *item, bool deny_outer_ref,
 
   return false;
 }
+enum class PlanExprPlace { FIELDS, FILTER, HAVING, SJ_INNER_EXPRS };
+
+/**
+  Traverse every item of one query plan, include fields of Query_block and
+  JOIN, calling func() for each one. If func() returns true, traversal is
+  stopped early.
+
+  func() must have signature func(Item *, PlanExprPlace), the last parameter is
+   place of item.
+*/
+template <typename Func>
+bool walk_plan_expressions(const Query_block *query_block, Func &&func) {
+  for (Item *item : query_block->fields) {
+    if (func(item, PlanExprPlace::FIELDS)) return true;
+  }
+  auto *join = query_block->join;
+  if (!join) return false;
+
+  if (join->having_cond && func(join->having_cond, PlanExprPlace::HAVING))
+    return true;
+
+  // No tables or Select tables optimized away. See zero_result_cause usages.
+  if (!join->qep_tab) return false;
+
+  for (uint i = 0; i < join->tables; ++i) {
+    auto *qt = &join->qep_tab[i];
+
+    if (qt->having && func(qt->having, PlanExprPlace::FILTER)) return true;
+
+    if (qt->condition() && func(qt->condition(), PlanExprPlace::FILTER))
+      return true;
+
+    auto *table = qt->table();
+    if (!table) continue;
+
+    Item *pushed_cond = table->file->pushed_idx_cond;
+    if (pushed_cond && func(pushed_cond, PlanExprPlace::FILTER)) return true;
+
+    // Walk on TABLE_REF finally
+    if (qt->type() < JT_CONST || qt->type() > JT_REF) continue;
+    auto &ref = qt->ref();
+    if (!ref.key_copy || !(table->key_info + ref.key)) continue;
+    for (uint kpart = 0; kpart < ref.key_parts; ++kpart) {
+      if (func(ref.items[kpart], PlanExprPlace::FILTER)) return true;
+    }
+  }
+
+  // Walk semi-join materialization items too
+  for (auto &sjm : join->sjm_exec_list) {
+    for (auto *item : sjm.sj_nest->nested_join->sj_inner_exprs) {
+      if (func(item, PlanExprPlace::SJ_INNER_EXPRS)) return true;
+    }
+  }
+
+  return false;
+}
 
 static bool IsAccessRangeSupported(QEP_TAB *qt) {
   assert(qt->type() == JT_RANGE);
@@ -103,10 +159,6 @@ static const char *TableAccessTypeRefuseParallel(QEP_TAB *qt) {
 
   if (typ == JT_RANGE && !IsAccessRangeSupported(qt))
     return "unsupported_access_range_type";
-
-  if (qt->type() >= JT_CONST && qt->type() <= JT_REF &&
-      qt->ref().parallel_safe(qt->table()) != Item_parallel_safe::Safe)
-    return "has_unsafe_items_in_table_ref";
 
   return nullptr;
 }
@@ -680,47 +732,6 @@ void PartialPlan::SetParallelScanReverse() {
   m_parallel_scan_info.scan_desc.flags |= parallel_scan_flags::desc;
 }
 
-bool PartialPlan::CollectSJMatInfoList(JOIN *source_join,
-                                       Item_clone_context *clone_context) {
-  auto *mem_root = source_join->thd->mem_root;
-  // For semi join materialization temporary table recreating
-  for (auto &sjm : source_join->sjm_exec_list) {
-    ulong tbl_id = sjm.table->pos_in_table_list->m_id;
-    auto *sjm_info = new (mem_root) Semijoin_mat_info(mem_root, tbl_id);
-    if (!sjm_info) return true;
-    for (auto *item : sjm.sj_nest->nested_join->sj_inner_exprs) {
-      Item *new_item;
-      if (!(new_item = item->clone(clone_context)) ||
-          sjm_info->sj_inner_exprs.push_back(new_item))
-        return true;
-    }
-    m_sjm_info_list.push_back(sjm_info);
-  }
-
-  return false;
-}
-
-bool PartialPlan::CloneSJMatInnerExprsForTable(
-    ulong table_id, mem_root_deque<Item *> *sjm_fields,
-    Item_clone_context *clone_context) {
-  Semijoin_mat_info *sj_mat_info = nullptr;
-  for (auto &sjmi : m_sjm_info_list) {
-    if (sjmi.table_id == table_id) {
-      sj_mat_info = &sjmi;
-      break;
-    }
-  }
-  assert(sj_mat_info);
-  for (auto *item : sj_mat_info->sj_inner_exprs) {
-    Item *new_item;
-    if (!(new_item = item->clone(clone_context)) ||
-        sjm_fields->push_back(new_item))
-      return true;
-  }
-
-  return false;
-}
-
 uint ParallelDegreeHolder::acquire(uint degree, bool forbid_reduce) {
   m_degree = AcquireParallelWorkers(degree, forbid_reduce);
   return m_degree;
@@ -779,50 +790,6 @@ class PartialItemGenContext : public Item_clone_context {
  public:
   using Item_clone_context::Item_clone_context;
 
-  /// Create cached result for each parallel safe single-row subqueries
-  bool BuildCachedSubqueryList(Query_block *source_query_block,
-                               bool recursive) {
-    for (auto *unit = source_query_block->first_inner_query_expression(); unit;
-         unit = unit->next_query_expression()) {
-      auto *item = unit->item;
-
-      // TODO: Change this if we support pushdown derived tables or non-single
-      // row subqueries.
-      if (!item || (item->is_uncacheable() && !recursive) ||
-          item->parallel_safe() != Item_parallel_safe::Safe ||
-          item->substype() != Item_subselect::SINGLEROW_SUBS)
-        continue;
-
-      if (item->is_uncacheable()) {
-        assert(recursive);
-        for (auto *inner_select = unit->first_query_block(); inner_select;
-             inner_select = inner_select->next_query_block()) {
-          if (BuildCachedSubqueryList(inner_select, recursive)) return true;
-        }
-        continue;
-      }
-
-      auto *cached_subselect =
-          Item_cached_subselect_result::create_from_subselect(item);
-      if (!cached_subselect) return true;
-      m_cached_subselects.push_back(cached_subselect);
-    }
-    return false;
-  }
-
-  /// Removes children of @param source_query_block since they are not included
-  /// in partial plan (e.g. only referred by leader).
-  void RemoveUnusedCachedSubqueries(Query_block *source_query_block) {
-    List_iterator<Item_cached_subselect_result> it(m_cached_subselects);
-    Item_cached_subselect_result *cached_result;
-    while ((cached_result = it++)) {
-      if (cached_result->subselect()->unit->outer_query_block() !=
-          source_query_block)
-        continue;
-      if (!cached_result->has_replacements()) it.remove();
-    }
-  }
-
   void rebind_field(Item_field *item_field,
                     const Item_field *from_field) override {
     // We moved origin table to partial plan, so table_ref is not changed
@@ -848,26 +815,105 @@ class PartialItemGenContext : public Item_clone_context {
 
   Item *get_replacement_item(const Item *item) override {
     if (item->type() != Item::SUBSELECT_ITEM) return nullptr;
-    for (auto &subs_item : m_cached_subselects) {
-      if (subs_item.subselect() != item) continue;
-      subs_item.inc_replacements();
-      subs_item.set_id(item->id());
-      return &subs_item;
-    }
+    auto *subq = down_cast<const Item_subselect *>(item);
+    if (!subq->is_uncacheable())
+      return AddCachedSubquery(const_cast<Item_subselect *>(subq));
 
     // Other sub-queries should be pushed down unless wrong parallel plan is
     // generated.
     auto *sub_unit = down_cast<const Item_subselect *>(item)->unit;
     assert(sub_unit->first_query_block() && sub_unit->outer_query_block());
+    // For consistency, also mark its evaluation policy.
+    sub_unit->set_parallel_pushdown_evaluation();
     m_pushdown_subselects.push_back(sub_unit);
-    for (auto *inner_select = sub_unit->first_query_block(); inner_select;
-         inner_select = inner_select->next_query_block())
-      BuildCachedSubqueryList(inner_select, true);
     return nullptr;
   }
 
-  CachedSubselects m_cached_subselects;
-  QueryExpressions m_pushdown_subselects;
+  /**
+    Call this function to finish partial plan generation
+
+    Do following jobs:
+    - Resolve all Item_ref items
+    - collect cached sub-queries and mark all child query expressions in pushed
+      down sub-queries.
+  */
+  bool EndPartialPlanGen() {
+    // Resolve all Item_ref finally.
+    if (final_resolve_refs()) return true;
+
+    // Collect all cached sub-queries from push down sub-queries otherwise
+    // partial plan may includes some sub-queries' parallel plan.
+    for (auto &unit : m_pushdown_subselects) {
+      for (auto *inner_select = unit.first_query_block(); inner_select;
+           inner_select = inner_select->next_query_block()) {
+        if (CollectCachedSubqueries(inner_select)) return true;
+      }
+    }
+
+    return false;
+  }
+  CachedSubselectList &CachedSubselects() { return m_cached_subselects; }
+  QueryExpressionList &PushdownSubselects() { return m_pushdown_subselects; }
+
+ private:
+  /**
+    Save a cached sub-query if it is not in list yet and mark its evaluation
+    policy in its query expression.
+  */
+  Item *AddCachedSubquery(Item_subselect *subselect) {
+    for (auto &item : m_cached_subselects) {
+      if (item.subselect() == subselect) return &item;
+    }
+
+    auto *cached_subselect =
+        Item_cached_subselect_result::create_from_subselect(subselect);
+    if (!cached_subselect || m_cached_subselects.push_back(cached_subselect))
+      return nullptr;
+
+    subselect->unit->set_parallel_pre_evaluation();
+
+    return cached_subselect;
+  }
+
+  /**
+    Walk in an item to collect sub-queries recursively and mark parallel
+    evaluation policy for each query expressions.
+  */
+  bool walk_for_subqueries_from_item(Item *item_arg) {
+    return WalkItem(item_arg, enum_walk::PREFIX, [this](Item *item) {
+      if (item->type() != Item::SUBSELECT_ITEM) return false;
+      auto *subq = down_cast<Item_subselect *>(item);
+      if (subq->substype() != Item_subselect::SINGLEROW_SUBS) return false;
+      if (!subq->is_uncacheable()) {
+        if (!AddCachedSubquery(subq)) return true;
+        return false;
+      }
+
+      subq->unit->set_parallel_pushdown_evaluation();
+
+      for (auto *inner_select = subq->unit->first_query_block(); inner_select;
+           inner_select = inner_select->next_query_block()) {
+        if (CollectCachedSubqueries(inner_select)) return true;
+      }
+
+      return false;
+    });
+  }
+
+  /**
+    Collect cached (pre-evaluate) sub-queries in @param source_query_block
+    includes its child plan tree. Also mark evaluation policy for each query
+    expression.
+  */
+  bool CollectCachedSubqueries(Query_block *source_query_block) {
+    return walk_plan_expressions(source_query_block, [this](Item *item, auto) {
+      assert(item->parallel_safe() == Item_parallel_safe::Safe);
+      return walk_for_subqueries_from_item(item);
+    });
+  }
+
+  CachedSubselectList m_cached_subselects;
+  QueryExpressionList m_pushdown_subselects;
 };
 
 static bool is_order_prefix_by_key_fields(ORDER *order, KEY *key,
@@ -1032,6 +1078,32 @@ bool ParallelPlan::ClonePartialOrders() {
   join->simple_group = source_join->simple_group;
 
   join->simple_order = source_join->simple_order;
+
+  return false;
+}
+bool ParallelPlan::CloneSemiJoinExecList(Item_clone_context *context) {
+  auto *join = PartialQueryBlock()->join;
+  auto *source_join = SourceQueryBlock()->join;
+  auto *mem_root = join->thd->mem_root;
+
+  for (auto &sjm : source_join->sjm_exec_list) {
+    // Here To identify shared or pushed down sub-queries, we need clone
+    // sj_inner_exprs, and need a new NESTED_JOIN.
+    auto *sj_nest = sjm.sj_nest->clone(mem_root);
+    sj_nest->nested_join = new (mem_root) NESTED_JOIN;
+    for (auto *item : sjm.sj_nest->nested_join->sj_inner_exprs) {
+      Item *new_item;
+      if (!(new_item = item->clone(context)) ||
+          sj_nest->nested_join->sj_inner_exprs.push_back(new_item))
+        return true;
+    }
+
+    Semijoin_mat_exec *const sjm_exec = new (mem_root)
+        Semijoin_mat_exec(sj_nest, sjm.is_scan, sjm.table_count,
+                          sjm.mat_table_index, sjm.inner_table_index);
+    sjm_exec->table = sjm.table;
+    join->sjm_exec_list.push_back(sjm_exec);
+  }
 
   return false;
 }
@@ -1244,9 +1316,6 @@ bool ParallelPlan::GeneratePartialPlan(
   if (!ref_clone_resolver || !clone_context) return true;
   *partial_clone_context = clone_context;
 
-  if (clone_context->BuildCachedSubqueryList(source_query_block, false))
-    return true;
-
   auto &parallel_scan_info = m_partial_plan.GetParallelScanInfo();
   m_aggregate_strategy = decide_aggregate_strategy(
       source_join, parallel_scan_info.table, parallel_scan_info.scan_desc.keynr,
@@ -1267,6 +1336,7 @@ bool ParallelPlan::GeneratePartialPlan(
   if (setup_partial_base_ref_items()) return true;
 
   if (ClonePartialOrders()) return true;
+  if (CloneSemiJoinExecList(clone_context)) return true;
 
   count_field_types(partial_query_block, &join->tmp_table_param,
                     partial_query_block->fields, false, false);
@@ -1276,9 +1346,6 @@ bool ParallelPlan::GeneratePartialPlan(
 
   join->tmp_table_param.precomputed_group_by =
       source_join->tmp_table_param.precomputed_group_by;
-
-  if (m_partial_plan.CollectSJMatInfoList(source_join, clone_context))
-    return true;
 
   if (CreateCollector(thd)) return true;
 
@@ -1314,16 +1381,16 @@ bool ParallelPlan::Generate() {
 
   if (GenerateAccessPath(partial_clone_context)) return true;
 
-  if (partial_clone_context->final_resolve_refs()) return true;
+
+  if (partial_clone_context->EndPartialPlanGen()) return true;
 
   if (setup_sum_funcs(thd, source_join->sum_funcs)) return true;
 
-  partial_clone_context->RemoveUnusedCachedSubqueries(source_query_block);
-  auto &cached_subselects = partial_clone_context->m_cached_subselects;
+  auto &cached_subselects = partial_clone_context->CachedSubselects();
   m_collector->SetPreevaluateSubqueries(cached_subselects);
-  m_partial_plan.SetCachedSubqueries(std::move(cached_subselects));
+  m_partial_plan.SetCachedSubqueries(cached_subselects);
   m_partial_plan.SetPushdownInnerQueryExpressions(
-      std::move(partial_clone_context->m_pushdown_subselects));
+      partial_clone_context->PushdownSubselects());
   if (!lex->is_explain() || lex->is_explain_analyze)
     m_collector->PrepareExecution(thd);
 
@@ -1523,13 +1590,34 @@ const char *Query_block::parallel_safe(bool deny_outer_ref) const {
   }
 
   const char *item_refuse_cause;
-  for (Item *item : fields) {
-    if (pq::skip_no_used_field(master, item)) continue;
-    if (!pq::ItemRefuseParallel(item, deny_outer_ref, &item_refuse_cause))
-      continue;
-    return item_refuse_cause ? item_refuse_cause
-                             : "include_unsafe_items_in_fields";
-  }
+  auto *unit = master;
+
+  using PlanExprPlace = pq::PlanExprPlace;
+  if (pq::walk_plan_expressions(this, [deny_outer_ref, &item_refuse_cause,
+                                       unit](Item *item, PlanExprPlace place) {
+        if (place == PlanExprPlace::FIELDS &&
+            pq::skip_no_used_field(unit, item))
+          return false;
+        if (!pq::ItemRefuseParallel(item, deny_outer_ref, &item_refuse_cause))
+          return false;
+        if (item_refuse_cause) return true;
+        switch (place) {
+          case PlanExprPlace::FIELDS:
+            item_refuse_cause = "fields_have_unsafe_expressions";
+            break;
+          case PlanExprPlace::FILTER:
+            item_refuse_cause = "filter_has_unsafe_expressions";
+            break;
+          case PlanExprPlace::HAVING:
+            item_refuse_cause = "having_has_unsafe_expressions";
+            break;
+          case PlanExprPlace::SJ_INNER_EXPRS:
+            item_refuse_cause = "sj_inner_exprs_have_unsafe_expressions";
+            break;
+        }
+        return true;
+      }))
+    return item_refuse_cause;
 
   // Optimizer would quit early if it found zero row result, this leads to that
   // the variable tables is not set correctly, see JOIN::zero_result_cause.
@@ -1542,7 +1630,7 @@ const char *Query_block::parallel_safe(bool deny_outer_ref) const {
     // See Query_block::optimize(), optimization of inner query expressions can
     // be skipped due to zero result.
 #ifndef NDEBUG
-    auto *cur_unit = master_query_expression();
+    auto *cur_unit = unit;
     bool zero_result_found = false;
     while (cur_unit) {
       auto *qb = cur_unit->master;
@@ -1555,11 +1643,6 @@ const char *Query_block::parallel_safe(bool deny_outer_ref) const {
 #endif
     return nullptr;
   }
-
-  if (join->having_cond &&
-      pq::ItemRefuseParallel(join->having_cond, deny_outer_ref,
-                             &item_refuse_cause))
-    return item_refuse_cause ? item_refuse_cause : "having_is_unsafe";
 
   // We don't support const tables yet, it needs further debugging.
   if (join->const_tables > 0) return "plan_with_const_tables";
@@ -1577,38 +1660,10 @@ const char *Query_block::parallel_safe(bool deny_outer_ref) const {
         qt->materialize_table != QEP_TAB::MATERIALIZE_SEMIJOIN)
       return "include_unsupported_temporary_table";
 
-    if (qt->having &&
-        pq::ItemRefuseParallel(qt->having, deny_outer_ref, &item_refuse_cause))
-      return item_refuse_cause ? item_refuse_cause
-                               : "table_having_has_unsafe_condition";
-
-    if (qt->condition() &&
-        pq::ItemRefuseParallel(qt->condition(), deny_outer_ref,
-                               &item_refuse_cause))
-      return item_refuse_cause ? item_refuse_cause
-                               : "filter_has_unsafe_condition";
-
-    auto *table = qt->table();
-    if (!table) continue;
-
-    Item *item = table->file->pushed_idx_cond;
-    if (item &&
-        pq::ItemRefuseParallel(item, deny_outer_ref, &item_refuse_cause))
-      return item_refuse_cause ? item_refuse_cause
-                               : "filter_pushed_idx_cond_has_unsafe_condition";
 
     const char *cause;
-    if ((cause = pq::TableAccessTypeRefuseParallel(qt))) return cause;
-  }
-
-  // Make sure semi-join materialization items parallel safe, we use them to
-  // create materialization temporary tables in partial plan, currently.
-  for (auto &sjm : join->sjm_exec_list) {
-    for (auto *item : sjm.sj_nest->nested_join->sj_inner_exprs) {
-      if (!(pq::ItemRefuseParallel(item, deny_outer_ref, &item_refuse_cause)))
-        continue;
-      return item_refuse_cause ? item_refuse_cause : "unsafe_sj_inner_exprs";
-    }
+    if (qt->table() && (cause = pq::TableAccessTypeRefuseParallel(qt)))
+      return cause;
   }
 
   return nullptr;
@@ -1688,8 +1743,8 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
   best_read = from->best_read;
   sort_cost = from->sort_cost;
   windowing_cost = from->windowing_cost;
-
-  if (make_sum_func_list(*fields, true) || setup_sum_funcs(thd, sum_funcs))
+  if (!zero_result_cause &&
+      (make_sum_func_list(*fields, true) || setup_sum_funcs(thd, sum_funcs)))
     return true;
   assert(from->root_access_path());
 

@@ -1387,6 +1387,7 @@ void SELECT_LEX_UNIT::cleanup(THD *thd, bool full) {
 
   if (full) {
     m_root_iterator.reset();
+    m_parallel_eval_policy = PARALLEL_EVAL_NONE;
   }
 
   m_query_blocks_to_materialize.clear();

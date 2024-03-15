@@ -207,7 +207,8 @@ void WalkAccessPaths(AccessPath *path, const JOIN *join,
   func() must have signature func(TABLE *), and return true upon error.
  */
 template <class Func>
-void WalkTablesUnderAccessPath(AccessPath *root_path, Func &&func) {
+void WalkTablesUnderAccessPath(AccessPath *root_path, Func &&func,
+                               bool include_pruned_tables) {
   WalkAccessPaths(
       root_path, /*join=*/nullptr,
       WalkAccessPathPolicy::STOP_AT_MATERIALIZATION,
@@ -254,6 +255,12 @@ void WalkTablesUnderAccessPath(AccessPath *root_path, Func &&func) {
             // WalkTablesUnderAccessPath().
             assert(false);
             return true;
+          case AccessPath::ZERO_ROWS:
+            if (include_pruned_tables) {
+              WalkTablesUnderAccessPath(path->zero_rows().child, func,
+                                        include_pruned_tables);
+            }
+            return false;            
           case AccessPath::AGGREGATE:
           case AccessPath::APPEND:
           case AccessPath::BKA_JOIN:
@@ -272,7 +279,6 @@ void WalkTablesUnderAccessPath(AccessPath *root_path, Func &&func) {
           case AccessPath::TEMPTABLE_AGGREGATE:
           case AccessPath::WEEDOUT:
           case AccessPath::WINDOW:
-          case AccessPath::ZERO_ROWS:
           case AccessPath::ZERO_ROWS_AGGREGATED:
             return false;
         }

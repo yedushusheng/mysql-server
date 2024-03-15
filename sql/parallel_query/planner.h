@@ -55,16 +55,8 @@ struct ParallelScanInfo {
   parallel_scan_desc_t scan_desc;
 };
 
-struct Semijoin_mat_info {
-  Semijoin_mat_info(MEM_ROOT *mem_root, ulong table_id)
-      : sj_inner_exprs(mem_root), table_id(table_id) {}
-  mem_root_deque<Item *> sj_inner_exprs;
-  ulong table_id;
-};
-
-using QueryExpressions = List<Query_expression>;
-using CachedSubselects = List<Item_cached_subselect_result>;
-
+using QueryExpressionList = List<Query_expression>;
+using CachedSubselectList = List<Item_cached_subselect_result>;
 /**
    Currently, partial plan executor only depends on access path (No JOIN is
    created).
@@ -96,30 +88,24 @@ class PartialPlan {
   }
 
   /// Init execution, called by CollectorIterator::Init(), currently we do
+
   /// parallel scan initialization in it.
   bool InitExecution(uint num_workers);
-  bool CollectSJMatInfoList(JOIN *source_join,
-                            Item_clone_context *clone_context);
-  bool CloneSJMatInnerExprsForTable(ulong table_id,
-                                    mem_root_deque<Item *> *sjm_fields,
-                                    Item_clone_context *clone_context);
-  List<Semijoin_mat_info> *SJMatInfoList() { return &m_sjm_info_list; }
-  void SetPushdownInnerQueryExpressions(QueryExpressions &&units) {
+
+  void SetPushdownInnerQueryExpressions(QueryExpressionList &units) {
     m_pushdown_inner_query_expressions = units;
   }
-  QueryExpressions &PushdownInnerQueryExpressions() {
+  QueryExpressionList &PushdownInnerQueryExpressions() {
     return m_pushdown_inner_query_expressions;
   }
-  void SetCachedSubqueries(CachedSubselects &&cached_subqueries) {
+  void SetCachedSubqueries(CachedSubselectList &cached_subqueries) {
     m_cached_subqueries = cached_subqueries;
   }
-  CachedSubselects &CachedSubqueries() { return m_cached_subqueries; }
-
+  CachedSubselectList &CachedSubqueries() { return m_cached_subqueries; }
  private:
   Query_block *m_query_block;
-  List<Semijoin_mat_info> m_sjm_info_list;
-  QueryExpressions m_pushdown_inner_query_expressions;
-  CachedSubselects m_cached_subqueries;
+  QueryExpressionList m_pushdown_inner_query_expressions;
+  CachedSubselectList m_cached_subqueries;
   /// Parallel scan info, current only support one table, This should be in
   /// class dist::PartialDistPlan, but we use it everywhere.
   ParallelScanInfo m_parallel_scan_info;
@@ -226,6 +212,7 @@ class ParallelPlan {
                            FieldsPushdownDesc *fields_pushdown_desc);
   // Clone ORDER for group list and order by
   bool ClonePartialOrders();
+  bool CloneSemiJoinExecList(Item_clone_context *context);
   void DestroyCollector(THD *thd);
 
   JOIN *m_join;

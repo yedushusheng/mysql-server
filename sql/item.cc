@@ -256,9 +256,10 @@ bool Item::init_from(const Item *item, Item_clone_context *context) {
 
 Item *Item::clone(Item_clone_context *context) const {
   Item *item;
-  if (context->is_replaceable_item(this) &&
-      (item = context->get_replacement_item(this)))
-    return item;
+  if (context->is_replaceable_item(this)) {
+    if ((item = context->get_replacement_item(this))) return item;
+    if (context->thd()->is_error()) return nullptr;
+  }
 
   if (!(item = new_item(context))) return nullptr;
   assert(typeid(*item) == typeid(*this));

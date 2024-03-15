@@ -459,8 +459,6 @@ class Item_cached_subselect_result : public Item_result_field {
                                   : false) ||
            ((walk & enum_walk::POSTFIX) && (this->*processor)(arg));
   }
-  void inc_replacements() { ++m_replacements; }
-  bool has_replacements() { return m_replacements > 0; }
   uint query_block_number() const;
   Item_subselect *subselect() const { return m_subselect; }
 
@@ -470,7 +468,6 @@ class Item_cached_subselect_result : public Item_result_field {
   uint columns{0};
   enum Item_result res_type { INVALID_RESULT };
   uint select_number{0};
-  uint m_replacements{0};
 
   // Original subselect, it is evaluated on leader, In worker plan it should
   // be nullptr;

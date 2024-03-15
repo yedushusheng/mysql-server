@@ -646,7 +646,7 @@ class PartialItemCloneContext : public Item_clone_context {
   PartialItemCloneContext(
       THD *thd, Query_block *query_block, ItemRefCloneResolver *ref_resolver,
       std::function<user_var_entry *(const std::string &)> find_user_var_entry,
-      CachedSubselects *cached_subselects)
+      CachedSubselectList *cached_subselects)
       : Item_clone_context(thd, query_block, ref_resolver),
         m_find_user_var_entry(find_user_var_entry),
         m_cached_subselects(cached_subselects) {}
@@ -721,7 +721,7 @@ class PartialItemCloneContext : public Item_clone_context {
   }
 
   std::function<user_var_entry *(const std::string &)> m_find_user_var_entry;
-  CachedSubselects *m_cached_subselects;
+  CachedSubselectList *m_cached_subselects;
 };
 
 bool PartialExecutor::Init(comm::RowChannel *sender_channel,
@@ -773,33 +773,19 @@ static bool new_query_expression(LEX *lex, Query_block *parent,
   return false;
 }
 
-static bool is_clone_excluded(
-    const Query_expression *query_expression,
-    const mem_root_deque<ulong> &exclude_subselect_ids) {
-  auto *subselect = query_expression->item;
-  if (!subselect) return false;
-
-  for (auto subid : exclude_subselect_ids) {
-    if (subselect->id() == subid) return true;
-  }
-  return false;
-}
-
 /**
   Initialize whole query block tree of partial plan for executing.
 
   The ancestor of whole query block tree is @param query_block and it's cloned
   from @param from_query_block. The function gets inner query expression list
   from m_inner_query_expressions_clone_from of @param query_block or inner query
-  expressions of @param from_query_block and excludes whose item is in @param
-  exclude_subselect_ids.
+  expressions of @param from_query_block.
 */
 static bool init_query_block_tree_from(
-    THD *cur_thd, Query_block *query_block, Query_block *from_query_block,
-    const mem_root_deque<ulong> &exclude_subselect_ids) {
+    THD *cur_thd, Query_block *query_block, Query_block *from_query_block) {
   return walk_query_block(
       cur_thd, query_block, from_query_block,
-      [exclude_subselect_ids](THD *thd, Query_block *cur, Query_block *from) {
+      [](THD *thd, Query_block *cur, Query_block *from) {
         if (add_tables_to_query_block(thd, cur, from->leaf_tables)) return true;
         LEX *lex = thd->lex;
         auto *from_inner_units = cur->m_inner_query_expressions_clone_from;

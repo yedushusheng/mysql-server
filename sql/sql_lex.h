@@ -889,6 +889,23 @@ class SELECT_LEX_UNIT {
   
   ulong m_id{(ulong)this};
 
+  enum parallel_eval_policy {
+    PARALLEL_EVAL_NONE,
+    PARALLEL_EVAL_PRE,
+    PARALLEL_EVAL_PUSHDOWN
+  };
+  parallel_eval_policy m_parallel_eval_policy{PARALLEL_EVAL_NONE};
+  void set_parallel_pre_evaluation() {
+    if (m_parallel_eval_policy != PARALLEL_EVAL_PRE)
+      m_parallel_eval_policy = PARALLEL_EVAL_PRE;
+  }
+  void set_parallel_pushdown_evaluation() {
+    if (m_parallel_eval_policy != PARALLEL_EVAL_PUSHDOWN)
+      m_parallel_eval_policy = PARALLEL_EVAL_PUSHDOWN;
+  }
+  bool is_parallel_pushdown_evaluation() {
+    return m_parallel_eval_policy == PARALLEL_EVAL_PUSHDOWN;
+  }
   /// @return true if query expression can be merged into an outer query
   bool is_mergeable() const;
 
@@ -1961,13 +1978,13 @@ class SELECT_LEX {
   bool clone_from(THD *thd, Query_block *from, Item_clone_context *context);
 
 
-  /// Return nullptr if parallel safe
+  // Return nullptr if parallel safe is true
   const char *parallel_safe(bool deny_outer_ref) const;
   bool is_pushdown_safe() const;
   // In parallel query, top query block of partial plan needs this to get source
   // inner query expressions of clone.
   List<Query_expression> *m_inner_query_expressions_clone_from{nullptr};
-  
+
   // ************************************************
   // * Members (most of these should not be public) *
   // ************************************************
