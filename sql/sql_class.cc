@@ -2790,7 +2790,7 @@ bool THD::is_connected() {
     system threads.
   */
   if (system_thread) return true;
-
+  if (m_leader) return true;
   if (is_classic_protocol())
     return get_protocol()->connection_alive() &&
            vio_is_connected(get_protocol_classic()->get_vio());

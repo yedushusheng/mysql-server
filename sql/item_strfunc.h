@@ -1025,11 +1025,7 @@ class Item_func_hex : public Item_str_ascii_func {
   Item *new_item(Item_clone_context *) const override {
     return new Item_func_hex(POS(), args[0]);
   }  
-  bool resolve_type(THD *thd) override {
-    if (param_type_is_default(thd, 0, -1)) return true;
-    set_data_type_string(args[0]->max_length * 2U, default_charset());
-    return false;
-  }
+  bool resolve_type(THD *thd) override;
 };
 
 class Item_func_unhex final : public Item_str_func {
