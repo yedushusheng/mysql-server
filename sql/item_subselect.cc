@@ -2711,41 +2711,76 @@ Item_cached_subselect_result::Item_cached_subselect_result(Item_subselect *item)
   select_number = item->unit->first_query_block()->select_number;
 }
 
+/// See Item_singlerow_subselect::val_*(), for easy maintenance, these functions
+/// should be same with them. Note, cache_subselect() can be return false
+/// directly if it found row is validate. Here add row condition because
+/// current_thd of bthread is so expensive.
 double Item_cached_subselect_result::val_real() {
-  return !no_rows && !value->null_value ? value->val_real() : error_real();
+  if ((row || !cache_subselect(current_thd)) && !value->null_value) {
+    null_value = false;
+    return value->val_real();
+  }
+  return error_real();
 }
 
 longlong Item_cached_subselect_result::val_int() {
-  return !no_rows && !value->null_value ? value->val_int() : error_int();
+  if ((row || !cache_subselect(current_thd)) && !value->null_value) {
+    null_value = false;
+    return value->val_int();
+  }
+  return error_int();
 }
 
 String *Item_cached_subselect_result::val_str(String *str) {
-  return !no_rows && !value->null_value ? value->val_str(str) : error_str();
+  if ((row || !cache_subselect(current_thd)) && !value->null_value) {
+    null_value = false;
+    return value->val_str(str);
+  }
+  return error_str();
 }
 
 my_decimal *Item_cached_subselect_result::val_decimal(
     my_decimal *decimal_value) {
-  return !no_rows && !value->null_value ? value->val_decimal(decimal_value)
-                                        : nullptr;
+  if ((row || !cache_subselect(current_thd)) && !value->null_value) {
+    auto *retval = value->val_decimal(decimal_value);
+    null_value = value->null_value;
+    return retval;
+  }
+
+  return nullptr;
 }
 
 bool Item_cached_subselect_result::val_json(Json_wrapper *result) {
-  return !no_rows && !value->null_value ? value->val_json(result)
-                                        : current_thd->is_error();
+  if ((row || !cache_subselect(current_thd)) && !value->null_value) {
+    null_value = false;
+    return value->val_json(result);
+  }
+  return current_thd->is_error();
 }
 
 bool Item_cached_subselect_result::get_date(MYSQL_TIME *ltime,
                                             my_time_flags_t fuzzydate) {
-  return !no_rows && !value->null_value ? value->get_date(ltime, fuzzydate)
-                                        : true;
+  if ((row || !cache_subselect(current_thd)) && !value->null_value) {
+    null_value = false;
+    return value->get_date(ltime, fuzzydate);
+  }
+  return true;
 }
 
 bool Item_cached_subselect_result::get_time(MYSQL_TIME *ltime) {
-  return !no_rows && !value->null_value ? value->get_time(ltime) : true;
+  if ((row || !cache_subselect(current_thd)) && !value->null_value) {
+    null_value = false;
+    return value->get_time(ltime);
+  }
+  return true;
 }
 
 bool Item_cached_subselect_result::val_bool() {
-  return !no_rows && !value->null_value ? value->val_bool() : false;
+  if ((row || !cache_subselect(current_thd)) && !value->null_value) {
+    null_value = false;
+    return value->val_bool();
+  }
+  return false;
 }
 
 bool Item_cached_subselect_result::alloc_row(THD *thd) {
@@ -2799,6 +2834,16 @@ void Item_cached_subselect_result::print(
 }
 
 bool Item_cached_subselect_result::cache_subselect(THD *thd) {
+  assert(row || m_subselect);
+  // Currently we only support single row subselect, only dependent subselect
+  // can set no_rows to true.
+  assert(!m_subselect ||
+         !down_cast<Item_singlerow_subselect *>(m_subselect)->no_rows);
+
+  // cache_subselect() can be evaluated more than once since we can use the
+  // result when cloning plan e.g. the item is in a TABLE_REF. see also val_*().
+  if (row) return false;
+  
   if (m_subselect->exec(thd)) return true;
   // See Item_singlerow_subselect::val_*(), They don't test this->null_value
   // and check value->null_value instead. So, here we always clone row.

@@ -450,6 +450,7 @@ class Item_cached_subselect_result : public Item_result_field {
   Item **addr(uint i) override { return (Item **)row + i; }
   Item *new_item(Item_clone_context *context) const override;
   bool init_from(const Item *from, Item_clone_context *context) override;
+  /// Evaluate m_subselect and cache its result.
   bool cache_subselect(THD *thd);
   void print(const THD *thd, String *str, enum_query_type query_type) const override;
   bool walk(Item_processor processor, enum_walk walk, uchar *arg) override {
@@ -466,7 +467,6 @@ class Item_cached_subselect_result : public Item_result_field {
  protected:
   bool alloc_row(THD *thd);
   Item_cache *value{nullptr}, **row{nullptr};
-  bool no_rows{false};
   uint columns{0};
   enum Item_result res_type { INVALID_RESULT };
   uint select_number{0};
@@ -947,7 +947,7 @@ class SubqueryWithResult {
   const Item_subselect *get_item() const { return item; }
 #endif
   Query_result_interceptor *query_result() const { return result; }
-  
+
  private:
   Query_result_interceptor *result; /* results storage class */
   Item_subselect *item;             /* item, that use this subquery */
