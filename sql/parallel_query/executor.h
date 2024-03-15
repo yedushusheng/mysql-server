@@ -141,7 +141,9 @@ class PartialExecutor {
 };
 
 std::string ExplainTableParallelScan(JOIN *join, TABLE *table);
-
+TABLE_LIST *resolve_leaf_table_in_query_block(TABLE_LIST *table_ref,
+                                              Query_block *query_block,
+                                              bool resolve_in_parent);
 inline Query_expression *find_inner_expression_by_id(
     List<Query_expression> *inner_list, Query_expression *from_inner_first,
     ulong target_id) {

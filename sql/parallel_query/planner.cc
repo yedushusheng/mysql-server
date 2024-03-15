@@ -858,6 +858,7 @@ class PartialItemGenContext : public Item_clone_context {
     // Other sub-queries should be pushed down unless wrong parallel plan is
     // generated.
     auto *sub_unit = down_cast<const Item_subselect *>(item)->unit;
+    assert(sub_unit->first_query_block() && sub_unit->outer_query_block());
     m_pushdown_subselects.push_back(sub_unit);
     for (auto *inner_select = sub_unit->first_query_block(); inner_select;
          inner_select = inner_select->next_query_block())
@@ -1505,20 +1506,16 @@ bool Query_block::clone_from(THD *thd, Query_block *from,
   return false;
 }
 const char *Query_block::parallel_safe(bool deny_outer_ref) const {
-  if (join->query_block->forbid_parallel_by_upper_query_block)
+  if (forbid_parallel_by_upper_query_block)
     return "item_referred_by_upper_query_block";
 
-  // We just support single table
-  if (join->const_tables > 0) return "plan_with_const_tables";
-
   // Don't support window function and rollup yet
-  if (!join->m_windows.is_empty() ||
-      join->rollup_state != JOIN::RollupState::NONE)
+  if (!m_windows.is_empty() || olap == ROLLUP_TYPE)
     return "include_window_function_or_rullup";
 
   // We don't support IN sub query because we don't support clone of its refs in
   // items yet.
-  auto *subselect = join->query_expression()->item;
+  auto *subselect = master->item;
   if (subselect && subselect->substype() == Item_subselect::IN_SUBS) {
     Item_in_subselect *subs = down_cast<Item_in_subselect *>(subselect);
     if (subs->strategy == Subquery_strategy::SUBQ_EXISTS)
@@ -1526,18 +1523,46 @@ const char *Query_block::parallel_safe(bool deny_outer_ref) const {
   }
 
   const char *item_refuse_cause;
-  for (Item *item : join->query_block->fields) {
-    if (pq::skip_no_used_field(join->query_expression(), item)) continue;
+  for (Item *item : fields) {
+    if (pq::skip_no_used_field(master, item)) continue;
     if (!pq::ItemRefuseParallel(item, deny_outer_ref, &item_refuse_cause))
       continue;
     return item_refuse_cause ? item_refuse_cause
                              : "include_unsafe_items_in_fields";
   }
 
+  // Optimizer would quit early if it found zero row result, this leads to that
+  // the variable tables is not set correctly, see JOIN::zero_result_cause.
+  if (!join || join->tables == 0) {
+    for (TABLE_LIST *tl = leaf_tables; tl; tl = tl->next_leaf)
+      if (tl->is_placeholder()) return "table_is_not_real_user_table";
+  }
+
+  if (!join) {
+    // See Query_block::optimize(), optimization of inner query expressions can
+    // be skipped due to zero result.
+#ifndef NDEBUG
+    auto *cur_unit = master_query_expression();
+    bool zero_result_found = false;
+    while (cur_unit) {
+      auto *qb = cur_unit->master;
+      if (!qb || (zero_result_found = qb->join && qb->join->zero_result_cause &&
+                                      !qb->is_implicitly_grouped()))
+        break;
+      cur_unit = qb->master_query_expression();
+    }
+    assert(zero_result_found);
+#endif
+    return nullptr;
+  }
+
   if (join->having_cond &&
       pq::ItemRefuseParallel(join->having_cond, deny_outer_ref,
                              &item_refuse_cause))
     return item_refuse_cause ? item_refuse_cause : "having_is_unsafe";
+
+  // We don't support const tables yet, it needs further debugging.
+  if (join->const_tables > 0) return "plan_with_const_tables";
 
   // Loop on each table to block unsupported query
   for (uint i = 0; i < join->tables; i++) {

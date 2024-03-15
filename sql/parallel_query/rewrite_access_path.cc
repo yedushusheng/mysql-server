@@ -109,7 +109,9 @@ bool AccessPathRewriter::do_rewrite(AccessPath *&path, AccessPath *curjoin,
       break;    
     // FAKE_SINGLE_ROW: not support yet
     case AccessPath::ZERO_ROWS:
-      if (do_rewrite(path->zero_rows().child, path, out)) return true;
+      if (path->zero_rows().child &&
+          do_rewrite(path->zero_rows().child, path, out))
+        return true;
       break;
     case AccessPath::ZERO_ROWS_AGGREGATED:
     // MATERIALIZED_TABLE_FUNCTION: not support yet.
@@ -931,16 +933,10 @@ PartialAccessPathRewriter::qep_execution_state() {
 }
 
 TABLE *PartialAccessPathRewriter::find_leaf_table(TABLE *table) const {
-  Query_block *query_block = m_join_out->query_block;
-  auto *tables = query_block->leaf_tables;
-
-  for (TABLE_LIST *tl = tables; tl; tl = tl->next_leaf) {
-    if (tl->is_identical(table->pos_in_table_list)) return tl->table;
-  }
-
-  assert(false);
-
-  return nullptr;
+  auto *tl = resolve_leaf_table_in_query_block(table->pos_in_table_list,
+                                               m_join_out->query_block, false);
+  assert(tl->table);
+  return tl->table;
 }
 
 /// XXX TDSQL seems that pushed_cond also is used in LIMIT pushdown, so
@@ -1120,6 +1116,9 @@ static TABLE *recreate_semijoin_materialized_table(
   table->file->ha_extra(HA_EXTRA_IGNORE_DUP_KEY);
   table->keys_in_use_for_query.set_all();
 
+  // Table is "nullable" if inner table of an outer_join
+  if (orig_table->is_nullable()) table->set_nullable();
+
   auto table_list = new (thd->mem_root) TABLE_LIST("", name, TL_IGNORE);
   if (table_list == nullptr) return nullptr; /* purecov: inspected */
   table_list->table = table;
@@ -1205,9 +1204,10 @@ bool PartialAccessPathRewriter::rewrite_weedout(AccessPath *in,
     tab->qep_tab = nullptr;
     tab->table = find_leaf_table(tab->table);
   }
-  sjtbl->tmp_table = create_duplicate_weedout_tmp_table(
-      m_join_out->thd, sjtbl->rowid_len + sjtbl->null_bytes, sjtbl);
-  if (sjtbl->tmp_table == nullptr) return true;
+  if (!(sjtbl->tmp_table = create_duplicate_weedout_tmp_table(
+            m_join_out->thd, sjtbl->rowid_len + sjtbl->null_bytes, sjtbl)))
+    return true;
+
   if (sjtbl->tmp_table->hash_field)
     sjtbl->tmp_table->file->ha_index_init(0, false);
   m_join_out->sj_tmp_tables.push_back(sjtbl->tmp_table);

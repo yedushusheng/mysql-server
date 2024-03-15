@@ -616,6 +616,31 @@ class Query_result_to_collector : public Query_result_interceptor {
   TABLE *table() const { return m_table; }
 };
 
+TABLE_LIST *resolve_leaf_table_in_query_block(TABLE_LIST *table_ref,
+                                              Query_block *query_block,
+                                              bool resolve_in_parent) {
+  // Some fields could be found in semi-join materialization tables. Note,
+  // temporary table could not be referred by other query blocks.
+  if (unlikely(is_temporary_table(table_ref))) {
+    for (auto &ttc : query_block->join->temp_tables) {
+      auto *tl = ttc.table->pos_in_table_list;
+      if (table_ref->m_id == tl->m_id) return tl;
+    }
+    assert(false);
+    return nullptr;
+  }
+
+  auto *cur_query_block = query_block;
+  do {
+    auto *tl = cur_query_block->find_identical_table_with(table_ref);
+    if (tl) return tl;
+    cur_query_block = cur_query_block->outer_query_block();
+  } while (resolve_in_parent && cur_query_block);
+
+  assert(false);
+  return nullptr;
+}
+
 class PartialItemCloneContext : public Item_clone_context {
  public:
   PartialItemCloneContext(
@@ -692,24 +717,7 @@ class PartialItemCloneContext : public Item_clone_context {
 
  private:
   TABLE_LIST *find_field_table(TABLE_LIST *table_ref) {
-    if (!is_temporary_table(table_ref)) {
-      auto *query_block = m_query_block;
-      while (query_block) {
-        auto *tl = query_block->find_identical_table_with(table_ref);
-        if (tl) return tl;
-        query_block = query_block->outer_query_block();
-      }
-      assert(false);
-      return nullptr;
-    }
-    // Some fields could be found in semi-join materialization tables.
-    for (auto &ttc : m_query_block->join->temp_tables) {
-      auto *tl = ttc.table->pos_in_table_list;
-      if (table_ref->m_id == tl->m_id) return tl;
-    }
-
-    assert(false);
-    return nullptr;
+    return resolve_leaf_table_in_query_block(table_ref, m_query_block, true);
   }
 
   std::function<user_var_entry *(const std::string &)> m_find_user_var_entry;
