@@ -466,10 +466,6 @@ static bool ChooseExecNodes(ParallelPlan *parallel_plan,
   return false;
 }
 
-bool parallel_query_enable_select_count(THD *thd) {
-  return thd->parallel_query_switch_flag(PARALLEL_QUERY_SELECT_COUNT);
-}
-
 static bool skip_no_used_field(Query_expression *unit, Item *item) {
   if (!unit->item) return false;
   return unit->item->engine_type() == Item_in_subselect::HASH_SJ_ENGINE &&
@@ -525,18 +521,17 @@ static void ChooseParallelPlan(JOIN *join) {
 
   if ((cause = join->query_block->parallel_safe(true))) return;
 
-  // Multiple tables can not be supported yet because row count RPC request of
   // non-parallel scan depends on QEP_TAB deeply see GetStartEndKey() in
   // ha_rocksdb.cc
   if (join->select_count &&
-      (!parallel_query_enable_select_count(thd) || join->primary_tables > 1)) {
-    cause = "disabled_or_unsupported_select_count";
+      !thd->parallel_query_switch_flag(PARALLEL_QUERY_SELECT_COUNT)) {
+    cause = "select_count_is_switched_off";
     return;
   }
 
   if (!thd->parallel_query_switch_flag(PARALLEL_QUERY_JOIN) &&
       join->primary_tables != 1) {
-    cause = "not_single_table";
+    cause = "join_is_switched_off";
     return;
   }
 
@@ -1648,7 +1643,7 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
             aprewriter.clone_and_rewrite(from->root_access_path())))
     return true;
   qep_execution_state = aprewriter.qep_execution_state();
-  
+
   if (thd->is_error()) return true;
 
   set_plan_state(PLAN_READY);

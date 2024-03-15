@@ -8919,7 +8919,7 @@ bool GetStartEndKeyTableScan(ha_rocksdb *handler,
   return false;
 }
 
-bool GetStartEndKeyIndexScan(ha_rocksdb *handler, int index,
+bool GetStartEndKeyIndexScan(ha_rocksdb *handler, uint index,
                              StartEndKeys *start_end_keys) {
   int ret = handler->ha_index_init(index, 0);
   TABLE *table = handler->get_table();
@@ -9037,8 +9037,9 @@ bool GetStartEndKeyRange(ha_rocksdb *handler, QUICK_SELECT_I *quick,
 }
 
 // return true if fail
-bool GetStartEndKey(ha_rocksdb *handler, StartEndKeys *start_end_keys) {
+bool GetStartEndKey(ha_rocksdb *handler, uint index, StartEndKeys *start_end_keys) {
   TABLE *table = handler->get_table();
+  assert(index < MAX_INDEXES);
 
   const QEP_TAB *qep_tab = table->reginfo.qep_tab;
 
@@ -9048,8 +9049,10 @@ bool GetStartEndKey(ha_rocksdb *handler, StartEndKeys *start_end_keys) {
     handler->SetOnlyInitIterator(false);
   });
 
-  // without qep_tab,just use table scan ,ddl_execute use this
-  if (!qep_tab) return GetStartEndKeyTableScan(handler, start_end_keys);
+  // without qep_tab, just use index scan, ddl_execute and parallel worker use
+  // this, here @param index should be set to PRIMARY KEY if caller uses table
+  // scan.
+  if (!qep_tab) return GetStartEndKeyIndexScan(handler, index, start_end_keys);
 
   int ret = 0;
 
@@ -9212,7 +9215,7 @@ int ha_rocksdb::get_row_count_from_key(ha_rows *num_rows, uint index) {
     }
 
     return ret;
-  } else if (GetStartEndKey(this, &start_end_keys)) {
+  } else if (GetStartEndKey(this, index, &start_end_keys)) {
     LogError("GetStartEndKey error");
     *num_rows = HA_POS_ERROR;
     return TDSQL_EXIT_FAILURE;
@@ -9225,8 +9228,9 @@ int ha_rocksdb::get_row_count_from_key(ha_rows *num_rows, uint index) {
     uint64_t rows = HA_POS_ERROR;
     auto parallel_select_count_workers =
         thd->variables.tdsql_parallel_select_count_workers;
-    if (!pq::parallel_query_enable_select_count(thd) &&
-        parallel_select_count_workers > 0) {
+    // To avoid too many threads used, don't use parallel row count for parallel
+    // query workers
+    if (!thd->parallel_leader() && parallel_select_count_workers > 0) {
       uint64_t iterator_id = tx->GenerateIteratorID();
       tdsql::parallel::ParallelRowCount paral_count(
           start, end, iterator_id, tdstore_pushed_cond_pb_, tx,

@@ -16,7 +16,9 @@ class TABLE_REF;
 #define PARALLEL_QUERY_SUBQUERY_PUSHDOWN (1ULL << 2)
 
 // Including the switch in this set, makes its default 'on'
-#define PARALLEL_QUERY_SWITCH_DEFAULT (PARALLEL_QUERY_JOIN | PARALLEL_QUERY_SUBQUERY_PUSHDOWN)
+#define PARALLEL_QUERY_SWITCH_DEFAULT                  \
+  (PARALLEL_QUERY_JOIN | PARALLEL_QUERY_SELECT_COUNT | \
+   PARALLEL_QUERY_SUBQUERY_PUSHDOWN)
 
 namespace pq {
 class Collector;
