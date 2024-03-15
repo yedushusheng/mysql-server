@@ -141,7 +141,10 @@ class AccessPathParallelizer : public AccessPathRewriter {
   void rewrite_index_access_path(TABLE *table, bool use_order, bool reverse);
   template <typename aptype>
   bool rewrite_base_ref(aptype &out, bool reverse);
-
+  /// Once an access path with temporary table (stream or materialize) is pushed
+  /// down completely (it only exists in partial plan). We overwrite this by
+  /// previous ref_slice to let following ref_slice users work.
+  void overwrite_ref_slice(int ref_slice);
   ParallelPlan *m_parallel_plan;
   TABLE *m_collector_table{nullptr};
   AccessPath **m_collector_path_pos{nullptr};

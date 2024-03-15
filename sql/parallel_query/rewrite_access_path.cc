@@ -700,6 +700,7 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
                m_join_in->qep_tab[i].filesort);
       }
 #endif
+      overwrite_ref_slice(src->ref_slice);
       return false;
     }
     
@@ -753,8 +754,10 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
   rewrite_temptable_scan_path(in->materialize().table_path, table,
                               m_item_clone_context);
 
-  set_sorting_info({table, src->ref_slice});
-
+  if (src->ref_slice != -1) {
+    assert(!under_join);
+    set_sorting_info({table, src->ref_slice});
+  }
   // XXX group list also need skip this path
   if (!collector_path_pos()) set_collector_path_pos(&query_block.subquery_path);
   return false;
@@ -818,7 +821,8 @@ bool AccessPathRewriter::do_stream_rewrite(JOIN *join, AccessPath *path) {
   // GROUP BY needs this hack for aggregation functions.
   Temp_table_param *const tmp_tbl = stream.temp_table_param;
   if (supply_items_to_copy(tmp_tbl, join, ref_slice)) return true;
-  set_sorting_info({stream.table, ref_slice});
+  // Currently, ref_slice is -1 only for json_table.
+  if (ref_slice != -1) set_sorting_info({stream.table, ref_slice});
   // We made a new table, so make sure it gets properly cleaned up
   // at the end of execution.
   join->temp_tables.push_back(
@@ -826,16 +830,20 @@ bool AccessPathRewriter::do_stream_rewrite(JOIN *join, AccessPath *path) {
   return false;
 }
 
+void AccessPathParallelizer::overwrite_ref_slice(int ref_slice) {
+  auto *join = m_join_in;
+  join->copy_ref_item_slice(ref_slice, ref_slice - 1);
+  join->cleanup_item_list(join->tmp_fields[ref_slice]);
+  join->tmp_fields[ref_slice] = join->tmp_fields[ref_slice - 1];
+  m_ref_slice_overwritten = true;
+}
+
 bool AccessPathParallelizer::rewrite_stream(AccessPath *in, AccessPath *out) {
   if (out) {
     if (!m_parallel_plan->NonpushedAggregate()) return false;
-    // This stream is skipped on leader, overwrite this by previous
-    // ref_slice to let following ref_slice users work.
+
     auto ref_slice = in->stream().ref_slice;
-    auto *join = m_join_in;
-    join->copy_ref_item_slice(ref_slice, ref_slice - 1);
-    join->cleanup_item_list(join->tmp_fields[ref_slice]);
-    join->tmp_fields[ref_slice] = m_join_in->tmp_fields[ref_slice - 1];
+    overwrite_ref_slice(ref_slice);
     return false;
   }
 
@@ -1155,8 +1163,9 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
                                                     bool under_join) {
   assert(out);
   if (super::rewrite_materialize(in, out, under_join)) return true;
+  auto &src_param = in->materialize().param;
   auto *dest_param = out->materialize().param;
-  auto &param_query_block = dest_param->query_blocks[0];
+  auto &dest_query_block = dest_param->query_blocks[0];
   auto *join = m_join_out;
   auto *join_from = m_join_in;
   THD *thd = join->thd;
@@ -1172,21 +1181,24 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
       return true;
 
     dest_param->table = table;
-    param_query_block.temp_table_param = temp_table_param;
+    dest_query_block.temp_table_param = temp_table_param;
   } else {
     if (join->alloc_ref_item_slice(thd, dest_param->ref_slice))
       return true;
 
     // group_list must be cloned in JOIN::clone_from()
-    auto *group = join->group_list.order;
+    auto *group = m_aggregate_access_paths_visited ||
+                          !MaterializeIsDoingDeduplication(src_param->table)
+                      ? nullptr
+                      : join->group_list.order;
     bool is_distinct = dest_param->table->s->is_distinct;
     if (recreate_materialized_table(thd, join, group, is_distinct, false,
                                     dest_param->ref_slice,
                                     dest_param->limit_rows, &dest_param->table,
-                                    &param_query_block.temp_table_param))
+                                    &dest_query_block.temp_table_param))
       return true;
     table = dest_param->table;
-    temp_table_param = param_query_block.temp_table_param;
+    temp_table_param = dest_query_block.temp_table_param;
 
     // See setup_tmptable_write_func()
     if (supply_items_to_copy(temp_table_param, join, dest_param->ref_slice))
@@ -1198,7 +1210,10 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
   // at the end of execution.
   join->temp_tables.push_back(
       JOIN::TemporaryTableToCleanup{table, temp_table_param});
-  set_sorting_info({table, dest_param->ref_slice});
+  if (dest_param->ref_slice != -1) {
+    assert(!under_join);
+    set_sorting_info({table, dest_param->ref_slice});
+  }
   out->materialize().table_path = accesspath_dup(out->materialize().table_path);
   rewrite_temptable_scan_path(out->materialize().table_path, table,
                               m_item_clone_context);
