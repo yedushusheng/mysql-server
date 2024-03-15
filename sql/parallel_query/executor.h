@@ -49,6 +49,7 @@ class Collector {
   void SetPreevaluateSubqueries(CachedSubselects &cached_subselects) {
     m_preevaluate_subqueries = cached_subselects;
   }
+  void CreateTimingIteratorForPartialPlan(THD *thd);
 
  private:
   bool LaunchWorkers();
@@ -140,7 +141,6 @@ class PartialExecutor {
 };
 
 std::string ExplainTableParallelScan(JOIN *join, TABLE *table);
-RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
 
 inline Query_expression *find_inner_expression_by_id(
     List<Query_expression> *inner_list, Query_expression *from_inner_first,

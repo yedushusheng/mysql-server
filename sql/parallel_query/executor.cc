@@ -5,6 +5,7 @@
 #include "sql/filesort.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/explain_access_path.h"
+#include "sql/join_optimizer/walk_access_paths.h"
 #include "sql/mysqld.h"
 #include "sql/opt_explain_traditional.h"
 #include "sql/parallel_query/planner.h"
@@ -236,6 +237,29 @@ AccessPath *Collector::Explain(std::vector<std::string> &description) {
   return hide_partial_tree ? nullptr : PartialRootAccessPath();
 }
 
+
+static RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
+
+void Collector::CreateTimingIteratorForPartialPlan(THD *thd) {
+  auto *fake_timing_iterator = NewFakeTimingIterator(thd, this);
+  WalkAccessPaths(PartialRootAccessPath(), nullptr,
+                  WalkAccessPathPolicy::ENTIRE_TREE,
+                  [fake_timing_iterator](AccessPath *path, const JOIN *) {
+                    path->iterator = fake_timing_iterator;
+                    return false;
+                  });
+
+  // Set fake timing iterator for pushed down sub-queries since they are be
+  // executed by workers.
+  for (auto &unit : m_partial_plan->PushdownInnerQueryExpressions())
+    WalkAccessPaths(unit.root_access_path(), nullptr,
+                    WalkAccessPathPolicy::ENTIRE_TREE,
+                    [fake_timing_iterator](AccessPath *path, const JOIN *) {
+                      path->iterator = fake_timing_iterator;
+                      return false;
+                    });
+}
+
 Diagnostics_area *Collector::combine_workers_stmt_da(THD *thd,
                                                      ha_rows *found_rows) {
   Diagnostics_area *cond_da = nullptr;
@@ -342,6 +366,11 @@ std::pair<std::string *, std::string *> Collector::WorkersTimingData() const {
       *max_worker_timing_data{nullptr};
   duration_type min_total_rows_spent{duration_type::max()},
       max_total_rows_spent{duration_type::zero()};
+
+  // Subqueries may not be executed at all
+  if (!m_workers_timing_data)
+    return {min_worker_timing_data, max_worker_timing_data};
+  
   for (auto &timing_data : *m_workers_timing_data) {
     if (timing_data.empty()) continue;
     // Only needs check root iterator
@@ -508,7 +537,7 @@ std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   return str;
 }
 
-RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector) {
+static RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector) {
   return new (thd->mem_root) FakeTimingIterator(thd, collector);
 }
 class Query_result_to_collector : public Query_result_interceptor {

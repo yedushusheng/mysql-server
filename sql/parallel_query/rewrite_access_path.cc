@@ -328,10 +328,7 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *&path,
       assert(false);
   }
 
-  if (dup) {
-    out = dup;
-    post_rewrite_out_path(out);
-  }
+  if (dup) out = dup;
 
   return false;
 }
@@ -364,10 +361,6 @@ AccessPath *AccessPathParallelizer::parallelize_access_path(
   if (!root_path) root_path = in;
 
   return root_path;
-}
-
-void AccessPathParallelizer::post_rewrite_out_path(AccessPath *out) {
-  if (m_fake_timing_iterator) out->iterator = m_fake_timing_iterator;
 }
 
 void AccessPathParallelizer::set_collector_path_pos(AccessPath **path) {
@@ -677,7 +670,6 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
 
     out->materialize().table_path =
         accesspath_dup(in->materialize().table_path);
-    post_rewrite_out_path(out->materialize().table_path);
 
     // Following scenario is for full push down, that is leader do not do
     // this materialization any more.
@@ -778,7 +770,6 @@ bool AccessPathParallelizer::rewrite_temptable_aggregate(AccessPath *in,
                           m_join_out->fields->size(), nullptr}),
         ESC_GROUP_BY);
     out->temptable_aggregate().table_path = accesspath_dup(tagg.table_path);
-    post_rewrite_out_path(out->temptable_aggregate().table_path);
   }
 
   if (m_parallel_plan->FullPushedAggregate()) return false;
@@ -1196,7 +1187,6 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
   out->materialize().table_path = accesspath_dup(out->materialize().table_path);
   rewrite_temptable_scan_path(out->materialize().table_path, table,
                               m_item_clone_context);
-  post_rewrite_out_path(out->materialize().table_path);
   return false;
 }
 
@@ -1261,7 +1251,6 @@ bool PartialAccessPathRewriter::rewrite_temptable_aggregate(AccessPath *,
   tagg.table_path = accesspath_dup(tagg.table_path);
   rewrite_temptable_scan_path(tagg.table_path, tagg.table,
                               m_item_clone_context);
-  post_rewrite_out_path(tagg.table_path);
   set_sorting_info({tagg.table, tagg.ref_slice});
   return false;
 }

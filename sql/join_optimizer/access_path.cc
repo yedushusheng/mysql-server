@@ -424,6 +424,8 @@ unique_ptr_destroy_only<RowIterator> CreateIteratorFromAccessPath(
       const auto &param = path->parallel_collector_scan();
       iterator =
           NewIterator<CollectorIterator>(thd, param.collector, examined_rows);
+      if (thd->lex->is_explain_analyze)
+        param.collector->CreateTimingIteratorForPartialPlan(thd);      
       break;
     }    
     case AccessPath::TABLE_VALUE_CONSTRUCTOR: {

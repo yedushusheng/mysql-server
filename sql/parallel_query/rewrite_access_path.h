@@ -89,12 +89,6 @@ class AccessPathRewriter {
   MEM_ROOT *mem_root() const { return m_item_clone_context->mem_root(); }
   AccessPath *accesspath_dup(AccessPath *path);
 
-  /**
-    Do some additional rewrites for out access path, access path parallelizer
-    use it to set fake timing iterator.
-  */
-  virtual void post_rewrite_out_path(AccessPath *out [[maybe_unused]]) {}
-
   Item_clone_context *m_item_clone_context;
   JOIN *m_join_in;
   JOIN *m_join_out;
@@ -117,9 +111,6 @@ class AccessPathParallelizer : public AccessPathRewriter {
   ORDER *MergeSort(bool *remove_duplicates) const {
     *remove_duplicates = merge_sort_remove_duplicates;
     return merge_sort;
-  }
-  void set_fake_timing_iterator(RowIterator *iterator) {
-    m_fake_timing_iterator = iterator;
   }
   bool has_pushed_limit_offset() const { return m_pushed_limit_offset; }
 
@@ -147,8 +138,6 @@ class AccessPathParallelizer : public AccessPathRewriter {
   bool rewrite_materialize(AccessPath *in, AccessPath *&out,
                            bool under_join) override;
 
-  void post_rewrite_out_path(AccessPath *out) override;
-
   void rewrite_index_access_path(TABLE *table, bool use_order, bool reverse);
   template <typename aptype>
   bool rewrite_base_ref(aptype &out, bool reverse);
@@ -158,7 +147,6 @@ class AccessPathParallelizer : public AccessPathRewriter {
   AccessPath **m_collector_path_pos{nullptr};
   ORDER *merge_sort{nullptr};
   bool merge_sort_remove_duplicates{false};
-  RowIterator *m_fake_timing_iterator{nullptr};
   bool m_pushed_limit_offset{false};
 };
 

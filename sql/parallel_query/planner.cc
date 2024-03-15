@@ -3,7 +3,6 @@
 #include "scope_guard.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
-#include "sql/join_optimizer/walk_access_paths.h"
 #include "sql/nested_join.h"
 #include "sql/opt_range.h"
 #include "sql/opt_trace.h"
@@ -1322,22 +1321,8 @@ bool ParallelPlan::Generate() {
   auto &cached_subselects = partial_clone_context->m_cached_subselects;
   m_collector->SetPreevaluateSubqueries(cached_subselects);
   m_partial_plan.SetCachedSubqueries(std::move(cached_subselects));
-  auto &pushdown_subselects = partial_clone_context->m_pushdown_subselects;
-  // Set fake timing iterator for pushed down sub-queries since they are be
-  // executed by workers.
-  if (lex->is_explain_analyze) {
-    auto *fake_timing_iterator =
-        m_partial_plan.Join()->root_access_path()->iterator;
-    for (auto &unit : pushdown_subselects)
-      WalkAccessPaths(unit.root_access_path(), nullptr,
-                      WalkAccessPathPolicy::ENTIRE_TREE,
-                      [fake_timing_iterator](AccessPath *path, const JOIN *) {
-                        path->iterator = fake_timing_iterator;
-                        return false;
-                      });
-  }
   m_partial_plan.SetPushdownInnerQueryExpressions(
-      std::move(pushdown_subselects));
+      std::move(partial_clone_context->m_pushdown_subselects));
   if (!lex->is_explain() || lex->is_explain_analyze)
     m_collector->PrepareExecution(thd);
 
@@ -1379,9 +1364,6 @@ bool ParallelPlan::GenerateAccessPath(Item_clone_context *clone_context) {
   Opt_trace_object trace(&thd->opt_trace, "access_path_rewriting");
 
   assert(source_join->root_access_path());
-
-  if (thd->lex->is_explain_analyze)
-    rewriter.set_fake_timing_iterator(NewFakeTimingIterator(thd, m_collector));
 
   if (!(parallelized_path = rewriter.parallelize_access_path(
             m_collector, source_join->root_access_path(), partial_path)))
