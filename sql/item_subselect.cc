@@ -2705,6 +2705,7 @@ Item_cached_subselect_result::create_from_subselect(Item_subselect *item) {
 
 Item_cached_subselect_result::Item_cached_subselect_result(Item_subselect *item)
     : m_subselect(item) {
+  m_id = item->id();
   columns = item->max_columns;
   res_type = item->result_type();
   select_number = item->unit->first_query_block()->select_number;

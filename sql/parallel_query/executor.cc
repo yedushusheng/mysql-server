@@ -624,7 +624,7 @@ class PartialItemCloneContext : public Item_clone_context {
   Item *get_replacement_item(const Item *item) override {
     assert(item->type() == Item::SUBSELECT_ITEM);
     for (auto &subs_item : *m_cached_subselects) {
-      if (subs_item.subselect() != item) continue;
+      if (!subs_item.is_identical(item)) continue;
       auto *new_item = subs_item.clone(this);
       return new_item;
     }
@@ -723,32 +723,40 @@ static bool new_query_expression(LEX *lex, Query_block *parent,
   return false;
 }
 
-static bool is_clone_excluded(const Query_expression *query_expression,
-                              QueryExpressions *excludes) {
-  if (!excludes) return false;
-  for (auto &unit : *excludes) {
-    if (query_expression == &unit) return true;
+static bool is_clone_excluded(
+    const Query_expression *query_expression,
+    const mem_root_deque<ulong> &exclude_subselect_ids) {
+  auto *subselect = query_expression->item;
+  if (!subselect) return false;
+
+  for (auto subid : exclude_subselect_ids) {
+    if (subselect->id() == subid) return true;
   }
   return false;
 }
 
-static bool init_query_block_tree_from(THD *cur_thd, Query_block *query_block,
-                                       Query_block *from_query_block,
-                                       QueryExpressions *excludes) {
+/**
+  Initialize whole query block tree of partial plan for executing.
+
+  The ancestor of whole query block tree is @param query_block and it's cloned
+  from @param from_query_block. The function gets inner query expression list
+  from m_inner_query_expressions_clone_from of @param query_block or inner query
+  expressions of @param from_query_block and excludes whose item is in @param
+  exclude_subselect_ids.
+*/
+static bool init_query_block_tree_from(
+    THD *cur_thd, Query_block *query_block, Query_block *from_query_block,
+    const mem_root_deque<ulong> &exclude_subselect_ids) {
   return walk_query_block(
       cur_thd, query_block, from_query_block,
-      [excludes](THD *thd, Query_block *cur, Query_block *from) {
+      [exclude_subselect_ids](THD *thd, Query_block *cur, Query_block *from) {
         if (add_tables_to_query_block(thd, cur, from->leaf_tables)) return true;
         LEX *lex = thd->lex;
         auto *from_inner_units = cur->m_inner_query_expressions_clone_from;
-        if (from_inner_units) {
-          for (auto &inner_unit : *from_inner_units) {
-            if (new_query_expression(lex, cur, &inner_unit)) return true;
-          }
         } else {
           for (auto *inner_unit = from->first_inner_query_expression();
                inner_unit; inner_unit = inner_unit->next_query_expression()) {
-            if (is_clone_excluded(inner_unit, excludes)) continue;
+            if (is_clone_excluded(inner_unit, exclude_subselect_ids)) continue;
             if (new_query_expression(lex, cur, inner_unit)) return true;
           }
         }
@@ -846,13 +854,13 @@ bool PartialExecutor::PrepareQueryPlan(PartialExecutorContext *context) {
 
   query_block->m_inner_query_expressions_clone_from =
       &m_query_plan->PushdownInnerQueryExpressions();
-  QueryExpressions exclude_inners;
+  mem_root_deque<ulong> exclude_inners(thd->mem_root);
   for (auto &cached_subselect : m_query_plan->CachedSubqueries()) {
-    if (exclude_inners.push_back(cached_subselect.subselect()->unit))
+    if (exclude_inners.push_back(cached_subselect.id()))
       return true;
   }
   if (init_query_block_tree_from(thd, query_block, from_query_block,
-                                 &exclude_inners))
+                                 exclude_inners))
     return true;
 
   if (open_tables_for_query(thd, lex->query_tables, 0) ||

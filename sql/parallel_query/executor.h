@@ -142,26 +142,50 @@ class PartialExecutor {
 std::string ExplainTableParallelScan(JOIN *join, TABLE *table);
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
 
+inline Query_expression *find_inner_expression_by_id(
+    List<Query_expression> *inner_list, Query_expression *from_inner_first,
+    ulong target_id) {
+  Query_expression *target_inner = nullptr;
+  if (inner_list) {
+    // Use inner expression list first, this used by root query block of partial
+    // plan.
+    for (auto &inner : *inner_list) {
+      if (inner.m_id == target_id) {
+        target_inner = &inner;
+        break;
+      }
+    }
+    assert(target_inner != nullptr);
+    return target_inner;
+  }
+
+  assert(from_inner_first);
+  for (auto *inner = from_inner_first; inner;
+       inner = inner->next_query_expression()) {
+    if (inner->m_id == target_id) {
+      target_inner = inner;
+      break;
+    }
+  }
+
+  assert(target_inner != nullptr);
+  return target_inner;
+}
+
+/**
+  Call @param func for each inner query expression of @param query_block, the
+  @param query_block is cloned from @from.
+*/
 template <class Func>
 bool for_each_inner_expressions(Query_block *query_block, Query_block *from,
                                 Func &&func) {
-  List_iterator_fast<Query_expression> it;
-  auto *from_inners = query_block->m_inner_query_expressions_clone_from;
-  if (from_inners) it.init(*from_inners);
-  Query_expression *from_inner_unit =
-      from_inners ? it++ : from->first_inner_query_expression();
-
   for (auto *inner_unit = query_block->first_inner_query_expression();
-       inner_unit && from_inner_unit;
-       inner_unit = inner_unit->next_query_expression()) {
-    // Skip unpushed down cacheable subqueries.
-    while (inner_unit->m_id != from_inner_unit->m_id) {
-      assert(!from_inners);
-      from_inner_unit = from_inner_unit->next_query_expression();
-    }
+       inner_unit; inner_unit = inner_unit->next_query_expression()) {
+    auto *from_inner_unit = find_inner_expression_by_id(
+        query_block->m_inner_query_expressions_clone_from,
+        from->first_inner_query_expression(), inner_unit->m_id);
+
     if (func(inner_unit, from_inner_unit)) return true;
-    from_inner_unit =
-        from_inners ? it++ : from_inner_unit->next_query_expression();
   }
 
   return false;
