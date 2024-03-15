@@ -476,6 +476,17 @@ class FakeTimingIterator : public RowIterator {
   std::pair<std::string *, std::string *> m_timing_data;
 };
 
+std::string PrefixToString(TABLE *table, uint index, uint16_t prefix) {
+  KEY *key = &table->key_info[index];
+  std::string ret = "";
+  for (uint16_t i = 0; i <= prefix; ++i) {
+    ret += key->key_part[i].field->field_name;
+    if (i != prefix) ret += ", ";
+  }
+  ret += "";
+  return ret;
+}
+
 std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   std::string str;
   // For the union temporary scan, join is nullptr
@@ -491,7 +502,9 @@ std::string ExplainTableParallelScan(JOIN *join, TABLE *table) {
   str = ", with parallel scan ranges: " +
         std::to_string(scaninfo.suggested_ranges);
   if (scaninfo.scan_desc.key_used != UINT16_MAX)
-    str += ", prefix: " + std::to_string(scaninfo.scan_desc.key_used);
+    str +=
+        ", distinct prefix: " + PrefixToString(table, scaninfo.scan_desc.keynr,
+                                               scaninfo.scan_desc.key_used);
   return str;
 }
 

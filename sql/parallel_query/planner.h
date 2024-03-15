@@ -14,11 +14,12 @@ class TABLE_REF;
 #define PARALLEL_QUERY_JOIN (1ULL << 0)
 #define PARALLEL_QUERY_SELECT_COUNT (1ULL << 1)
 #define PARALLEL_QUERY_SUBQUERY_PUSHDOWN (1ULL << 2)
+#define PARALLEL_QUERY_FULL_GROUPING_PUSHDOWN (1ULL << 3)
 
 // Including the switch in this set, makes its default 'on'
 #define PARALLEL_QUERY_SWITCH_DEFAULT                  \
   (PARALLEL_QUERY_JOIN | PARALLEL_QUERY_SELECT_COUNT | \
-   PARALLEL_QUERY_SUBQUERY_PUSHDOWN)
+   PARALLEL_QUERY_SUBQUERY_PUSHDOWN | PARALLEL_QUERY_FULL_GROUPING_PUSHDOWN)
 
 namespace pq {
 class Collector;
@@ -181,7 +182,8 @@ class ParallelPlan {
 
   void SetTableParallelScan(TABLE *table, ulong suggested_ranges,
                             const parallel_scan_desc_t &psdesc) {
-    m_partial_plan.SetTableParallelScan(table, suggested_ranges, psdesc);
+    m_partial_plan.SetTableParallelScan(table, suggested_ranges,
+                                        psdesc);
   }
   void SetParallelScanReverse() { m_partial_plan.SetParallelScanReverse(); }
   bool IsParallelScanTable(TABLE *table) {

@@ -7115,11 +7115,12 @@ static Sys_var_ulong Sys_parallel_scan_ranges_threshold(
     BLOCK_SIZE(1));
 
 static const char *parallel_query_switch_names[] = {
-    "join", "select_count", "subquery_pushdown", "default", NullS};
+    "join",    "select_count", "subquery_pushdown", "full_grouping_pushdown",
+    "default", NullS};
 static Sys_var_flagset Sys_parallel_query_switch(
     "parallel_query_switch",
     "parallel_query_switch=option=val[,option=val...], where option is one of "
-    "{join, select_count, subquery_pushdown} and val is one of "
-    "{on, off, default}",
+    "{join, select_count, subquery_pushdown, full_grouping_pushdown} and val "
+    "is one of {on, off, default}",
     HINT_UPDATEABLE SESSION_VAR(parallel_query_switch), CMD_LINE(REQUIRED_ARG),
     parallel_query_switch_names, DEFAULT(PARALLEL_QUERY_SWITCH_DEFAULT));

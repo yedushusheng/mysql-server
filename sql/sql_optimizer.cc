@@ -1546,7 +1546,9 @@ bool JOIN::optimize_distinct_group_order() {
        select_lex->olap != ROLLUP_TYPE) ||
       (group_list.empty() && tmp_table_param.sum_func_count)) {
     if (!order.empty()) {
-      order.clean();
+      // Parallel plan needs this to add merge sort if GROUP BY is pushed down
+      // to worker completely.
+      order.clean(true);
       trace_opt.add("removed_order_by", true);
     }
     if (is_indexed_agg_distinct(this, nullptr)) streaming_aggregation = false;

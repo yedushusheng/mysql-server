@@ -2073,8 +2073,8 @@ class Item_aggregate_ref : public Item_ref {
   Ref_Type ref_type() const override { return AGGREGATE_REF; }
 
   Item *new_item(Item_clone_context *) const override {
-    return new Item_aggregate_ref(context, ref, db_name, table_name, field_name,
-                                  depended_from);
+    return new Item_aggregate_ref(context, nullptr, db_name, table_name,
+                                  field_name, depended_from);
   }
 
   /**

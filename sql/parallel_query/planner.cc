@@ -141,14 +141,13 @@ static void get_scan_range_for_ref(MEM_ROOT *mem_root, TABLE_REF *ref,
 static void GetTableAccessInfo(QEP_TAB *tab, uint *keynr, key_range **min_key,
                         key_range **max_key, uint16 *key_used,
                         parallel_scan_flags *flags) {
-  auto *table = tab->table();
   auto *thd = tab->join()->thd;
 
   *key_used = UINT16_MAX;
   switch (tab->type()) {
     case JT_ALL:
       *min_key = *max_key = nullptr;
-      *keynr = table->s->primary_key;
+      *keynr = MAX_KEY;
       break;
     case JT_INDEX_SCAN:
       *min_key = *max_key = nullptr;
@@ -871,14 +870,69 @@ class PartialItemGenContext : public Item_clone_context {
   QueryExpressions m_pushdown_subselects;
 };
 
-static bool can_field_push_down(AggregateStrategy agg_strategy, Item *item) {
-  assert(item->parallel_safe() == Item_parallel_safe::Safe);
+static bool is_order_prefix_by_key_fields(ORDER *order, KEY *key,
+                                          uint16_t &key_prefix) {
+  ORDER *ord = order;
+  unsigned keypart_idx = 0;
+  unsigned end_parts = key->user_defined_key_parts;
+  assert(key_prefix == UINT16_MAX);
 
-  bool is_sum_func = item->type() == Item::SUM_FUNC_ITEM;
+  // Currently, only support the parallel scan key with HA_NOSAME flag.
+  if (!(key->flags & HA_NOSAME)) return false;
 
-  if (is_sum_func && agg_strategy == AggregateStrategy::OnePhase) return false;
+  for (; keypart_idx < end_parts && ord; ++keypart_idx, ord = ord->next) {
+    auto *item = (*ord->item)->real_item();
+    if (item->type() != Item::FIELD_ITEM ||
+        !key->key_part[keypart_idx].field->eq(
+            down_cast<Item_field *>(item)->field))
+      return false;
+  }
 
-  return !(item->has_aggregation() || item->const_item()) || is_sum_func;
+  // No prefix at all. We only support all key parts as the key_prefix due to
+  // current parallel scan limitation.
+  if (keypart_idx == 0 || keypart_idx != end_parts) return false;
+  // We also set key_used even if prefix includes all fields because underlying
+  // storage engines has different implementation of parallel scan.
+  key_prefix = keypart_idx - 1;
+  return true;
+}
+
+static AggregateStrategy decide_aggregate_strategy(JOIN *join, TABLE *ps_table,
+                                                   uint ps_keynr,
+                                                   uint16_t &ps_key_used) {
+  auto *group = join->group_list.actual_used();
+  // It must be GROUP MIN MAX scan if ps_key_used is valid. XXX We can add
+  // aggregate access path in access path rewriter if the full_grouping_pushdown
+  // switch is off.
+  if (ps_key_used != UINT16_MAX) {
+    assert(join->primary_tables == 1 && join->qep_tab->type() == JT_RANGE &&
+           join->qep_tab->quick()->get_type() ==
+               QUICK_RANGE_SELECT::QS_TYPE_GROUP_MIN_MAX);
+    // The group list can be empty when GROUP MIN MAX is used for AGG(distinct
+    // ...), see get_best_group_min_max(). Here group_list of query block used
+    // because the group list can be optimized out due to
+    // equals_constant_in_where but we don't want leave agg functions to final
+    // plan. We also can not set it to used_order of JOIN::group_list since it
+    // should not appear to parallel plan.
+    return group || join->query_block->group_list.size() > 0
+               ? AggregateStrategy::PushedOnePhase
+               : AggregateStrategy::TwoPhase;
+  }
+
+  THD *thd = join->thd;
+  KEY *key = &ps_table->key_info[ps_keynr];
+  if (thd->parallel_query_switch_flag(PARALLEL_QUERY_FULL_GROUPING_PUSHDOWN) &&
+      group && ps_keynr != MAX_KEY &&
+      is_order_prefix_by_key_fields(group, key, ps_key_used))
+    return AggregateStrategy::PushedOnePhase;
+
+  // Only OnePhase strategy can be used if there are aggregate functions.
+  for (auto **sum_func_ptr = join->sum_funcs; *sum_func_ptr; sum_func_ptr++) {
+    if ((*sum_func_ptr)->has_with_distinct())
+      return AggregateStrategy::OnePhase;
+  }
+
+  return AggregateStrategy::TwoPhase;
 }
 
 static AggregateStrategy decide_aggregate_strategy(JOIN *join) {
@@ -911,23 +965,13 @@ bool ParallelPlan::GenPartialFields(Item_clone_context *context,
   Query_block *partial_query_block = PartialQueryBlock();
   JOIN *join = SourceJoin();
 
-  // See get_best_group_min_max(), which only support 1 table with no rollup
-  assert(join->rollup_state == JOIN::RollupState::NONE);
-
-  m_aggregate_strategy = decide_aggregate_strategy(join);
   bool sumfuncs_full_pushdown =
       m_aggregate_strategy == AggregateStrategy::PushedOnePhase;
 
   for (uint i = 0; i < source->fields.size(); i++) {
     Item *new_item, *item = source->fields[i];
     if (skip_no_used_field(join->query_expression(), item)) continue;
-    // if ONLY_FULL_GROUP_BY is turned off, the functions contains
-    // aggregation may include some item fields. Sum functions could be
-    // const_item(), see optimize_aggregated_query(), it calls make_const()
-    // to make MIN(), MAX() as a const. XXX This should be not pushed down
-    // if non-pushed down sum got supported.
-
-    if (can_field_push_down(m_aggregate_strategy, item)) {
+    if (can_item_push_down(m_aggregate_strategy, item)) {
       if (!(new_item = item->clone(context))) return true;
       bool is_sum_func = item->type() == Item::SUM_FUNC_ITEM;
       if (is_sum_func && !sumfuncs_full_pushdown) {
@@ -1202,8 +1246,13 @@ bool ParallelPlan::GeneratePartialPlan(
 
   if (clone_context->BuildCachedSubqueryList(source_query_block, false))
     return true;
-  if (GenPartialFields(clone_context, fields_pushdown_desc))
-    return true;
+
+  auto &parallel_scan_info = m_partial_plan.GetParallelScanInfo();
+  m_aggregate_strategy = decide_aggregate_strategy(
+      source_join, parallel_scan_info.table, parallel_scan_info.scan_desc.keynr,
+      parallel_scan_info.scan_desc.key_used);
+
+  if (GenPartialFields(clone_context, fields_pushdown_desc)) return true;
 
   // XXX Set JOIN::select_distinct and JOIN::select_count
   // XXX collect pushed down fields from fields, table_ref, conditions and
@@ -1633,8 +1682,8 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
   sort_cost = from->sort_cost;
   windowing_cost = from->windowing_cost;
 
-  if (make_sum_func_list(*fields, true)) return true;
-
+  if (make_sum_func_list(*fields, true) || setup_sum_funcs(thd, sum_funcs))
+    return true;
   assert(from->root_access_path());
 
   pq::PartialAccessPathRewriter aprewriter(context, from, this);

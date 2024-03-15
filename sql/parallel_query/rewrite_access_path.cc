@@ -384,12 +384,16 @@ void AccessPathParallelizer::rewrite_index_access_path(TABLE *table,
   if (reverse && m_parallel_plan->IsParallelScanTable(table))
     m_parallel_plan->SetParallelScanReverse();
   auto *join = m_join_in;
-  if (!use_order || join->m_ordered_index_usage == JOIN::ORDERED_INDEX_VOID)
+  if (!use_order || join->m_ordered_index_usage == JOIN::ORDERED_INDEX_VOID ||
+      (join->m_ordered_index_usage == JOIN::ORDERED_INDEX_GROUP_BY &&
+       m_parallel_plan->FullPushedAggregate() && !join->order.actual_used()))
     return;
 
   // Optimizer reset order and group_list of JOIN if it decides index is used
   // for order or group, we saved it in used_order in class ORDER_with_src.
   merge_sort = join->m_ordered_index_usage == JOIN::ORDERED_INDEX_ORDER_BY
+                   ? join->order.actual_used()
+               : m_parallel_plan->FullPushedAggregate()
                    ? join->order.actual_used()
                    : join->group_list.actual_used();
 }
@@ -702,6 +706,9 @@ bool AccessPathParallelizer::rewrite_materialize(AccessPath *in,
 #endif
       return false;
     }
+    
+    if (src->ref_slice != -1 && m_parallel_plan->FullPushedAggregate())
+      return false;
     // We can push down GROUP BY and ORDER BY if they have same fields and no
     // aggregation functions.
     if (*m_join_in->sum_funcs == nullptr && src->table->group &&
@@ -763,13 +770,18 @@ bool AccessPathParallelizer::rewrite_temptable_aggregate(AccessPath *in,
   assert(m_join_in->group_list.actual_used());
   if (m_parallel_plan->NonpushedAggregate())
     out = nullptr;
-  else
+  else {
     m_join_out->group_list = ORDER_with_src(
         clone_order_list(tagg.table->group,
                          {m_join_out->thd->mem_root,
                           &m_join_out->query_block->base_ref_items,
                           m_join_out->fields->size(), nullptr}),
         ESC_GROUP_BY);
+    out->temptable_aggregate().table_path = accesspath_dup(tagg.table_path);
+    post_rewrite_out_path(out->temptable_aggregate().table_path);
+  }
+
+  if (m_parallel_plan->FullPushedAggregate()) return false;
 
   TABLE *orig_table [[maybe_unused]] = tagg.table;
   if (recreate_materialized_table(m_join_in->thd, m_join_in, tagg.table->group,
@@ -784,11 +796,6 @@ bool AccessPathParallelizer::rewrite_temptable_aggregate(AccessPath *in,
   // at the end of execution.
   m_join_in->temp_tables.push_back(
       JOIN::TemporaryTableToCleanup{table, tagg.temp_table_param});
-
-  if (out) {
-    out->temptable_aggregate().table_path = accesspath_dup(tagg.table_path);
-    post_rewrite_out_path(out->temptable_aggregate().table_path);
-  }
 
   rewrite_temptable_scan_path(tagg.table_path, table, m_item_clone_context);
 
@@ -874,9 +881,14 @@ bool AccessPathParallelizer::rewrite_sort(AccessPath *in, AccessPath *out) {
   return false;
 }
 
-bool AccessPathParallelizer::rewrite_aggregate(AccessPath *in, AccessPath *&out) {
+bool AccessPathParallelizer::rewrite_aggregate(AccessPath *in,
+                                               AccessPath *&out) {
   auto *group = m_join_in->group_list.actual_used();
-
+  if (!m_parallel_plan->NonpushedAggregate())
+    m_join_out->group_list.order = clone_order_list(
+        group, {mem_root(), &m_join_out->query_block->base_ref_items,
+                m_join_out->fields->size(), nullptr});
+  if (m_parallel_plan->FullPushedAggregate()) return false;
   // Recreate group fields original join since underlying table changed, The
   // group_list is used in make_group_fields().
   if (m_join_in->group_list.used_order)
@@ -885,12 +897,7 @@ bool AccessPathParallelizer::rewrite_aggregate(AccessPath *in, AccessPath *&out)
   m_join_in->group_fields.destroy_elements();
   if (make_group_fields(m_join_in, m_join_in)) return true;
 
-  if (m_parallel_plan->NonpushedAggregate())
-    out = nullptr;
-  else
-    m_join_out->group_list.order = clone_order_list(
-        group, {mem_root(), &m_join_out->query_block->base_ref_items,
-                m_join_out->fields->size(), nullptr});
+  if (m_parallel_plan->NonpushedAggregate()) out = nullptr;
   if (!collector_path_pos()) set_collector_path_pos(&in->aggregate().child);
   return false;
 }

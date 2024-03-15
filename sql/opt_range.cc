@@ -14414,7 +14414,7 @@ uint16_t QUICK_GROUP_MIN_MAX_SELECT::scan_range_keyused(MEM_ROOT *mem_root,
     quick_prefix_query_block->scan_range_keyused(mem_root, min_key, max_key);
   else
     *min_key = *max_key = nullptr;
-  return group_key_parts;
+  return group_key_parts - 1;
 }
 
 /**
