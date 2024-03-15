@@ -1,6 +1,7 @@
 #ifndef PARALLEL_QUERY_REWRITE_ACCESS_PATH_H
 #define PARALLEL_QUERY_REWRITE_ACCESS_PATH_H
 
+#include "sql/mem_root_array.h"
 #include "sql/parallel_query/planner.h"
 
 class RowIterator;
@@ -65,7 +66,7 @@ class AccessPathRewriter {
       AccessPath *, AccessPath *) {
     return false;
   }
-  virtual bool rewrite_hash_join(AccessPath *, AccessPath *) { return false; }
+  virtual bool rewrite_hash_join(AccessPath *in, AccessPath *out);
 
   virtual bool rewrite_filter(AccessPath *, AccessPath *) { return false; }
   virtual bool rewrite_sort(AccessPath *, AccessPath *) { return false; }
@@ -163,8 +164,9 @@ class AccessPathParallelizer : public AccessPathRewriter {
 
 class PartialAccessPathRewriter : public AccessPathRewriter {
  public:
+
   PartialAccessPathRewriter(Item_clone_context *item_clone_context,
-                            JOIN *join_in, JOIN *join_out)
+                            JOIN *join_in, JOIN *join_out);
       : AccessPathRewriter(item_clone_context, join_in, join_out) {}
 
   AccessPath *clone_and_rewrite(AccessPath *from) {
@@ -173,6 +175,8 @@ class PartialAccessPathRewriter : public AccessPathRewriter {
     return out;
   }
 
+  // Return a new object of Mem_root_array on current MEM_ROOT
+  Mem_root_array<QEP_execution_state> *qep_execution_state();
  private:
   TABLE *find_leaf_table(TABLE *table) const;
 
@@ -205,6 +209,7 @@ class PartialAccessPathRewriter : public AccessPathRewriter {
   bool rewrite_weedout(AccessPath *in, AccessPath *out) override;
   bool rewrite_remove_duplicates_on_index(AccessPath *in,
                                           AccessPath *out) override;
+Mem_root_array<QEP_execution_state> m_qep_execution_state;                                          
 };
 
 }  // namespace pq

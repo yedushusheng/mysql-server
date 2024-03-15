@@ -97,10 +97,8 @@ bool Collector::Init(THD *thd) {
   if (m_partial_plan->InitExecution(m_workers.size())) return true;
 
   // Execute pre-evaluate subselects before workers launching
-  if (m_preevaluate_subqueries) {
-    for (auto &cached_subs : *m_preevaluate_subqueries) {
-      if (cached_subs.cache_subselect(thd)) return true;
-    }
+  for (auto &cached_subs : m_preevaluate_subqueries) {
+    if (cached_subs.cache_subselect(thd)) return true;
   }
 
   // Here reserved 0 as leader's id. If you use Worker::m_id as a 0-based index,
@@ -223,9 +221,9 @@ AccessPath *Collector::Explain(std::vector<std::string> &description) {
     }
     description.push_back(std::move(str));
   }
-  if (m_preevaluate_subqueries->size() > 0) {
+  if (!m_preevaluate_subqueries.is_empty()) {
     std::string str("Pre-evaluated subqueries:");
-    for (auto &item : *m_preevaluate_subqueries) {
+    for (auto &item : m_preevaluate_subqueries) {
       snprintf(buff, sizeof(buff), " select #%u,", item.query_block_number());
       str += buff;
     }
@@ -580,11 +578,11 @@ class PartialItemCloneContext : public Item_clone_context {
  public:
   PartialItemCloneContext(
       THD *thd, Query_block *query_block, ItemRefCloneResolver *ref_resolver,
-      std::function<user_var_entry *(const std::string &)> find_user_var_entry)
+      std::function<user_var_entry *(const std::string &)> find_user_var_entry,
+      CachedSubselects *cached_subselects)
       : Item_clone_context(thd, query_block, ref_resolver),
-        m_find_user_var_entry(find_user_var_entry) {}
-
-  using Item_clone_context::Item_clone_context;
+        m_find_user_var_entry(find_user_var_entry),
+        m_cached_subselects(cached_subselects) {}
 
   void rebind_field(Item_field *item_field,
                     const Item_field *from_field) override {
@@ -593,6 +591,8 @@ class PartialItemCloneContext : public Item_clone_context {
     item_field->field = table->field[from_field->field_index];
     item_field->set_result_field(item_field->field);
     item_field->field_index = from_field->field_index;
+    if (item_field->table_ref->query_block != m_query_block)
+      item_field->depended_from = item_field->table_ref->query_block;    
   }
 
   void rebind_hybrid_field(Item_sum_hybrid_field *item_hybrid,
@@ -621,11 +621,45 @@ class PartialItemCloneContext : public Item_clone_context {
     item->set_var_entry(entry);
   }
 
+  Item *get_replacement_item(const Item *item) override {
+    assert(item->type() == Item::SUBSELECT_ITEM);
+    for (auto &subs_item : *m_cached_subselects) {
+      if (subs_item.subselect() != item) continue;
+      auto *new_item = subs_item.clone(this);
+      return new_item;
+    }
+
+    // A pushed down sub-queries may be referred by multiple locations. we just
+    // clone it once.
+    auto *subselect = down_cast<const Item_subselect *>(item);
+    Query_expression *new_item_unit = nullptr;
+    for (auto *inner_unit = m_query_block->first_inner_query_expression();
+         inner_unit; inner_unit = inner_unit->next_query_expression()) {
+      if (inner_unit->m_id == subselect->unit->m_id) {
+        new_item_unit = inner_unit;
+        break;
+      }
+    }
+    assert(new_item_unit);
+    if (new_item_unit->item) return new_item_unit->item;
+
+    return nullptr;
+  }
+
+  bool use_same_subselect() const override { return false; }
+
  private:
   TABLE_LIST *find_field_table(TABLE_LIST *table_ref) {
-    if (!is_temporary_table(table_ref))
-      return m_query_block->find_identical_table_with(table_ref);
-
+    if (!is_temporary_table(table_ref)) {
+      auto *query_block = m_query_block;
+      while (query_block) {
+        auto *tl = query_block->find_identical_table_with(table_ref);
+        if (tl) return tl;
+        query_block = query_block->outer_query_block();
+      }
+      assert(false);
+      return nullptr;
+    }
     // Some fields could be found in semi-join materialization tables.
     for (auto &ttc : m_query_block->join->temp_tables) {
       auto *tl = ttc.table->pos_in_table_list;
@@ -637,6 +671,7 @@ class PartialItemCloneContext : public Item_clone_context {
   }
 
   std::function<user_var_entry *(const std::string &)> m_find_user_var_entry;
+  CachedSubselects *m_cached_subselects;
 };
 
 bool PartialExecutor::Init(comm::RowChannel *sender_channel,
@@ -644,6 +679,132 @@ bool PartialExecutor::Init(comm::RowChannel *sender_channel,
   m_sender_channel = sender_channel;
   m_sender_exchange = sender_exchange;
   m_row_exchange_writer.SetExchange(m_sender_exchange);
+
+  return false;
+}
+
+// Walk all query block tree to call @param func, get from inner query
+// expressions if @param from_inner_subselects is valid otherwise get them from
+// @param from.
+template <class Func>
+bool walk_query_block(THD *thd, Query_block *query_block, Query_block *from,
+                      Func &&func) {
+  if (func(thd, query_block, from)) return true;
+  return for_each_inner_expressions(
+      query_block, from,
+      [thd, func](Query_expression *inner_unit,
+                  Query_expression *from_inner_unit) {
+        for (auto *inner = inner_unit->first_query_block(),
+                  *from_inner = from_inner_unit->first_query_block();
+             inner && from_inner; inner = inner->next_query_block(),
+                  from_inner = from_inner->next_query_block()) {
+          if (walk_query_block(thd, inner, from_inner, func)) return true;
+        }
+        return false;
+      });
+}
+
+static bool new_query_expression(LEX *lex, Query_block *parent,
+                                 Query_expression *from) {
+  auto *from_query_block = from->first_query_block();
+  auto *query_block = lex->new_query(parent);
+  if (!query_block) return true;
+  query_block->master_query_expression()->m_id =
+      from_query_block->master_query_expression()->m_id;
+
+  for (from_query_block = from_query_block->next_query_block();
+       from_query_block;
+       from_query_block = from_query_block->next_query_block()) {
+    if (!lex->new_union_query(query_block,
+                              from_query_block == from->union_distinct))
+      return true;
+  }
+
+  return false;
+}
+
+static bool is_clone_excluded(const Query_expression *query_expression,
+                              QueryExpressions *excludes) {
+  if (!excludes) return false;
+  for (auto &unit : *excludes) {
+    if (query_expression == &unit) return true;
+  }
+  return false;
+}
+
+static bool init_query_block_tree_from(THD *cur_thd, Query_block *query_block,
+                                       Query_block *from_query_block,
+                                       QueryExpressions *excludes) {
+  return walk_query_block(
+      cur_thd, query_block, from_query_block,
+      [excludes](THD *thd, Query_block *cur, Query_block *from) {
+        if (add_tables_to_query_block(thd, cur, from->leaf_tables)) return true;
+        LEX *lex = thd->lex;
+        auto *from_inner_units = cur->m_inner_query_expressions_clone_from;
+        if (from_inner_units) {
+          for (auto &inner_unit : *from_inner_units) {
+            if (new_query_expression(lex, cur, &inner_unit)) return true;
+          }
+        } else {
+          for (auto *inner_unit = from->first_inner_query_expression();
+               inner_unit; inner_unit = inner_unit->next_query_expression()) {
+            if (is_clone_excluded(inner_unit, excludes)) continue;
+            if (new_query_expression(lex, cur, inner_unit)) return true;
+          }
+        }
+        return false;
+      });
+}
+
+/// Other SQLEngine nodes maybe change table definition e.g. drop index. It may
+/// cause problems when cloning plan.
+static bool CheckTableDefChange(TABLE *table, TABLE *from) {
+  if (table->schema_version == from->schema_version &&
+      table->tindex_id == from->tindex_id)
+    return false;
+
+  my_error(ER_TABLE_IS_OUT_OF_DATE, MYF(0), from->s->db.str,
+           from->s->table_name.str, from->schema_version, table->schema_version,
+           table->tindex_id);
+  return true;
+}
+
+
+bool clone_leaf_tables(THD *thd, Query_block *query_block, Query_block *from) {
+  // Item_field clone depends on this
+  if (query_block->setup_tables(thd, query_block->get_table_list(), false))
+    return true;
+
+  // Clone table attributes from @from tables
+  for (TABLE_LIST *tl = query_block->leaf_tables, *ftl = from->leaf_tables;
+       tl && ftl; tl = tl->next_leaf, ftl = ftl->next_leaf) {
+    tl->m_id = ftl->m_id;
+    tl->set_tableno(ftl->tableno());
+    tl->set_map(ftl->map());
+    TABLE *table = tl->table;
+    TABLE *ftable = ftl->table;
+    assert(table);
+
+    if (CheckTableDefChange(table, ftable)) return true;
+
+    // record of const table has be filled during query optimization.
+    if (ftable->const_table) {
+      table->const_table = true;
+      memcpy(table->record[0], ftable->record[0], ftable->s->reclength);
+    }
+    if (ftable->is_nullable()) table->set_nullable();
+    if (ftable->has_null_row()) table->set_null_row();
+
+    // XXX Tranditional explain needs these
+    table->covering_keys = ftable->covering_keys;
+    table->reginfo.not_exists_optimize = ftable->reginfo.not_exists_optimize;
+    if (ftable->part_info) {
+      bitmap_clear_all(&table->part_info->read_partitions);
+      bitmap_copy(&table->part_info->read_partitions,
+                  &ftable->part_info->read_partitions);
+    }
+    // XXX The materialized derived table clone
+  }
 
   return false;
 }
@@ -681,9 +842,17 @@ bool PartialExecutor::PrepareQueryPlan(PartialExecutorContext *context) {
   lex->result = query_result;
   auto *query_block = lex->query_block;
 
-  // Clone partial query plan and open tables
-  if (add_tables_to_query_block(thd, query_block,
-                                from_query_block->leaf_tables))
+  auto *unit = lex->unit, *from_unit = m_query_plan->QueryExpression();
+
+  query_block->m_inner_query_expressions_clone_from =
+      &m_query_plan->PushdownInnerQueryExpressions();
+  QueryExpressions exclude_inners;
+  for (auto &cached_subselect : m_query_plan->CachedSubqueries()) {
+    if (exclude_inners.push_back(cached_subselect.subselect()->unit))
+      return true;
+  }
+  if (init_query_block_tree_from(thd, query_block, from_query_block,
+                                 &exclude_inners))
     return true;
 
   if (open_tables_for_query(thd, lex->query_tables, 0) ||
@@ -695,11 +864,15 @@ bool PartialExecutor::PrepareQueryPlan(PartialExecutorContext *context) {
     return true;
   });
 
-  auto *unit = lex->unit, *from_unit = m_query_plan->QueryExpression();
-  ItemRefCloneResolver ref_clone_resolver(thd->mem_root, query_block);
+  if (walk_query_block(thd, query_block, from_query_block, clone_leaf_tables))
+    return true;
+
+  ItemRefCloneResolver ref_clone_resolver(thd->mem_root);
   PartialItemCloneContext clone_context(thd, query_block, &ref_clone_resolver,
-                                        context->find_user_var_entry);
-  if (unit->clone_from(thd, from_unit, &clone_context)) return true;
+                                        context->find_user_var_entry,
+                                        &m_query_plan->CachedSubqueries());
+
+  if (unit->clone_from(thd, from_unit, &clone_context, true)) return true;
 
   if (clone_context.final_resolve_refs()) return true;
 
@@ -837,7 +1010,8 @@ void PartialExecutor::InitExecThd(PartialExecutorContext *ctx,
   thd->set_query(ctx->query);
   thd->set_query_id(ctx->query_id);
   thd->set_security_context(ctx->security_context);
-  //  LAST_INSERT_ID() push down need this, see class Item_func_last_insert_id;
+  //  LAST_INSERT_ID() push down need this, see class
+  //  Item_func_last_insert_id;  
   thd->first_successful_insert_id_in_prev_stmt =
       ctx->first_successful_insert_id_in_prev_stmt;
   thd->save_raw_record = ctx->save_raw_record;
@@ -898,6 +1072,12 @@ int CollectorIterator::Read() {
   }
 
   return 0;
+}
+
+void JOIN::do_each_qep_exec_state(
+    std::function<void(pq::QEP_execution_state &)> func) {
+  if (!qep_execution_state) return;
+  for (auto &qes : *qep_execution_state) func(qes);
 }
 
 void JOIN::end_parallel_plan(bool fill_send_records) {

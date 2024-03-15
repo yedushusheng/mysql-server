@@ -12,6 +12,42 @@
 #include "sql/sql_tmp_table.h"
 
 namespace pq {
+static JoinPredicate *CloneJoinPredicateFrom(const JoinPredicate *from,
+                                      Item_clone_context *context) {
+  const RelationalExpression *orig_expr = from->expr;
+  RelationalExpression *expr =
+      new (context->mem_root()) RelationalExpression(context->thd());
+  if (!expr) return nullptr;
+  expr->left = expr->right = nullptr;
+  expr->type = orig_expr->type;
+  for (auto *item : orig_expr->join_conditions) {
+    auto *new_item = item->clone(context);
+    if (!new_item || expr->join_conditions.push_back(new_item)) return nullptr;
+  }
+  for (auto *item : orig_expr->equijoin_conditions) {
+    auto *new_item = item->clone(context);
+    if (!new_item || expr->equijoin_conditions.push_back(
+                         down_cast<Item_func_eq *>(new_item)))
+      return nullptr;
+  }
+
+  JoinPredicate *pred = new (context->mem_root()) JoinPredicate;
+  if (!pred) return nullptr;
+
+  pred->expr = expr;
+  return pred;
+}
+
+bool AccessPathRewriter::rewrite_hash_join(AccessPath *, AccessPath *out) {
+  auto &hash_join = out->hash_join();
+  // See CreateHashJoinAccessPath(), It just use join_predicate in query
+  // execution.
+  if (!(hash_join.join_predicate = CloneJoinPredicateFrom(
+            hash_join.join_predicate, m_item_clone_context)))
+    return true;
+
+  return false;
+}  
 bool AccessPathRewriter::rewrite_materialize(AccessPath *in, AccessPath *&out,
                                              bool) {
   out->materialize().table_path = pointer_cast<AccessPath *>(memdup_root(
@@ -69,6 +105,8 @@ bool AccessPathRewriter::do_rewrite(AccessPath *&path, AccessPath *curjoin,
     case AccessPath::PARALLEL_COLLECTOR_SCAN:
       break;
     // TABLE_VALUE_CONSTRUCTOR: not support yet
+    case AccessPath::FAKE_SINGLE_ROW:
+      break;    
     // FAKE_SINGLE_ROW: not support yet
     case AccessPath::ZERO_ROWS:
       if (do_rewrite(path->zero_rows().child, path, out)) return true;
@@ -196,6 +234,8 @@ bool AccessPathRewriter::rewrite_each_access_path(AccessPath *&path,
     // DYNAMIC_INDEX_RANGE_SCAN: not support yet
     // PARALLEL_COLLECTOR_SCAN: no need rewrite
     // TABLE_VALUE_CONSTRUCTOR: not support yet
+    case AccessPath::FAKE_SINGLE_ROW:
+      break;
     // FAKE_SINGLE_ROW: not support yet
     case AccessPath::ZERO_ROWS:
       assert(!end_of_out_path());
@@ -881,6 +921,17 @@ bool AccessPathParallelizer::rewrite_limit_offset(AccessPath *in,
   return false;
 }
 
+PartialAccessPathRewriter::PartialAccessPathRewriter(
+    Item_clone_context *item_clone_context, JOIN *join_in, JOIN *join_out)
+    : AccessPathRewriter(item_clone_context, join_in, join_out),
+      m_qep_execution_state(join_out->thd->mem_root) {}
+
+Mem_root_array<QEP_execution_state> *
+PartialAccessPathRewriter::qep_execution_state() {
+  return new (mem_root())
+      Mem_root_array<QEP_execution_state>(std::move(m_qep_execution_state));
+}
+
 TABLE *PartialAccessPathRewriter::find_leaf_table(TABLE *table) const {
   Query_block *query_block = m_join_out->query_block;
   auto *tables = query_block->leaf_tables;
@@ -935,23 +986,25 @@ template <typename aptype>
 bool PartialAccessPathRewriter::rewrite_base_ref(aptype &out) {
   if (rewrite_base_scan(out, out.ref->key)) return true;
   auto *ref = out.ref;
-  if (!(out.ref = ref->clone(out.table, m_join_out->const_table_map,
-                             m_item_clone_context)))
-    return true;
 
-  return false;
+  return !(out.ref = ref->clone(out.table, m_join_out->const_table_map,
+                                m_item_clone_context)) ||
+         m_qep_execution_state.push_back({out.table, false, out.ref});
 }
 
 bool PartialAccessPathRewriter::rewrite_table_scan(AccessPath *,
                                                    AccessPath *out) {
   auto &table_scan = out->table_scan();
-  return rewrite_base_scan(table_scan, MAX_KEY);
+
+  return rewrite_base_scan(table_scan, MAX_KEY) ||
+         m_qep_execution_state.push_back({table_scan.table, false, nullptr});  
 }
 
 bool PartialAccessPathRewriter::rewrite_index_scan(AccessPath *,
                                                    AccessPath *out) {
   auto &index_scan = out->index_scan();
-  return rewrite_base_scan(index_scan, index_scan.idx);
+
+         m_qep_execution_state.push_back({index_scan.table, false, nullptr});
 }
 
 bool PartialAccessPathRewriter::rewrite_ref(AccessPath *, AccessPath *out) {
@@ -987,6 +1040,7 @@ bool PartialAccessPathRewriter::rewrite_index_range_scan(AccessPath *,
   auto *quick = index_range_scan.quick->clone(join, table);
 
   if (!quick || join->quick_selects_to_cleanup.push_back(quick)) return true;
+  f (m_qep_execution_state.push_back({table, false, nullptr})) return true;
 
   index_range_scan.quick = quick;
 
@@ -1003,8 +1057,9 @@ bool PartialAccessPathRewriter::rewrite_unqualified_count(AccessPath *&in,
     TABLE *orig_table = it.first;
     TABLE *table = find_leaf_table(orig_table);
     uint keyno = it.second;
-    if (count_tables->push_back(std::make_pair(table, keyno))) return true;
-
+    if (count_tables->push_back(std::make_pair(table, keyno)) ||
+        m_qep_execution_state.push_back({table, false, nullptr}))
+      return true;
     // To call row count RPC, TDSQL 3 could convert some non select_count
     // queries to select_count. Here we clone tables' pushed down condition.
     if (clone_handler_pushed_cond(m_item_clone_context, keyno, orig_table,
@@ -1032,36 +1087,6 @@ bool PartialAccessPathRewriter::
   auto *table = find_leaf_table(const_cast<TABLE *>(orig_table));
   nested_loop_semijoin.table = table;
   nested_loop_semijoin.key = table->key_info + keyno;
-  return false;
-}
-
-bool PartialAccessPathRewriter::rewrite_hash_join(AccessPath *,
-                                                  AccessPath *out) {
-  auto &hash_join = out->hash_join();
-  THD *thd = m_join_out->thd;
-  // See CreateHashJoinAccessPath(), It just use these fields in query
-  // execution.
-  const RelationalExpression *orig_expr = hash_join.join_predicate->expr;
-  RelationalExpression *expr = new (mem_root()) RelationalExpression(thd);
-  if (!expr) return true;
-  expr->left = expr->right = nullptr;
-  expr->type = orig_expr->type;
-  for (auto *item : orig_expr->join_conditions) {
-    auto *new_item = item->clone(m_item_clone_context);
-    if (!new_item || expr->join_conditions.push_back(new_item)) return true;
-  }
-  for (auto *item : orig_expr->equijoin_conditions) {
-    auto *new_item = item->clone(m_item_clone_context);
-    if (!new_item || expr->equijoin_conditions.push_back(
-                         down_cast<Item_func_eq *>(new_item)))
-      return true;
-  }
-
-  JoinPredicate *pred = new (thd->mem_root) JoinPredicate;
-  if (!pred) return true;
-
-  pred->expr = expr;
-  hash_join.join_predicate = pred;
   return false;
 }
 
@@ -1155,6 +1180,7 @@ bool PartialAccessPathRewriter::rewrite_materialize(AccessPath *in,
       return true;
   }
 
+  if (m_qep_execution_state.push_back({table, true, nullptr})) return true;
   // We made a new table, so make sure it gets properly cleaned up
   // at the end of execution.
   join->temp_tables.push_back(
@@ -1217,6 +1243,9 @@ bool PartialAccessPathRewriter::rewrite_temptable_aggregate(AccessPath *,
                                   tagg.ref_slice, HA_POS_ERROR, &tagg.table,
                                   &tagg.temp_table_param))
     return true;
+
+  if (m_qep_execution_state.push_back({tagg.table, true, nullptr}))
+    return true;    
   // We made a new table, so make sure it gets properly cleaned up
   // at the end of execution.
   join->temp_tables.push_back(

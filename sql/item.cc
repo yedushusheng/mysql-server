@@ -8158,6 +8158,7 @@ bool Item_ref::init_from(const Item *from, Item_clone_context *context) {
 
   auto *from_ref = down_cast<const Item_ref *>(from);
   assert(from_ref->ref);
+  this->context = &context->query_block()->context;
   if (context->resolve_ref(this, from_ref)) return true;
 
   return false;

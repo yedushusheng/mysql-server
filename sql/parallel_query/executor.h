@@ -7,18 +7,18 @@
 #include "my_sqlcommand.h"
 #include "sql/handler.h"
 #include "sql/parallel_query/distribution.h"
+#include "sql/parallel_query/planner.h"
 #include "sql/parallel_query/row_exchange.h"
 #include "sql/row_iterator.h"
+#include "sql/sql_lex.h"
 #include "sql/xa.h"
 
 class Diagnostics_area;
 class Filesort;
 class user_var_entry;
 class Security_context;
-class Item_cached_subselect_result;
 
 namespace pq {
-class PartialPlan;
 class Worker;
 
 class Collector {
@@ -46,8 +46,7 @@ class Collector {
   bool CreateMergeSort(JOIN *join, ORDER *merge_order, bool remove_duplicates);
   std::pair<std::string *, std::string *> WorkersTimingData() const;
   AccessPath *Explain(std::vector<std::string> &description);
-  void SetPreevaluateSubqueries(
-      List<Item_cached_subselect_result> *cached_subselects) {
+  void SetPreevaluateSubqueries(CachedSubselects &cached_subselects) {
     m_preevaluate_subqueries = cached_subselects;
   }
 
@@ -69,7 +68,9 @@ class Collector {
 #endif
   PartialPlan *m_partial_plan;
   TABLE *m_table{nullptr};
-  List<Item_cached_subselect_result> *m_preevaluate_subqueries{nullptr};
+  // This is a shallow copy of cached subqueries of partial plan for evaluating
+  // them.
+  CachedSubselects m_preevaluate_subqueries;  
   Filesort *m_merge_sort{nullptr};
   comm::RowExchange m_receiver_exchange;
   comm::RowExchangeReader *m_row_exchange_reader{nullptr};
@@ -140,6 +141,31 @@ class PartialExecutor {
 
 std::string ExplainTableParallelScan(JOIN *join, TABLE *table);
 RowIterator *NewFakeTimingIterator(THD *thd, Collector *collector);
+
+template <class Func>
+bool for_each_inner_expressions(Query_block *query_block, Query_block *from,
+                                Func &&func) {
+  List_iterator_fast<Query_expression> it;
+  auto *from_inners = query_block->m_inner_query_expressions_clone_from;
+  if (from_inners) it.init(*from_inners);
+  Query_expression *from_inner_unit =
+      from_inners ? it++ : from->first_inner_query_expression();
+
+  for (auto *inner_unit = query_block->first_inner_query_expression();
+       inner_unit && from_inner_unit;
+       inner_unit = inner_unit->next_query_expression()) {
+    // Skip unpushed down cacheable subqueries.
+    while (inner_unit->m_id != from_inner_unit->m_id) {
+      assert(!from_inners);
+      from_inner_unit = from_inner_unit->next_query_expression();
+    }
+    if (func(inner_unit, from_inner_unit)) return true;
+    from_inner_unit =
+        from_inners ? it++ : from_inner_unit->next_query_expression();
+  }
+
+  return false;
+}
 }  // namespace pq
 
 class CollectorIterator final : public RowIterator {

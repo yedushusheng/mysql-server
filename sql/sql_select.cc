@@ -1707,6 +1707,9 @@ void JOIN::reset() {
       (void)qep_tab[tmp].table()->empty_result_table();
     }
   }
+  do_each_qep_exec_state([](auto &qes) {
+    if (qes.temptable) (void)qes.table->empty_result_table();
+  });  
   clear_sj_tmp_tables();
   set_ref_item_slice(REF_SLICE_SAVED_BASE);
 
@@ -1730,6 +1733,9 @@ void JOIN::reset() {
     }
   }
 
+  do_each_qep_exec_state([](auto &qes) {
+    if (qes.table_ref) qes.table_ref->key_err = true;
+  });
   /* Reset of sum functions */
   if (sum_funcs) {
     Item_sum *func, **func_ptr = sum_funcs;

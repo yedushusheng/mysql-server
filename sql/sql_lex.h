@@ -886,6 +886,8 @@ class SELECT_LEX_UNIT {
     check that the cardinality doesn't exceed 1.
   */
   bool m_reject_multiple_rows{false};
+  
+  ulong m_id{(ulong)this};
 
   /// @return true if query expression can be merged into an outer query
   bool is_mergeable() const;
@@ -1129,8 +1131,9 @@ class SELECT_LEX_UNIT {
 
   bool walk(Item_processor processor, enum_walk walk, uchar *arg);
 
-  bool clone_from(THD *thd, Query_expression *from,
-                  Item_clone_context *context);
+  bool clone_from(THD *thd, Query_expression *from, Item_clone_context *context,
+                  bool create_iterators);
+  bool is_pushdown_safe() const;  
   /*
     An exception: this is the only function that needs to adjust
     explain_marker.
@@ -1957,6 +1960,14 @@ class SELECT_LEX {
 
   bool clone_from(THD *thd, Query_block *from, Item_clone_context *context);
 
+
+  /// Return nullptr if parallel safe
+  const char *parallel_safe(bool deny_outer_ref) const;
+  bool is_pushdown_safe() const;
+  // In parallel query, top query block of partial plan needs this to get source
+  // inner query expressions of clone.
+  List<Query_expression> *m_inner_query_expressions_clone_from{nullptr};
+  
   // ************************************************
   // * Members (most of these should not be public) *
   // ************************************************

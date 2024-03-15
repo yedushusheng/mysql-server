@@ -215,6 +215,14 @@ class Item_subselect : public Item_result_field {
     // Don't support yet
     return Item_parallel_safe::Unsafe;
   }  
+  bool init_from(const Item *from, Item_clone_context *context) override {
+    if (super::init_from(from, context)) return true;
+    auto *item = down_cast<const Item_subselect *>(from);
+    // This is at least used by execution of hash join, see class JoinCondition.
+    used_tables_cache = item->used_tables_cache;
+    max_columns = item->max_columns;
+    return false;
+  }
   bool resolve_type(THD *) override;
   table_map used_tables() const override { return used_tables_cache; }
   table_map not_null_tables() const override { return 0; }
@@ -938,7 +946,8 @@ class SubqueryWithResult {
   */
   const Item_subselect *get_item() const { return item; }
 #endif
-
+  Query_result_interceptor *query_result() const { return result; }
+  
  private:
   Query_result_interceptor *result; /* results storage class */
   Item_subselect *item;             /* item, that use this subquery */

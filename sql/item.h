@@ -792,7 +792,8 @@ class Item_func_get_user_var;
 
 class Item_ref_clone_resolver {
  public:
-  virtual bool resolve(Item_ref *item, const Item_ref *from) = 0;
+  virtual bool resolve(Item_clone_context *context, Item_ref *item,
+                       const Item_ref *from) = 0;
   virtual bool final_resolve(Item_clone_context *context) = 0;
 };
 
@@ -816,7 +817,7 @@ class Item_clone_context {
   }
   bool resolve_ref(Item_ref *item, const Item_ref *from) {
     assert(m_ref_resolver);
-    return m_ref_resolver->resolve(item, from);
+    return m_ref_resolver->resolve(this, item, from);
   }
   bool final_resolve_refs() { return m_ref_resolver->final_resolve(this); }
   virtual bool resolve_view_ref(Item_view_ref *item,
@@ -826,6 +827,19 @@ class Item_clone_context {
   virtual Item *get_replacement_item(const Item *item [[maybe_unused]]) {
     return nullptr;
   }
+  Query_block *change_query_block(Query_block *query_block) {
+    auto *old = m_query_block;
+    m_query_block = query_block;
+    return old;
+  }
+  /**
+    Just use same subselect item object when item clone
+    Currently, There are 3 item clone usage, a. origin plan rewrite for leader
+    execution plan generating; b. partial plan that is generated for template of
+    worker plan; c. worker execution plan. We just do need new subselect item
+    object for worker execution plan only.
+  */
+  virtual bool use_same_subselect() const { return true; }  
  protected:
   // Target thread descriptor
   THD *m_thd;

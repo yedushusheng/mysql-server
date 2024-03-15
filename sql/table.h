@@ -3776,6 +3776,8 @@ struct TABLE_LIST {  //NOTE:表对象的结构,在SELECT语句中,出现在FROM�
     return m_map;
   }
   //NOTE:表的位图值(形如1,2,4,8等等),在setup_table_map中创建,所有表的位图值加到一起形成表位图,很多地方都用到这个位图
+  
+  void set_map(table_map map) { m_map = map; }
 
   /// If non-NULL, the CTE which this table is derived from.
   Common_table_expr *common_table_expr() const { return m_common_table_expr; }

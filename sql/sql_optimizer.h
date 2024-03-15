@@ -95,6 +95,7 @@ class Cost_model_server;
 namespace pq {
 class ParallelPlan;
 class PartialPlan;
+class QEP_execution_state;
 }
 
 struct SARGABLE_PARAM {
@@ -718,6 +719,16 @@ class JOIN {
   bool with_json_agg;
 
   pq::ParallelPlan *parallel_plan{nullptr};
+
+  /// Parallel plan execution does not use QEP_TABs but Iterator executor still
+  /// depends on QEP_TABs, see JOIN::clear_fields(), JOIN::restore_fields() and
+  /// JOIN::reset() (re-execution of subqueries needs that). This member saves
+  /// execution states of QEP_TABs and for correctness, executor has been
+  /// changed to use it.
+  Mem_root_array<pq::QEP_execution_state> *qep_execution_state{nullptr};
+
+  void do_each_qep_exec_state(
+      std::function<void(pq::QEP_execution_state &)> func);  
   void end_parallel_plan(bool fill_send_records);
   void destroy_parallel_plan();
 

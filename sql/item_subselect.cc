@@ -71,6 +71,7 @@
 #include "sql/opt_explain_format.h"
 #include "sql/opt_trace.h"  // OPT_TRACE_TRANSFORM
 #include "sql/opt_trace_context.h"
+#include "sql/parallel_query/planner.h"
 #include "sql/parse_tree_nodes.h"  // PT_subquery
 #include "sql/query_options.h"
 #include "sql/query_result.h"
@@ -2819,20 +2820,56 @@ uint Item_cached_subselect_result::query_block_number() const {
 
 Item_parallel_safe Item_singlerow_subselect::parallel_safe() const {
   if (unit->uncacheable == 0) return Item_parallel_safe::Safe;
-  return Item_parallel_safe::Unsafe;
+  if (!current_thd->parallel_query_switch_flag(
+          PARALLEL_QUERY_SUBQUERY_PUSHDOWN))
+    return Item_parallel_safe::Unsafe;
+  // Currently, only push down subqueries in WHERE.
+  if (parsing_place != CTX_WHERE) return Item_parallel_safe::Unsafe;
+  if (!unit->is_pushdown_safe()) return Item_parallel_safe::Unsafe;
+  return Item_parallel_safe::Safe;
 }
+
 
 Item *Item_singlerow_subselect::new_item(Item_clone_context *context) const {
   // Only called on leader, using same object should be ok
-  return const_cast<Item_singlerow_subselect *>(this)->copy_or_same(
-      context->thd());
+  if (context->use_same_subselect())
+    return const_cast<Item_singlerow_subselect *>(this)->copy_or_same(
+        context->thd());
+
+  auto *query_block = context->query_block();
+  Query_expression *new_item_unit = nullptr;
+  for (auto *inner_unit = query_block->first_inner_query_expression();
+       inner_unit; inner_unit = inner_unit->next_query_expression()) {
+    if (inner_unit->m_id == unit->m_id) {
+      new_item_unit = inner_unit;
+      break;
+    }
+  }
+  assert(new_item_unit && !new_item_unit->item);
+  return new Item_singlerow_subselect(new_item_unit->first_query_block());
 }
 
-bool Item_singlerow_subselect::init_from(const Item *from [[maybe_unused]],
-                                         Item_clone_context *) {
+bool Item_singlerow_subselect::init_from(const Item *from,
+                                         Item_clone_context *context) {
+  assert(from == this || !context->use_same_subselect());
+
   // This function prevents parent class' init_from() calling since from is
   // same object with this.
-  assert(from == this);
+  if (context->use_same_subselect()) return false;
+
+  if (Item_subselect::init_from(from, context)) return true;
+
+  if (max_columns == 1)
+    subquery->fix_length_and_dec(row = &value);
+  else {
+    if (!(row = context->mem_root()->ArrayAlloc<Item_cache *>(max_columns)))
+      return true;
+    subquery->fix_length_and_dec(row);
+    value = *row;
+  }
+
+  unit->set_query_result(subquery->query_result());
+
   return false;
 }
 

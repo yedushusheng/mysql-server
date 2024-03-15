@@ -6537,6 +6537,17 @@ bool JOIN::clear_fields(table_map *save_nullinfo) {
       table->set_null_row();  // All fields are NULL
     }
   }
+
+  do_each_qep_exec_state([save_nullinfo](auto &qes) {
+    if (qes.temptable) return;
+    TABLE *const table = qes.table;
+    auto *const table_ref = table->pos_in_table_list;
+    if (!table->has_null_row()) {
+      *save_nullinfo |= table_ref->map();
+      if (table->const_table) table->save_null_flags();
+      table->set_null_row();  // All fields are NULL
+    }
+  });  
   return false;
 }
 
@@ -6559,6 +6570,16 @@ void JOIN::restore_fields(table_map save_nullinfo) {
       table->reset_null_row();
     }
   }
+
+  do_each_qep_exec_state([save_nullinfo](auto &qes) {
+    if (qes.temptable) return;
+    TABLE *const table = qes.table;
+    auto *const table_ref = table->pos_in_table_list;
+    if (save_nullinfo & table_ref->map()) {
+      if (table->const_table) table->restore_null_flags();
+      table->reset_null_row();
+    }
+  });  
 }
 
 /******************************************************************************

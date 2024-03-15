@@ -7,12 +7,16 @@
 
 class QEP_TAB;
 struct AccessPath;
+class Item_subselect;
+class Item_cached_subselect_result;
+class TABLE_REF;
 
 #define PARALLEL_QUERY_JOIN (1ULL << 0)
 #define PARALLEL_QUERY_SELECT_COUNT (1ULL << 1)
+#define PARALLEL_QUERY_SUBQUERY_PUSHDOWN (1ULL << 2)
 
 // Including the switch in this set, makes its default 'on'
-#define PARALLEL_QUERY_SWITCH_DEFAULT (PARALLEL_QUERY_JOIN)
+#define PARALLEL_QUERY_SWITCH_DEFAULT (PARALLEL_QUERY_JOIN | PARALLEL_QUERY_SUBQUERY_PUSHDOWN)
 
 namespace pq {
 class Collector;
@@ -21,11 +25,17 @@ class PartialItemGenContext;
 constexpr uint default_max_parallel_degree = 0;
 constexpr uint default_max_parallel_workers = 10000;
 extern uint max_parallel_workers;
+struct Item_ref_resolve_info {
+  Item_ref *ref;
+  const Item_ref *orig_ref;
+  Query_block *query_block;
+};
 
 class ItemRefCloneResolver : public Item_ref_clone_resolver {
  public:
-  ItemRefCloneResolver(MEM_ROOT *mem_root, Query_block *query_block);
-  bool resolve(Item_ref *item, const Item_ref *from) override;
+  ItemRefCloneResolver(MEM_ROOT *mem_root);
+  bool resolve(Item_clone_context *context, Item_ref *item,
+               const Item_ref *from) override;
   bool final_resolve(Item_clone_context *context) override;
 
 #ifndef NDEBUG
@@ -33,8 +43,7 @@ class ItemRefCloneResolver : public Item_ref_clone_resolver {
 #endif
 
  private:
-  mem_root_deque<std::pair<Item_ref *, const Item_ref *>> m_refs_to_resolve;
-  Query_block *m_query_block;
+  mem_root_deque<Item_ref_resolve_info> m_refs_to_resolve;
 };
 
 struct ParallelScanInfo {
@@ -49,6 +58,9 @@ struct Semijoin_mat_info {
   mem_root_deque<Item *> sj_inner_exprs;
   ulong table_id;
 };
+
+using QueryExpressions = List<Query_expression>;
+using CachedSubselects = List<Item_cached_subselect_result>;
 
 /**
    Currently, partial plan executor only depends on access path (No JOIN is
@@ -89,10 +101,22 @@ class PartialPlan {
                                     mem_root_deque<Item *> *sjm_fields,
                                     Item_clone_context *clone_context);
   List<Semijoin_mat_info> *SJMatInfoList() { return &m_sjm_info_list; }
+  void SetPushdownInnerQueryExpressions(QueryExpressions &&units) {
+    m_pushdown_inner_query_expressions = units;
+  }
+  QueryExpressions &PushdownInnerQueryExpressions() {
+    return m_pushdown_inner_query_expressions;
+  }
+  void SetCachedSubqueries(CachedSubselects &&cached_subqueries) {
+    m_cached_subqueries = cached_subqueries;
+  }
+  CachedSubselects &CachedSubqueries() { return m_cached_subqueries; }
 
  private:
   Query_block *m_query_block;
-  List<Semijoin_mat_info> m_sjm_info_list{};
+  List<Semijoin_mat_info> m_sjm_info_list;
+  QueryExpressions m_pushdown_inner_query_expressions;
+  CachedSubselects m_cached_subqueries;
   /// Parallel scan info, current only support one table, This should be in
   /// class dist::PartialDistPlan, but we use it everywhere.
   ParallelScanInfo m_parallel_scan_info;
@@ -221,6 +245,11 @@ class ParallelPlan {
   dist::Adapter *m_dist_adapter;
 };
 
+struct QEP_execution_state {
+  TABLE *table;
+  bool temptable;
+  TABLE_REF *table_ref;
+};
 bool GenerateParallelPlan(JOIN *join);
 bool add_tables_to_query_block(THD *thd, Query_block *query_block,
                                TABLE_LIST *tables);

@@ -1,16 +1,15 @@
 #include "sql/parallel_query/planner.h"
 
 #include "scope_guard.h"
-#include "sql/error_handler.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
+#include "sql/join_optimizer/walk_access_paths.h"
 #include "sql/nested_join.h"
 #include "sql/opt_range.h"
 #include "sql/opt_trace.h"
 #include "sql/parallel_query/distribution.h"
 #include "sql/parallel_query/executor.h"
 #include "sql/parallel_query/rewrite_access_path.h"
-#include "sql/sql_list.h"
 #include "sql/sql_optimizer.h"
 #include "sql/tdsql/trans.h"
 
@@ -47,12 +46,13 @@ static void ReleaseParallelWorkers(uint count) {
   total_parallel_workers.fetch_sub(count, std::memory_order_release);
 }
 
-static bool ItemRefuseParallel(const Item *item, const char **cause) {
+static bool ItemRefuseParallel(const Item *item, bool deny_outer_ref,
+                               const char **cause) {
   assert(item);
   *cause = nullptr;
   if (item->parallel_safe() != Item_parallel_safe::Safe) return true;
   // Some Item_refs in refer to outer table's field, we don't support that yet.
-  if (item->used_tables() & OUTER_REF_TABLE_BIT) {
+  if (deny_outer_ref && (item->used_tables() & OUTER_REF_TABLE_BIT)) {
     *cause = "item_refer_to_outer_query_field";
     return true;
   }
@@ -516,16 +516,14 @@ static void ChooseParallelPlan(JOIN *join) {
     cause = "not_supported_uncacheable_subquery";
     return;
   }
-  if (join->query_block->forbid_parallel_by_upper_query_block) {
-    cause = "item_referred_by_upper_query_block";
-    return;
-  }
 
   // Block plan which does't support yet
   if (join->zero_result_cause) {
     cause = "plan_with_zero_result";
     return;
   }
+
+  if ((cause = join->query_block->parallel_safe(true))) return;
 
   // Multiple tables can not be supported yet because row count RPC request of
   // non-parallel scan depends on QEP_TAB deeply see GetStartEndKey() in
@@ -536,102 +534,25 @@ static void ChooseParallelPlan(JOIN *join) {
     return;
   }
 
-  // We just support single table
-  if (join->const_tables > 0) {
-    cause = "plan_with_const_tables";
-    return;
-  }
-
   if (!thd->parallel_query_switch_flag(PARALLEL_QUERY_JOIN) &&
       join->primary_tables != 1) {
     cause = "not_single_table";
     return;
   }
 
-  // Don't support window function and rollup yet
-  if (!join->m_windows.is_empty() ||
-      join->rollup_state != JOIN::RollupState::NONE) {
-    cause = "include_window_function_or_rullup";
-    return;
-  }
-
-  // We don't support IN sub query because we don't support clone of its refs in
-  // items yet.
-  auto *subselect = join->query_expression()->item;
-  if (subselect && subselect->substype() == Item_subselect::IN_SUBS) {
-    Item_in_subselect *subs = down_cast<Item_in_subselect *>(subselect);
-    if (subs->strategy == Subquery_strategy::SUBQ_EXISTS) {
-      cause = "IN_subquery_strategy_is_SUBQ_EXISTS";
-      return;
-    }
-  }
-
   auto *dist_adapter = dist::CreateTDStoreAdapter(thd->mem_root);
   if (!dist_adapter) return;
 
-  // Block parallel based on items and each table property
-
-  const char *item_refuse_cause;
-  for (Item *item : join->query_block->fields) {
-    if (skip_no_used_field(join->query_expression(), item)) continue;
-    if (!ItemRefuseParallel(item, &item_refuse_cause)) continue;
-    cause = item_refuse_cause ? item_refuse_cause
-                              : "include_unsafe_items_in_fields";
-    return;
-  }
-
-  if (join->having_cond &&
-      ItemRefuseParallel(join->having_cond, &item_refuse_cause)) {
-    cause = item_refuse_cause ? item_refuse_cause : "having_is_unsafe";
-    return;
-  }
-
   // Loop on each table to block unsupported query
   for (uint i = 0; i < join->tables; i++) {
-    auto *qt = &join->qep_tab[i];
-
-    auto *table_ref = qt->table_ref;
-    if (table_ref && table_ref->is_placeholder()) {
-      cause = "table_is_not_real_user_table";
-      return;
-    }
-
-    // Un-merged derived table is blocked by this
-    if (table_ref && is_temporary_table(table_ref) &&
-        qt->materialize_table != QEP_TAB::MATERIALIZE_SEMIJOIN) {
-      cause = "include_unsupported_temporary_table";
-      return;
-    }
-
-    if (qt->having && ItemRefuseParallel(qt->having, &item_refuse_cause)) {
-      cause = item_refuse_cause ? item_refuse_cause
-                                : "table_having_has_unsafe_condition";
-      return;
-    }
-
-    if (qt->condition() &&
-        ItemRefuseParallel(qt->condition(), &item_refuse_cause)) {
-      cause =
-          item_refuse_cause ? item_refuse_cause : "filter_has_unsafe_condition";
-      return;
-    }
-
-    auto *table = qt->table();
-    if (!table) continue;
-
-    Item *item = table->file->pushed_idx_cond;
-    if (item && ItemRefuseParallel(item, &item_refuse_cause)) {
-      cause = item_refuse_cause ? item_refuse_cause
-                                : "filter_pushed_idx_cond_has_unsafe_condition";
-      return;
-    }
-
+  
     // Distribution system may refuse some table to parallel, e.g. a local table
     // in a sharding system and currently 3.0 does not enable parallel query to
     // system table.
-    if ((cause = dist_adapter->TableRefuseParallel(table))) return;
+    auto *table = join->qep_tab[i].table();
+    if (!table) continue;
 
-    if ((cause = TableAccessTypeRefuseParallel(qt))) return;
+    if ((cause = dist_adapter->TableRefuseParallel(table))) return;
   }
 
   // Make sure semi-join materialization items parallel safe, we use them to
@@ -683,14 +604,13 @@ bool GenerateParallelPlan(JOIN *join) {
   return parallel_plan->Generate();
 }
 
-ItemRefCloneResolver::ItemRefCloneResolver(MEM_ROOT *mem_root,
-                                           Query_block *query_block)
-    : m_refs_to_resolve(mem_root), m_query_block(query_block) {}
+ItemRefCloneResolver::ItemRefCloneResolver(MEM_ROOT *mem_root)
+    : m_refs_to_resolve(mem_root) {}
 
-bool ItemRefCloneResolver::resolve(Item_ref *item, const Item_ref *from) {
+bool ItemRefCloneResolver::resolve(Item_clone_context *context, Item_ref *item,
+                                   const Item_ref *from) {
   assert(from->ref_pointer());
-  item->context = &m_query_block->context;
-  return m_refs_to_resolve.push_back({item, from});
+  return m_refs_to_resolve.push_back({item, from, context->query_block()});
 }
 
 #ifndef NDEBUG
@@ -725,11 +645,12 @@ bool ResolveItemRefByInlineClone(Item_ref *item_ref,
 }
 
 bool ItemRefCloneResolver::final_resolve(Item_clone_context *context) {
-  auto &base_ref_items = m_query_block->base_ref_items;
-  for (auto &ref : m_refs_to_resolve) {
-    auto *item_ref = ref.first;
-    auto *from = ref.second;
-    for (uint i = 0; i < m_query_block->fields.size(); i++) {
+  for (auto &ref_info : m_refs_to_resolve) {
+    auto *item_ref = ref_info.ref;
+    auto *from = ref_info.orig_ref;
+    auto *query_block = ref_info.query_block;
+    auto &base_ref_items = query_block->base_ref_items;
+    for (uint i = 0; i < query_block->fields.size(); i++) {
       auto *item = base_ref_items[i];
       if (item->is_identical(from->ref_item())) {
         item_ref->set_ref_pointer(&base_ref_items[i]);
@@ -866,13 +787,28 @@ class PartialItemGenContext : public Item_clone_context {
   using Item_clone_context::Item_clone_context;
 
   /// Create cached result for each parallel safe single-row subqueries
-  bool BuildCachedSubqueryList(Query_block *source_query_block) {
+  bool BuildCachedSubqueryList(Query_block *source_query_block,
+                               bool recursive) {
     for (auto *unit = source_query_block->first_inner_query_expression(); unit;
          unit = unit->next_query_expression()) {
       auto *item = unit->item;
-      if (!item || item->parallel_safe() != Item_parallel_safe::Safe ||
+
+      // TODO: Change this if we support pushdown derived tables or non-single
+      // row subqueries.
+      if (!item || (item->is_uncacheable() && !recursive) ||
+          item->parallel_safe() != Item_parallel_safe::Safe ||
           item->substype() != Item_subselect::SINGLEROW_SUBS)
         continue;
+
+      if (item->is_uncacheable()) {
+        assert(recursive);
+        for (auto *inner_select = unit->first_query_block(); inner_select;
+             inner_select = inner_select->next_query_block()) {
+          if (BuildCachedSubqueryList(inner_select, recursive)) return true;
+        }
+        continue;
+      }
+
       auto *cached_subselect =
           Item_cached_subselect_result::create_from_subselect(item);
       if (!cached_subselect) return true;
@@ -881,10 +817,15 @@ class PartialItemGenContext : public Item_clone_context {
     return false;
   }
 
-  void CleanUnusedCachedSubqueries() {
+  /// Removes children of @param source_query_block since they are not included
+  /// in partial plan (e.g. only referred by leader).
+  void RemoveUnusedCachedSubqueries(Query_block *source_query_block) {
     List_iterator<Item_cached_subselect_result> it(m_cached_subselects);
     Item_cached_subselect_result *cached_result;
     while ((cached_result = it++)) {
+      if (cached_result->subselect()->unit->outer_query_block() !=
+          source_query_block)
+        continue;
       if (!cached_result->has_replacements()) it.remove();
     }
   }
@@ -920,10 +861,19 @@ class PartialItemGenContext : public Item_clone_context {
       subs_item.set_id(item->id());
       return &subs_item;
     }
+
+    // Other sub-queries should be pushed down unless wrong parallel plan is
+    // generated.
+    auto *sub_unit = down_cast<const Item_subselect *>(item)->unit;
+    m_pushdown_subselects.push_back(sub_unit);
+    for (auto *inner_select = sub_unit->first_query_block(); inner_select;
+         inner_select = inner_select->next_query_block())
+      BuildCachedSubqueryList(inner_select, true);
     return nullptr;
   }
 
-  List<Item_cached_subselect_result> m_cached_subselects;
+  CachedSubselects m_cached_subselects;
+  QueryExpressions m_pushdown_subselects;
 };
 
 static bool can_field_push_down(AggregateStrategy agg_strategy, Item *item) {
@@ -1148,7 +1098,7 @@ bool ParallelPlan::GenFinalFields(FieldsPushdownDesc *fields_pushdown_desc) {
   Opt_trace_object trace_wrapper(&thd->opt_trace);
   Opt_trace_object trace(&thd->opt_trace, "final_plan");
 
-  ItemRefCloneResolver ref_resolver(thd->mem_root, source_query_block);
+  ItemRefCloneResolver ref_resolver(thd->mem_root);
 #ifndef NDEBUG
   ref_resolver.query_block_for_inline_clone_assert = source_query_block;
 #endif
@@ -1246,8 +1196,7 @@ bool ParallelPlan::GeneratePartialPlan(
 
   if (AddPartialLeafTables()) return true;
 
-  auto *ref_clone_resolver =
-      new (mem_root) ItemRefCloneResolver(mem_root, partial_query_block);
+  auto *ref_clone_resolver = new (mem_root) ItemRefCloneResolver(mem_root);
 #ifndef NDEBUG
   ref_clone_resolver->query_block_for_inline_clone_assert = source_query_block;
 #endif
@@ -1256,8 +1205,8 @@ bool ParallelPlan::GeneratePartialPlan(
   if (!ref_clone_resolver || !clone_context) return true;
   *partial_clone_context = clone_context;
 
-  if (clone_context->BuildCachedSubqueryList(source_query_block)) return true;
-
+  if (clone_context->BuildCachedSubqueryList(source_query_block, false))
+    return true;
   if (GenPartialFields(clone_context, fields_pushdown_desc))
     return true;
 
@@ -1325,10 +1274,26 @@ bool ParallelPlan::Generate() {
 
   if (setup_sum_funcs(thd, source_join->sum_funcs)) return true;
 
-  partial_clone_context->CleanUnusedCachedSubqueries();
-  m_collector->SetPreevaluateSubqueries(
-      &partial_clone_context->m_cached_subselects);
-
+  partial_clone_context->RemoveUnusedCachedSubqueries(source_query_block);
+  auto &cached_subselects = partial_clone_context->m_cached_subselects;
+  m_collector->SetPreevaluateSubqueries(cached_subselects);
+  m_partial_plan.SetCachedSubqueries(std::move(cached_subselects));
+  auto &pushdown_subselects = partial_clone_context->m_pushdown_subselects;
+  // Set fake timing iterator for pushed down sub-queries since they are be
+  // executed by workers.
+  if (lex->is_explain_analyze) {
+    auto *fake_timing_iterator =
+        m_partial_plan.Join()->root_access_path()->iterator;
+    for (auto &unit : pushdown_subselects)
+      WalkAccessPaths(unit.root_access_path(), nullptr,
+                      WalkAccessPathPolicy::ENTIRE_TREE,
+                      [fake_timing_iterator](AccessPath *path, const JOIN *) {
+                        path->iterator = fake_timing_iterator;
+                        return false;
+                      });
+  }
+  m_partial_plan.SetPushdownInnerQueryExpressions(
+      std::move(pushdown_subselects));
   if (!lex->is_explain() || lex->is_explain_analyze)
     m_collector->PrepareExecution(thd);
 
@@ -1425,7 +1390,8 @@ bool add_tables_to_query_block(THD *thd, Query_block *query_block,
 }  // namespace pq
 
 bool Query_expression::clone_from(THD *thd, Query_expression *from,
-                                  Item_clone_context *context) {
+                                  Item_clone_context *context,
+                                  bool create_iterators) {
   uncacheable = from->uncacheable;
   m_reject_multiple_rows = from->m_reject_multiple_rows;
   assert(from->is_prepared());
@@ -1452,63 +1418,34 @@ bool Query_expression::clone_from(THD *thd, Query_expression *from,
 
   JOIN *join = first_query_block()->join;
 
-  m_root_iterator = CreateIteratorFromAccessPath(
-      thd, m_root_access_path, join, /*eligible_for_batch_mode=*/true);
+  if (create_iterators)
+    m_root_iterator = CreateIteratorFromAccessPath(
+        thd, m_root_access_path, join, /*eligible_for_batch_mode=*/true);
 
   return false;
 }
 
-/// Other SQLEngine nodes maybe change table definition e.g. drop index. It may
-/// cause problems when cloning plan.
-static bool CheckTableDefChange(TABLE *table, TABLE *from) {
-  if (table->schema_version == from->schema_version &&
-      table->tindex_id == from->tindex_id)
-    return false;
-
-  my_error(ER_TABLE_IS_OUT_OF_DATE, MYF(0), from->s->db.str,
-           from->s->table_name.str, from->schema_version, table->schema_version,
-           table->tindex_id);
-
+bool Query_expression::is_pushdown_safe() const {
+  // Don't support union plan clone yet.
+  if (!is_simple()) return false;
+  for (auto *query_block = first_query_block(); query_block;
+       query_block = query_block->next_query_block()) {
+    if (!query_block->is_pushdown_safe()) return false;
+  }
   return true;
 }
 
 bool Query_block::clone_from(THD *thd, Query_block *from,
                              Item_clone_context *context) {
+  if (pq::for_each_inner_expressions(
+          this, from, [thd, context](auto *inner, auto *inner_from) {
+            return inner->clone_from(thd, inner_from, context, false);
+          }))
+    return true;
+
+  auto *old_ctx_query_block = context->change_query_block(this);  
   uncacheable = from->uncacheable;
   select_number = from->select_number;
-
-  // Item_field clone depends on this
-  if (setup_tables(thd, get_table_list(), false)) return true;
-
-  // Clone table attributes from @from tables
-  for (TABLE_LIST *tl = leaf_tables, *ftl = from->leaf_tables; tl && ftl;
-       tl = tl->next_leaf, ftl = ftl->next_leaf) {
-    tl->m_id = ftl->m_id;
-    TABLE *table = tl->table;
-    TABLE *ftable = ftl->table;
-
-    assert(table);
-
-    if (CheckTableDefChange(table, ftable)) return true;
-
-    // record of const table has be filled during query optimization.
-    if (ftable->const_table) {
-      table->const_table = true;
-      memcpy(table->record[0], ftable->record[0], ftable->s->reclength);
-    }
-    if (ftable->is_nullable()) table->set_nullable();
-    if (ftable->has_null_row()) table->set_null_row();
-
-    // XXX Tranditional explain needs these
-    table->covering_keys = ftable->covering_keys;
-    table->reginfo.not_exists_optimize = ftable->reginfo.not_exists_optimize;
-    if (ftable->part_info) {
-      bitmap_clear_all(&table->part_info->read_partitions);
-      bitmap_copy(&table->part_info->read_partitions,
-                  &ftable->part_info->read_partitions);
-    }
-    // XXX The materialized derived table clone
-  }
 
   // create_intermediate_table() reads this
   with_sum_func = from->with_sum_func;
@@ -1538,8 +1475,104 @@ bool Query_block::clone_from(THD *thd, Query_block *from,
 
     return true;
   }
-
+  context->change_query_block(old_ctx_query_block);
   return false;
+}
+const char *Query_block::parallel_safe(bool deny_outer_ref) const {
+  if (join->query_block->forbid_parallel_by_upper_query_block)
+    return "item_referred_by_upper_query_block";
+
+  // We just support single table
+  if (join->const_tables > 0) return "plan_with_const_tables";
+
+  // Don't support window function and rollup yet
+  if (!join->m_windows.is_empty() ||
+      join->rollup_state != JOIN::RollupState::NONE)
+    return "include_window_function_or_rullup";
+
+  // We don't support IN sub query because we don't support clone of its refs in
+  // items yet.
+  auto *subselect = join->query_expression()->item;
+  if (subselect && subselect->substype() == Item_subselect::IN_SUBS) {
+    Item_in_subselect *subs = down_cast<Item_in_subselect *>(subselect);
+    if (subs->strategy == Subquery_strategy::SUBQ_EXISTS)
+      return "IN_subquery_strategy_is_SUBQ_EXISTS";
+  }
+
+  const char *item_refuse_cause;
+  for (Item *item : join->query_block->fields) {
+    if (pq::skip_no_used_field(join->query_expression(), item)) continue;
+    if (!pq::ItemRefuseParallel(item, deny_outer_ref, &item_refuse_cause))
+      continue;
+    return item_refuse_cause ? item_refuse_cause
+                             : "include_unsafe_items_in_fields";
+  }
+
+  if (join->having_cond &&
+      pq::ItemRefuseParallel(join->having_cond, deny_outer_ref,
+                             &item_refuse_cause))
+    return item_refuse_cause ? item_refuse_cause : "having_is_unsafe";
+
+  // Loop on each table to block unsupported query
+  for (uint i = 0; i < join->tables; i++) {
+    auto *qt = &join->qep_tab[i];
+
+    auto *table_ref = qt->table_ref;
+    if (table_ref && table_ref->is_placeholder())
+      return "table_is_not_real_user_table";
+
+    // Un-merged derived table is blocked by this
+    if (table_ref && is_temporary_table(table_ref) &&
+        qt->materialize_table != QEP_TAB::MATERIALIZE_SEMIJOIN)
+      return "include_unsupported_temporary_table";
+
+    if (qt->having &&
+        pq::ItemRefuseParallel(qt->having, deny_outer_ref, &item_refuse_cause))
+      return item_refuse_cause ? item_refuse_cause
+                               : "table_having_has_unsafe_condition";
+
+    if (qt->condition() &&
+        pq::ItemRefuseParallel(qt->condition(), deny_outer_ref,
+                               &item_refuse_cause))
+      return item_refuse_cause ? item_refuse_cause
+                               : "filter_has_unsafe_condition";
+
+    auto *table = qt->table();
+    if (!table) continue;
+
+    Item *item = table->file->pushed_idx_cond;
+    if (item &&
+        pq::ItemRefuseParallel(item, deny_outer_ref, &item_refuse_cause))
+      return item_refuse_cause ? item_refuse_cause
+                               : "filter_pushed_idx_cond_has_unsafe_condition";
+
+    const char *cause;
+    if ((cause = pq::TableAccessTypeRefuseParallel(qt))) return cause;
+  }
+
+  // Make sure semi-join materialization items parallel safe, we use them to
+  // create materialization temporary tables in partial plan, currently.
+  for (auto &sjm : join->sjm_exec_list) {
+    for (auto *item : sjm.sj_nest->nested_join->sj_inner_exprs) {
+      if (!(pq::ItemRefuseParallel(item, deny_outer_ref, &item_refuse_cause)))
+        continue;
+      return item_refuse_cause ? item_refuse_cause : "unsafe_sj_inner_exprs";
+    }
+  }
+
+  return nullptr;
+}
+
+bool Query_block::is_pushdown_safe() const {
+  const char *cause = parallel_safe(false);
+  if (cause) return false;
+
+  for (auto *inner = first_inner_query_expression(); inner;
+       inner = inner->next_query_expression()) {
+    if (!inner->is_pushdown_safe()) return false;
+  }
+
+  return true;
 }
 
 bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
@@ -1614,7 +1647,8 @@ bool JOIN::clone_from(JOIN *from, Item_clone_context *context) {
   if (!(m_root_access_path =
             aprewriter.clone_and_rewrite(from->root_access_path())))
     return true;
-
+  qep_execution_state = aprewriter.qep_execution_state();
+  
   if (thd->is_error()) return true;
 
   set_plan_state(PLAN_READY);
